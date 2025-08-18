@@ -1,0 +1,33 @@
+name: bio-pipeline-dev
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # Include all dependencies from the main environment
+  - file: environment.yaml
+
+  # Core development tools
+  - black
+  - flake8
+  - isort
+  - mypy
+  - pylint
+  - pre-commit
+  - pytest
+  - pytest-cov
+  - pytest-xdist
+  - jupyterlab
+  - jupyterlab-git
+  - python-lsp-server
+  - types-requests
+  - types-pyyaml
+  - types-setuptools
+
+  # Documentation
+  - mkdocs-material
+  - mkdocstrings
+  - mkdocstrings-python
+  - mkdocs-git-revision-date-localized-plugin
+  - mkdocs-minify-plugin
