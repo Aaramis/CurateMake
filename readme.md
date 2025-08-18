@@ -93,6 +93,61 @@ mkdocs serve
 
 Puis ouvrez http://127.0.0.1:8000 dans votre navigateur.
 
+## Développement avec Git
+
+### Workflow de développement standard
+
+1. **Mettre à jour votre branche locale**
+   ```bash
+   git pull origin main
+   ```
+
+2. **Créer une nouvelle branche pour votre fonctionnalité**
+   ```bash
+   git checkout -b feature/nom-de-la-fonctionnalite
+   ```
+
+3. **Faire vos modifications et les valider**
+
+```bash
+# Voir les fichiers modifiés
+git status
+
+# Ajouter les fichiers au staging
+git add .  # Tous les fichiers
+# ou
+git add chemin/vers/fichier  # Fichier spécifique
+
+# Valider les changements avec un message clair
+git commit -m "Description claire des modifications"
+```
+
+4. **Pousser vos changements**
+
+```bash
+# Premier push d'une nouvelle branche
+git push -u origin feature/nom-de-la-fonctionnalite
+
+# Pour les pushes suivants sur la même branche
+git push
+```
+
+### Gestion des branches
+
+- `main` : Branche principale, toujours stable
+- `develop` : Branche d'intégration pour les fonctionnalités
+- `feature/*` : Nouvelles fonctionnalités
+- `bugfix/*` : Corrections de bugs
+- `hotfix/*` : Corrections critiques pour la production
+
+### .gitignore
+
+Le fichier `.gitignore` est déjà configuré pour ignorer :
+- Fichiers sensibles (.env, mots de passe, clés API)
+- Fichiers temporaires et de cache
+- Fichiers de données volumineux
+- Fichiers spécifiques aux éditeurs de code
+
 ## Documentation **MkDocs** :
 
 ```bash
