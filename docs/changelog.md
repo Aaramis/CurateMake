@@ -4,10 +4,13 @@ Ce document répertorie les modifications notables apportées au projet. Il suit
 
 ## [0.1.0] - 2025-08-18
 ### Ajouté
-- Documentation de base
-- Structure initiale du projet avec Snakemake
-- Proposition de structure de la base de données
-- Schéma de base de données PostgreSQL pour la traçabilité
+- Documentation complète du projet avec MkDocs
+- Structure de dossiers réorganisée pour une meilleure maintenabilité
+- Configuration Git avec .gitignore complet
+- Fichiers d'environnement Conda (its-pipeline, its-pipeline-dev)
+- Script de configuration automatique (setup_env.sh)
+- Documentation sur l'utilisation de Git et les bonnes pratiques
+- Configuration initiale du dépôt GitHub
 
 ## Format du journal
 

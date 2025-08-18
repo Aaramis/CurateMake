@@ -1,4 +1,4 @@
-name: bio-pipeline-dev
+name: its-pipeline-dev
 channels:
   - conda-forge
   - bioconda
@@ -30,4 +30,3 @@ dependencies:
   - mkdocstrings
   - mkdocstrings-python
   - mkdocs-git-revision-date-localized-plugin
-  - mkdocs-minify-plugin

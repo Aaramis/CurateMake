@@ -1,4 +1,4 @@
-name: bio-pipeline
+name: its-pipeline
 channels:
   - conda-forge
   - bioconda

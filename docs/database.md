@@ -1,8 +1,8 @@
-## Base de données du pipeline
+## Base de données du pipeline (SQLite)
 
 ### Schéma relationnel
 
-La base de données assure la traçabilité complète des transformations des données. Elle utilise PostgreSQL pour ses performances et fonctionnalités avancées.
+La base de données assure la traçabilité complète des transformations des données. Elle utilise SQLite pour sa simplicité et portabilité.
 
 ### Tables principales
 
@@ -12,11 +12,11 @@ Stocke les métadonnées des différentes sources de données.
 
 ```sql
 CREATE TABLE sources (
-    source_id SERIAL PRIMARY KEY,
+    source_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,           -- UNITE, BOLD, PLANiTS...
     version TEXT NOT NULL,
     url TEXT,
-    date_download TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    date_download TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -26,15 +26,17 @@ Contient les séquences d’ADN et leur état.
 
 ```sql
 CREATE TABLE sequences (
-    seq_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_id INT REFERENCES sources(source_id) ON DELETE CASCADE,
+    seq_id TEXT PRIMARY KEY,      -- UUID généré côté Python
+    source_id INTEGER,
     original_id TEXT,
     sequence TEXT NOT NULL,
-    length INT GENERATED ALWAYS AS (char_length(sequence)) STORED,
+    length INTEGER,               -- calculé côté application ou via trigger
     md5 CHAR(32) UNIQUE,
-    status TEXT CHECK (status IN ('raw','itsx','aligned','augmented')),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    status TEXT,                  -- 'raw','itsx','aligned','augmented'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE CASCADE
 );
+
 CREATE INDEX idx_seq_md5 ON sequences(md5);
 ```
 
@@ -44,7 +46,7 @@ Hiérarchie taxonomique normalisée.
 
 ```sql
 CREATE TABLE taxonomy (
-    tax_id SERIAL PRIMARY KEY,
+    tax_id INTEGER PRIMARY KEY AUTOINCREMENT,
     kingdom TEXT,
     phylum TEXT,
     class TEXT,
@@ -62,11 +64,13 @@ Table de jonction entre séquences et taxonomie.
 
 ```sql
 CREATE TABLE sequence_taxonomy (
-    seq_id UUID REFERENCES sequences(seq_id) ON DELETE CASCADE,
-    tax_id INT REFERENCES taxonomy(tax_id) ON DELETE CASCADE,
+    seq_id TEXT,
+    tax_id INTEGER,
     method TEXT,
-    confidence FLOAT CHECK (confidence BETWEEN 0 AND 1),
-    PRIMARY KEY (seq_id, tax_id, method)
+    confidence FLOAT,               -- entre 0 et 1, validation côté application
+    PRIMARY KEY (seq_id, tax_id, method),
+    FOREIGN KEY (seq_id) REFERENCES sequences(seq_id) ON DELETE CASCADE,
+    FOREIGN KEY (tax_id) REFERENCES taxonomy(tax_id) ON DELETE CASCADE
 );
 ```
 
@@ -76,13 +80,15 @@ Historique des transformations appliquées aux séquences.
 
 ```sql
 CREATE TABLE transformations (
-    transform_id SERIAL PRIMARY KEY,
-    seq_id UUID REFERENCES sequences(seq_id) ON DELETE CASCADE,
+    transform_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seq_id TEXT,
     step TEXT NOT NULL,            -- ITSx, MSA, SATIVA, TRICHE
-    parameters JSONB,
+    parameters JSON,               -- JSON simple
     tool_version TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (seq_id) REFERENCES sequences(seq_id) ON DELETE CASCADE
 );
+
 CREATE INDEX idx_transform_seq ON transformations(seq_id);
 ```
 
@@ -92,7 +98,7 @@ Gestion des jeux de données (train/test/validation).
 
 ```sql
 CREATE TABLE datasets (
-    dataset_id SERIAL PRIMARY KEY,
+    dataset_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -105,9 +111,11 @@ Lien entre séquences et jeux de données.
 
 ```sql
 CREATE TABLE dataset_sequences (
-    dataset_id INT REFERENCES datasets(dataset_id) ON DELETE CASCADE,
-    seq_id UUID REFERENCES sequences(seq_id) ON DELETE CASCADE,
-    PRIMARY KEY (dataset_id, seq_id)
+    dataset_id INTEGER,
+    seq_id TEXT,
+    PRIMARY KEY (dataset_id, seq_id),
+    FOREIGN KEY (dataset_id) REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+    FOREIGN KEY (seq_id) REFERENCES sequences(seq_id) ON DELETE CASCADE
 );
 ```
 

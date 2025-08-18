@@ -12,20 +12,20 @@ if ! command -v conda &> /dev/null; then
     exit 1
 fi
 
-# Create and activate the base environment
-echo "Creating base environment..."
-conda env create -f environment.yaml
-conda activate bio-pipeline
+# # Create and activate the base environment
+# echo "Creating base environment..."
+# conda env create -f envs/environment.yaml
+# conda activate its-pipeline
 
-echo "Base environment created and activated."
+# echo "Base environment created and activated."
 
 # Create development environment if requested
 read -p "Would you like to create a development environment? [y/N] " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Creating development environment..."
-    conda env create -f dev-environment.yaml --name bio-pipeline-dev
-    echo "Development environment created. Activate with: conda activate bio-pipeline-dev"
+    conda env create -f envs/dev-environment.yaml --name its-pipeline-dev
+    echo "Development environment created. Activate with: conda activate its-pipeline-dev"
 fi
 
 # Set up pre-commit hooks
@@ -40,5 +40,5 @@ if [ ! -f .env ]; then
 fi
 
 echo "Setup complete!"
-echo "Activate the environment with: conda activate bio-pipeline"
-echo "or for development: conda activate bio-pipeline-dev"
+echo "Activate the environment with: conda activate its-pipeline"
+echo "or for development: conda activate its-pipeline-dev"

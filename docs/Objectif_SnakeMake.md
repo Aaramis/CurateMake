@@ -80,7 +80,7 @@ Le pipeline doit garantir :
 
   * Gestion des environnements avec **Conda/Mamba**.
   * Fichiers `environment.yaml` pour chaque rule.
-* **Bases de données** : PostgreSQL pour la traçabilité.
+* **Bases de données** : SQLite.
 * **Scalabilité** : exécution locale ou cluster HPC (support SLURM).
 * **Optimisation** : parallélisme SnakeMake (`--cores`), vectorisation si applicable.
 * **Documentation & Logs** : génération automatique de rapports HTML (Snakemake `--report`).
