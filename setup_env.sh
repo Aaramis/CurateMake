@@ -14,7 +14,7 @@ fi
 
 # # Create and activate the base environment
 # echo "Creating base environment..."
-# conda env create -f envs/environment.yaml
+# conda env create -f workflow/envs/environment.yaml
 # conda activate its-pipeline
 
 # echo "Base environment created and activated."
@@ -24,7 +24,7 @@ read -p "Would you like to create a development environment? [y/N] " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Creating development environment..."
-    conda env create -f envs/dev-environment.yaml --name its-pipeline-dev
+    conda env create -f workflow/envs/dev-environment.yaml --name its-pipeline-dev
     echo "Development environment created. Activate with: conda activate its-pipeline-dev"
 fi
 

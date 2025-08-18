@@ -1,7 +1,6 @@
 # Environnements
 .env
 .venv
-env/
 venv/
 ENV/
 env.bak/
@@ -30,9 +29,10 @@ wheels/
 *.egg
 
 # Fichiers de données
-data/raw/
-data/processed/
-results/
+data/
+!data/raw/
+!data/processed/
+!resources/
 *.fasta
 *.fastq
 *.fna
@@ -103,13 +103,12 @@ site/
 *.vcf.gz
 *.vcf.gz.tbi
 
-# Fichiers de base de données PostgreSQL
-data/
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-
-# Fichiers de résultats intermédiaires
-.intermediate/
+# Fichiers de résultats
+results/
+!results/itsx/
+!results/alignments/
+!results/sativa/
+!results/augmented/
 
 # Fichiers de verrouillage
 .lock
