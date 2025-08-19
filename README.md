@@ -3,7 +3,7 @@
 
 Pipeline bioinformatique pour le traitement et l'analyse de séquences ADN.
 
-## 🏗️ Structure du projet
+## Structure du projet
 
 Cette structure suit les [meilleures pratiques recommandées par Snakemake](https://snakemake.readthedocs.io/en/stable/snakefiles/deployment.html#distribution-and-reproducibility) pour assurer la reproductibilité et la maintenabilité du workflow.
 
@@ -199,4 +199,10 @@ Optionnal
 
 ```bash
 mkdocs gh-deploy
+```
+
+### Run
+
+```bash
+snakemake --cores 4 --use-conda
 ```

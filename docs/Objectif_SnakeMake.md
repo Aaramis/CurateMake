@@ -27,8 +27,6 @@ Le pipeline doit garantir :
 
 * **Tâches** :
 
-  * Télécharger la version la plus récente de chaque base.
-  * Convertir vers un format tabulaire standardisé (CSV) et/ou FASTA enrichi.
   * Normaliser les métadonnées (taxonomie, séquence, identifiants, source).
   * Assigner des **ID uniques globaux** (UUID ou hash stable).
   * Vérifier l’intégrité et la complétude des données.
