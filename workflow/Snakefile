@@ -1,0 +1,94 @@
+# workflow/Snakefile
+"""
+Pipeline bioinformatique professionnel avec gestion SQLite intégrée.
+Traitement de bases de données de séquences (UNITE, BOLD, PLANiTS, etc.)
+avec traçabilité complète et validation des données.
+"""
+
+import os
+from datetime import datetime
+from pathlib import Path
+
+# Configuration
+configfile: "config/config.yaml"
+
+# Variables globales
+DATABASES = list(config["databases"].keys())
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+# Validation de la configuration
+if not DATABASES:
+    raise ValueError("No databases defined in configuration")
+
+# Inclusion des règles modulaires
+include: "rules/database.smk"
+include: "rules/format_databases.smk"
+# include: "rules/itsx.smk"
+# include: "rules/msa.smk"
+# include: "rules/sativa.smk"
+
+# Règle par défaut
+rule all:
+    input:
+        # Base de données initialisée
+        # "data/pipeline.db",
+        os.path.join(config["database"]["path"], config["database"]["name"]), # Database
+        # Données formatées
+        # expand("data/processed/{database}_formatted_report.json", database=DATABASES),
+        expand("data/processed/formatting_summary.json", database=DATABASES), # Rapport de formatage des bases
+        # expand("data/processed/{database}_formatted.fasta", database=DATABASES),
+        # Les fichiers d'entrée seront spécifiés ici
+        # Exemple :
+        # "data/processed/unite_parsed.fasta"
+
+# Règle de nettoyage
+rule clean:
+    """Supprime les fichiers temporaires et optionnellement les résultats"""
+    shell:
+        """
+        rm -rf data/processed/
+        echo "Nettoyage terminé"
+        """
+        # rm -rf .snakemake/
+        # rm -rf temp/
+
+rule clean_all:
+    """Supprime tout incluant la base de données (ATTENTION!)."""
+    shell:
+        """
+        echo "ATTENTION: Suppression complète incluant la base de données"
+        read -p "Êtes-vous sûr? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf data/processed/
+            rm -rf data/db/
+            rm -rf data/validation/
+            rm -rf results/
+            rm -rf logs/
+            echo "Nettoyage complet terminé"
+        else
+            echo "Nettoyage annulé"
+        fi
+        """
+            # rm -rf .snakemake/ 
+
+# Règle de validation
+rule validate:
+    """Valide la configuration et les dépendances"""
+    log:
+        "logs/validation.log"
+    script:
+        "scripts/validate_setup.py"
+
+# Pipeline minimal - Base de données seulement
+rule database_only:
+    """Initialise seulement la base de données."""
+    input:
+        "data/pipeline.db",
+        # "data/database_creation_report.json"
+
+# # Point d'entrée pour le téléchargement seul
+# rule download_only:
+#     input:
+#         "data/raw/download_summary.json"

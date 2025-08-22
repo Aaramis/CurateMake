@@ -5,6 +5,7 @@ Ce document explique comment exécuter le pipeline bioinformatique, configurer l
 ## Table des matières
 
 - [Démarrage rapide](#démarrage-rapide)
+- [Téléchargement des bases de données](#téléchargement-des-bases-de-données)
 - [Configuration](#configuration)
 - [Exécution du pipeline](#exécution-du-pipeline)
 - [Résultats](#résultats)
@@ -25,6 +26,36 @@ cd /chemin/vers/bio-pipeline
 # Copier le fichier de configuration par défaut
 cp config/config.default.yaml config/config.yaml
 ```
+
+## Téléchargement des bases de données
+
+### Bases de données disponibles
+
+Le pipeline utilise plusieurs bases de données qui doivent être téléchargées avant la première exécution :
+
+1. **UNITE** 
+2. **BOLD**
+3. **PLANiTS** 
+4. **CALeDNA** 
+
+### Téléchargement manuel
+
+Nécessaire, vous devez télécharger manuellement les bases de données :
+
+1. **UNITE** : Téléchargez depuis [le site officiel](https://unite.ut.ee/repository.php)
+2. **BOLD** : Utilisez l'[API BOLD](http://www.boldsystems.org/index.php/API_Public/combined)
+3. **PLANiTS** : Consultez le [dépôt GitHub](https://github.com/apellu/PLANiTS)
+4. **CALeDNA** : Voir le [dépôt CALeDNA](https://github.com/caledna/caledna)
+
+Placez les fichiers téléchargés dans le répertoire approprié sous `data/raw/` et mettez à jour le fichier de configuration.
+
+
+#### UNITE
+
+Rendez-vous sur le site officiel de [UNITE](https://unite.ut.ee/repository.php) et téléchargez la base de données la plus récente.
+Vous devriez obtenir un fichier .fasta.gz
+
+
 
 ### 2. Exécution complète
 

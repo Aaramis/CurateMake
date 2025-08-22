@@ -113,4 +113,9 @@ results/
 # Fichiers de verrouillage
 .lock
 *.lock
+
+# snakemake
 .snakemake
+
+# tmp
+db_schema*

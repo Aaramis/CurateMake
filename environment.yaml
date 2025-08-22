@@ -38,10 +38,14 @@ dependencies:
   - psycopg2
   - sqlalchemy
   - alembic
+  - sqlite
 
   # Workflow
   - snakemake>=7.0
   - graphviz
+  - pygraphviz
+  - pandas-stubs
+  - networkx
 
   # Documentation
   - mkdocs
