@@ -19,9 +19,10 @@ databases:
   #   path: "data/raw/bold/bold_sequences.fasta"
   #   version: "latest"
   
-  # planits:
-  #   path: "data/raw/planits/planits_sequences.fasta"
-  #   version: "latest"
+  planits:
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANITS_small.zip"
+    path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANiTS_29-03-2020.zip"
+    # version: "latest"
   
   # caledna:
   #   path: "data/raw/caledna/caledna_sequences.fasta"
