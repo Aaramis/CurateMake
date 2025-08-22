@@ -8,12 +8,9 @@ Handles schema creation, data insertion, and integrity validation.
 """
 
 import sqlite3
-import json
-import hashlib
 import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Any
 from contextlib import contextmanager
 import logging
 
@@ -476,25 +473,25 @@ class DatabaseManager:
         Cette méthode doit TOUJOURS être appelée après la fin des insertions en masse.
         """
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            logger.info("Restoring safe database settings...")
+                logger.info("Restoring safe database settings...")
 
-            # Réactiver la vérification des clés étrangères.
-            cursor.execute("PRAGMA foreign_keys = ON;")
-            
-            # Revenir au mode de journalisation par défaut (Write-Ahead Logging),
-            # qui est robuste et performant pour un usage normal.
-            cursor.execute("PRAGMA journal_mode = WAL;")
+                # Réactiver la vérification des clés étrangères.
+                cursor.execute("PRAGMA foreign_keys = ON;")
+                
+                # Revenir au mode de journalisation par défaut (Write-Ahead Logging),
+                # qui est robuste et performant pour un usage normal.
+                cursor.execute("PRAGMA journal_mode = WAL;")
 
-            # Rétablir la synchronisation complète pour garantir la durabilité des données.
-            cursor.execute("PRAGMA synchronous = FULL;")
-            
-            # Optionnel : lancer une vérification de l'intégrité des clés étrangères
-            # integrity_check = cursor.execute("PRAGMA foreign_key_check;").fetchall()
-            # if integrity_check:
-            #     logger.error(f"Foreign key integrity errors found: {integrity_check}")
+                # Rétablir la synchronisation complète pour garantir la durabilité des données.
+                cursor.execute("PRAGMA synchronous = FULL;")
+                
+                # Optionnel : lancer une vérification de l'intégrité des clés étrangères
+                # integrity_check = cursor.execute("PRAGMA foreign_key_check;").fetchall()
+                # if integrity_check:
+                #     logger.error(f"Foreign key integrity errors found: {integrity_check}")
 
         except Exception as e:
             logger.warning(f"Could not restore safe database settings: {e}")

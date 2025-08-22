@@ -9,6 +9,8 @@ import sys
 import time
 import logging
 import sqlite3
+import json
+from datetime import datetime
 from typing import List, Tuple
 
 # Configuration du logging
@@ -132,22 +134,19 @@ class TaxonomyDeduplicator:
                 # 2. Créer une nouvelle table vide avec la même structure
                 logger.info("Création de la nouvelle table 'seq_tax_new'...")
                 cursor.execute("DROP TABLE IF EXISTS seq_tax_new")
-                # Astuce pour récupérer la structure exacte, y compris les types, PK, etc.
                 create_sql = cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='seq_tax'").fetchone()[0]
                 cursor.execute(create_sql.replace("seq_tax", "seq_tax_new"))
 
                 # 3. Lire l'ancienne table et insérer dans la nouvelle par lots
                 logger.info("Migration des données vers la nouvelle table...")
                 
-                # Utilisation d'un curseur sans buffer pour ne pas tout charger en mémoire
                 read_cursor = conn.cursor()
                 read_cursor.execute("SELECT seq_id, tax_id FROM seq_tax")
                 
-                batch_size = 100000  # Insérer par lots de 100,000 pour une performance maximale
+                batch_size = 100000
                 batch = []
                 
                 for seq_id, tax_id in read_cursor:
-                    # On vérifie si le tax_id doit être remplacé
                     new_tax_id = id_remap.get(tax_id, tax_id)
                     if new_tax_id != tax_id:
                         total_sequences_updated += 1
@@ -155,11 +154,9 @@ class TaxonomyDeduplicator:
                     batch.append((seq_id, new_tax_id))
                     
                     if len(batch) >= batch_size:
-                        # Insertion du lot dans la nouvelle table
                         cursor.executemany("INSERT INTO seq_tax_new (seq_id, tax_id) VALUES (?, ?)", batch)
                         batch = []
                 
-                # Insérer le dernier lot s'il n'est pas vide
                 if batch:
                     cursor.executemany("INSERT INTO seq_tax_new (seq_id, tax_id) VALUES (?, ?)", batch)
 
@@ -173,10 +170,22 @@ class TaxonomyDeduplicator:
                 cursor.execute("CREATE INDEX idx_seq_tax_tax_id ON seq_tax(tax_id)")
                 
                 # 6. Supprimer les taxonomies dupliquées de la table `taxonomy`
-                logger.info(f"Suppression de {len(all_ids_to_remove)} taxonomies obsolètes...")
-                placeholders = ', '.join(['?'] * len(all_ids_to_remove))
-                delete_query = f"DELETE FROM taxonomy WHERE tax_id IN ({placeholders})"
-                cursor.execute(delete_query, tuple(all_ids_to_remove))
+                logger.info(f"Suppression de {len(all_ids_to_remove)} taxonomies obsolètes en plusieurs lots...")
+
+                delete_batch_size = 10000  # Une taille de lot sûre, bien en dessous de la limite de SQLite
+
+                for i in range(0, len(all_ids_to_remove), delete_batch_size):
+                    # On prend une "tranche" de la liste des IDs à supprimer
+                    batch_to_delete = all_ids_to_remove[i:i + delete_batch_size]
+                    
+                    # On crée les placeholders uniquement pour ce lot
+                    placeholders = ', '.join(['?'] * len(batch_to_delete))
+                    delete_query = f"DELETE FROM taxonomy WHERE tax_id IN ({placeholders})"
+                    
+                    # On exécute la suppression pour le lot actuel
+                    cursor.execute(delete_query, tuple(batch_to_delete))
+
+                logger.info("Toutes les taxonomies obsolètes ont été supprimées.")
                 
                 # Validation de toutes les opérations
                 conn.commit()
@@ -187,7 +196,7 @@ class TaxonomyDeduplicator:
                 logger.error(f"Erreur lors de la fusion : {e}", exc_info=True)
                 raise
 
-        self.stats['sequences_updated'] = total_sequences_updated
+            self.stats['sequences_updated'] = total_sequences_updated
     
     def verify_integrity(self) -> bool:
         """Vérifie l'intégrité après la déduplication."""
@@ -233,6 +242,7 @@ class TaxonomyDeduplicator:
         """Processus complet de déduplication."""
         start_time = time.time()
         logger.info("Démarrage de la déduplication taxonomique")
+        self.stats['final_unique_tax_in_seq'] = 0
         
         try:
             with self.get_connection() as conn:
@@ -259,7 +269,9 @@ class TaxonomyDeduplicator:
             # 4. Mettre à jour les stats finales
             with self.get_connection() as conn:
                 self.stats['final_taxonomy_count'] = conn.execute("SELECT COUNT(*) FROM taxonomy").fetchone()[0]
-            
+                self.stats['final_unique_tax_in_seq'] = conn.execute("SELECT COUNT(DISTINCT tax_id) FROM seq_tax").fetchone()[0]
+                logger.info(f"Nombre final de tax_id uniques dans seq_tax : {self.stats['final_unique_tax_in_seq']}")
+
             # 5. Optimiser l'espace disque
             self.optimize_database()
             
@@ -273,12 +285,49 @@ class TaxonomyDeduplicator:
             logger.info(f"Supprimé {self.stats['duplicates_removed']} doublons, "
                        f"mis à jour {self.stats['sequences_updated']} relations.")
 
+def write_report(stats: dict, path: str, db_path: str):
+    """
+    Écrit un rapport JSON récapitulant la déduplication.
+
+    Parameters
+    ----------
+    stats : dict
+        Les statistiques retournées par TaxonomyDeduplicator.
+    path : str
+        Chemin du fichier de sortie.
+    db_path : str
+        Chemin de la base de données traitée (pour le contexte).
+    """
+    report = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "database": os.path.abspath(db_path),
+        "summary": {
+            "initial_taxonomy_count": stats.get("initial_taxonomy_count"),
+            "final_taxonomy_count":   stats.get("final_taxonomy_count"),
+            "final_unique_tax_id_in_seq_tax":   stats.get("final_unique_tax_in_seq"),
+            "duplicate_groups":       stats.get("duplicate_groups"),
+            "duplicates_removed":     stats.get("duplicates_removed"),
+            "sequences_updated":      stats.get("sequences_updated"),
+            "processing_time_sec":    round(stats.get("processing_time", 0), 3),
+        }
+    }
+
+    # On crée le dossier parent si nécessaire
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2, ensure_ascii=False)
+
+    logger.info(f"Rapport de déduplication écrit dans: {path}")
+
+
+
 
 def main():
     """Point d'entrée principal."""
     try:
         if 'snakemake' in globals():
-            db_path = snakemake.input.db
+            db_path = snakemake.params.db
             output_report = snakemake.output.report
         else:
             logger.warning("Mode test - utiliser avec Snakemake en production")
@@ -300,11 +349,14 @@ def main():
         print(f"{'='*60}")
         print(f"Taxonomies initiales: {deduplicator.stats['initial_taxonomy_count']}")
         print(f"Taxonomies finales:   {deduplicator.stats['final_taxonomy_count']}")
+        print(f"Taxonomies uniques dans seq_tax: {deduplicator.stats['final_unique_tax_in_seq']}")
         print(f"Groupes de doublons:  {deduplicator.stats['duplicate_groups']}")
         print(f"Doublons supprimés:   {deduplicator.stats['duplicates_removed']}")
         print(f"Relations mises à jour: {deduplicator.stats['sequences_updated']}")
         print(f"Temps de traitement:  {deduplicator.stats['processing_time']:.2f}s")
         print(f"{'='*60}")
+    
+        write_report(deduplicator.stats, output_report, db_path)
         
     except Exception as e:
         logger.critical(f"Erreur fatale: {e}", exc_info=True)
