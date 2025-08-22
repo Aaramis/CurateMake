@@ -3,10 +3,11 @@
 # Règle de déduplication des taxonomies
 rule deduplicate_taxonomies:
     input:
-        db = os.path.join(config["database"]["path"], config["database"]["name"]),
         formatted = expand("data/processed/{database}_formatted_report.json", database=DATABASES),
     output:
         report = "data/processed/taxonomy_deduplication_report.json"
+    params:
+        db = os.path.join(config["database"]["path"], config["database"]["name"]),
     log:
         "logs/format_databases/taxonomy_deduplication.log"
     conda:
