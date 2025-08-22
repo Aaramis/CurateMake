@@ -1,4 +1,3 @@
-# workflow/envs/database.yaml
 name: database
 channels:
   - conda-forge
@@ -10,34 +9,11 @@ dependencies:
   - python=3.10
   - pip
 
-  # Base de données et ORM
+  # Base de données
   - sqlite=3.45
 
-  # Packages scientifiques
+  # Packages essentiels
   - numpy=1.24
   - pandas=2.0
-  - scipy=1.10
-
-  # Bioinformatique
-  - biopython=1.81
-  - biom-format=2.1
-
-  # Utilitaires et parsing
   - pyyaml=6.0
-  - jsonschema=4.17
   - tqdm=4.65
-
-  # Visualisation et rapports
-  - matplotlib=3.7
-  - seaborn=0.12
-  - plotly=5.14
-  - jinja2=3.1
-
-  # Validation et qualité
-  - pytest=7.3
-  - black=23.3
-
-  # Packages via pip
-  - pip:
-    - hashlib
-    - uuid

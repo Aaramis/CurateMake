@@ -44,7 +44,7 @@ class SequenceRecord:
     genus: Optional[str] = None
     species: Optional[str] = None
 
-class OptimizedUNITEParser:
+class UNITEParser:
     """Parser UNITE."""
     
     def __init__(self, db_manager, config_validation: Dict):
@@ -463,7 +463,7 @@ def main():
         db_manager.create_schema()
         
         # Parser
-        parser = OptimizedUNITEParser(db_manager, config_validation)
+        parser = UNITEParser(db_manager, config_validation)
         
         # Détection de version
         version_match = parser.version_pattern.search(Path(input_file).name)
@@ -524,44 +524,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# # Optimisations supplémentaires pour db_manager.py
-# """
-# Ajoutez ces méthodes à votre classe DatabaseManager pour des performances maximales :
-# """
-
-
-# def create_bulk_insert_indices(self):
-#     """Créer des indices optimaux pour les insertions en masse."""
-#     with self.get_connection() as conn:
-#         cursor = conn.cursor()
-        
-#         # Indices composites optimisés
-#         cursor.execute("""
-#             CREATE INDEX IF NOT EXISTS idx_taxonomy_composite 
-#             ON taxonomy(kingdom, phylum, class_, order_, family, genus, species)
-#         """)
-        
-#         cursor.execute("""
-#             CREATE INDEX IF NOT EXISTS idx_sequences_source_orig 
-#             ON sequences(source_id, original_id)
-#         """)
-        
-#         # Index partiel pour les séquences valides seulement
-#         cursor.execute("""
-#             CREATE INDEX IF NOT EXISTS idx_sequences_valid_length 
-#             ON sequences(length) WHERE length >= 50
-#         """)
-
-# def execute_bulk_insert_with_conflict_resolution(self, table: str, columns: List[str], 
-#                                                 data: List[Tuple], conflict_strategy: str = "IGNORE"):
-#     """Insertion en masse optimisée avec gestion de conflits."""
-#     placeholders = ','.join(['?' for _ in columns])
-#     columns_str = ','.join(columns)
-    
-#     sql = f"INSERT OR {conflict_strategy} INTO {table} ({columns_str}) VALUES ({placeholders})"
-    
-#     with self.get_connection() as conn:
-#         cursor = conn.cursor()
-#         cursor.executemany(sql, data)
-#         return cursor.rowcount
