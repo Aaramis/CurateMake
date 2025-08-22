@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Database Manager for Bioinformatics Pipeline
+Database Manager for Bioinformatics Pipeline - Simplified Version
 workflow/scripts/utils/db_manager.py
 
-Professional-grade SQLite database management for sequence data pipeline.
+Simplified SQLite database management for ITS sequence data pipeline.
 Handles schema creation, data insertion, and integrity validation.
 """
 
@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    """Professional database manager for bioinformatics sequence data."""
+    """Simplified database manager for ITS sequence data."""
     
     def __init__(self, db_path: str):
         """Initialize database manager with path to SQLite database."""
@@ -53,155 +53,82 @@ class DatabaseManager:
                 conn.close()
     
     def create_schema(self) -> None:
-        """Create complete database schema with proper constraints and indices."""
+        """Create simplified database schema with proper constraints and indices."""
         
         schema_sql = """
-        -- Sources table: metadata for different data sources
+        -- Sources table: simplified metadata for different data sources
         CREATE TABLE IF NOT EXISTS sources (
             source_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            version TEXT NOT NULL,
-            url TEXT,
-            description TEXT,
-            date_download TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             file_path TEXT,
-            file_size INTEGER,
-            record_count INTEGER,
-            UNIQUE(name, version)
+            date_download TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
-        -- Sequences table: core sequence data with deduplication
+        -- Sequences table: core sequence data with hierarchical relationships
         CREATE TABLE IF NOT EXISTS sequences (
-            seq_id TEXT PRIMARY KEY,
+            seq_id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_id INTEGER NOT NULL,
             original_id TEXT NOT NULL,
             sequence TEXT NOT NULL,
             length INTEGER NOT NULL,
-            md5 CHAR(32) NOT NULL UNIQUE,
-            gc_content REAL,
-            status TEXT NOT NULL DEFAULT 'raw',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            percentage_n REAL DEFAULT 0.0,
+            barcode TEXT DEFAULT 'ITS',
+            barcode_status TEXT DEFAULT 'Pending',
+            parent_seq_id TEXT,
             FOREIGN KEY (source_id) REFERENCES sources(source_id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_seq_id) REFERENCES sequences(seq_id) ON DELETE SET NULL,
             CHECK (length > 0),
-            CHECK (gc_content IS NULL OR (gc_content >= 0 AND gc_content <= 1)),
-            CHECK (status IN ('raw', 'itsx', 'aligned', 'augmented', 'filtered'))
+            CHECK (percentage_n >= 0 AND percentage_n <= 100),
+            CHECK (barcode_status IN ('Pending', 'Duplicate', 'ITSx')),
+            CHECK (barcode IN ('ITS', 'ITS1', 'ITS2', 'LSU', 'SSU', '5.8S'))
         );
         
-        -- Taxonomy table: normalized taxonomic hierarchy
+        -- Taxonomy table: hierarchical taxonomic classification
         CREATE TABLE IF NOT EXISTS taxonomy (
             tax_id INTEGER PRIMARY KEY AUTOINCREMENT,
             kingdom TEXT,
             phylum TEXT,
-            class TEXT,
-            "order" TEXT,
+            class_ TEXT,
+            order_ TEXT,
             family TEXT,
             genus TEXT,
             species TEXT,
-            scientific_name TEXT UNIQUE NOT NULL,
-            ncbi_taxid INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            parent_tax_id INTEGER,
+            FOREIGN KEY (parent_tax_id) REFERENCES taxonomy(tax_id) ON DELETE SET NULL
         );
         
-        -- Sequence-taxonomy junction table
-        CREATE TABLE IF NOT EXISTS sequence_taxonomy (
+        -- Sequence-taxonomy junction table (simplified)
+        CREATE TABLE IF NOT EXISTS seq_tax (
             seq_id TEXT NOT NULL,
             tax_id INTEGER NOT NULL,
-            method TEXT NOT NULL,
-            confidence REAL,
-            is_primary BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (seq_id, tax_id, method),
+            backbone TEXT DEFAULT 'Raw',
+            status TEXT DEFAULT 'Pending',
+            PRIMARY KEY (seq_id, tax_id, backbone),
             FOREIGN KEY (seq_id) REFERENCES sequences(seq_id) ON DELETE CASCADE,
             FOREIGN KEY (tax_id) REFERENCES taxonomy(tax_id) ON DELETE CASCADE,
-            CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
-        );
-        
-        -- Transformations log: complete audit trail
-        CREATE TABLE IF NOT EXISTS transformations (
-            transform_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seq_id TEXT NOT NULL,
-            step TEXT NOT NULL,
-            tool_name TEXT NOT NULL,
-            tool_version TEXT,
-            parameters TEXT, -- JSON string
-            input_file TEXT,
-            output_file TEXT,
-            success BOOLEAN NOT NULL,
-            error_message TEXT,
-            execution_time REAL, -- seconds
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (seq_id) REFERENCES sequences(seq_id) ON DELETE CASCADE
-        );
-        
-        -- Datasets for ML model training
-        CREATE TABLE IF NOT EXISTS datasets (
-            dataset_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            description TEXT,
-            dataset_type TEXT DEFAULT 'general',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            created_by TEXT,
-            CHECK (dataset_type IN ('train', 'test', 'validation', 'general'))
-        );
-        
-        -- Dataset-sequence relationships
-        CREATE TABLE IF NOT EXISTS dataset_sequences (
-            dataset_id INTEGER NOT NULL,
-            seq_id TEXT NOT NULL,
-            split_type TEXT DEFAULT 'general',
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (dataset_id, seq_id),
-            FOREIGN KEY (dataset_id) REFERENCES datasets(dataset_id) ON DELETE CASCADE,
-            FOREIGN KEY (seq_id) REFERENCES sequences(seq_id) ON DELETE CASCADE,
-            CHECK (split_type IN ('train', 'test', 'validation', 'general'))
-        );
-        
-        -- Quality metrics table
-        CREATE TABLE IF NOT EXISTS sequence_quality (
-            seq_id TEXT PRIMARY KEY,
-            n_content REAL,
-            ambiguous_bases INTEGER,
-            homopolymer_max INTEGER,
-            entropy REAL,
-            quality_score REAL,
-            is_valid BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (seq_id) REFERENCES sequences(seq_id) ON DELETE CASCADE,
-            CHECK (quality_score IS NULL OR (quality_score >= 0 AND quality_score <= 1))
+            CHECK (status IN ('Pending', 'Check', 'Correct', 'Failed'))
+            CHECK (backbone IN ('Raw', 'CoL', 'GBIF'))
         );
         """
         
         indices_sql = """
         -- Performance indices
-        CREATE INDEX IF NOT EXISTS idx_sequences_md5 ON sequences(md5);
         CREATE INDEX IF NOT EXISTS idx_sequences_source ON sequences(source_id);
-        CREATE INDEX IF NOT EXISTS idx_sequences_status ON sequences(status);
+        CREATE INDEX IF NOT EXISTS idx_sequences_parent ON sequences(parent_seq_id);
+        CREATE INDEX IF NOT EXISTS idx_sequences_barcode ON sequences(barcode);
         CREATE INDEX IF NOT EXISTS idx_sequences_length ON sequences(length);
         
-        CREATE INDEX IF NOT EXISTS idx_taxonomy_scientific_name ON taxonomy(scientific_name);
+        CREATE INDEX IF NOT EXISTS idx_taxonomy_parent ON taxonomy(parent_tax_id);
         CREATE INDEX IF NOT EXISTS idx_taxonomy_genus_species ON taxonomy(genus, species);
         
-        CREATE INDEX IF NOT EXISTS idx_sequence_taxonomy_seq ON sequence_taxonomy(seq_id);
-        CREATE INDEX IF NOT EXISTS idx_sequence_taxonomy_tax ON sequence_taxonomy(tax_id);
-        CREATE INDEX IF NOT EXISTS idx_sequence_taxonomy_primary ON sequence_taxonomy(is_primary) WHERE is_primary = TRUE;
-        
-        CREATE INDEX IF NOT EXISTS idx_transformations_seq ON transformations(seq_id);
-        CREATE INDEX IF NOT EXISTS idx_transformations_step ON transformations(step);
-        CREATE INDEX IF NOT EXISTS idx_transformations_success ON transformations(success);
-        
-        CREATE INDEX IF NOT EXISTS idx_dataset_sequences_dataset ON dataset_sequences(dataset_id);
-        CREATE INDEX IF NOT EXISTS idx_dataset_sequences_seq ON dataset_sequences(seq_id);
+        CREATE INDEX IF NOT EXISTS idx_seq_tax_seq ON seq_tax(seq_id);
+        CREATE INDEX IF NOT EXISTS idx_seq_tax_tax ON seq_tax(tax_id);
+        CREATE INDEX IF NOT EXISTS idx_seq_tax_backbone ON seq_tax(backbone);
+        CREATE INDEX IF NOT EXISTS idx_seq_tax_status ON seq_tax(status);
         """
         
         triggers_sql = """
         -- Triggers for data integrity and automation
-        CREATE TRIGGER IF NOT EXISTS update_sequence_timestamp 
-        AFTER UPDATE ON sequences
-        BEGIN
-            UPDATE sequences SET updated_at = CURRENT_TIMESTAMP WHERE seq_id = NEW.seq_id;
-        END;
-        
         CREATE TRIGGER IF NOT EXISTS validate_sequence_insert
         BEFORE INSERT ON sequences
         FOR EACH ROW
@@ -221,85 +148,93 @@ class DatabaseManager:
                 conn.executescript(schema_sql)
                 conn.executescript(indices_sql)
                 conn.executescript(triggers_sql)
-                logger.info("Database schema created successfully")
+                logger.info("Simplified database schema created successfully")
             except Exception as e:
                 logger.error(f"Failed to create schema: {e}")
                 raise
     
-    def add_source(self, name: str, version: str, url: str = None, 
-                   description: str = None, file_path: str = None) -> int:
+    def add_source(self, name: str, file_path: str = None) -> int:
         """Add or update a data source."""
         
         with self.get_connection() as conn:
             try:
                 cursor = conn.execute("""
                     INSERT OR REPLACE INTO sources 
-                    (name, version, url, description, file_path, date_download)
-                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (name, version, url, description, file_path))
+                    (name, file_path, date_download)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                """, (name, file_path))
                 
                 source_id = cursor.lastrowid
-                logger.info(f"Added source: {name} v{version} (ID: {source_id})")
+                logger.info(f"Added source: {name} (ID: {source_id})")
                 return source_id
                 
             except Exception as e:
                 logger.error(f"Failed to add source {name}: {e}")
                 raise
     
-    def add_taxonomy(self, scientific_name: str, kingdom: str = None,
-                     phylum: str = None, class_: str = None, order: str = None,
-                     family: str = None, genus: str = None, species: str = None,
-                     ncbi_taxid: int = None) -> int:
-        """Add taxonomy record with deduplication."""
+    def add_taxonomy(self, kingdom: str = None, phylum: str = None, 
+                     class_: str = None, order_: str = None, family: str = None,
+                     genus: str = None, species: str = None, 
+                     parent_tax_id: int = None) -> int:
+        """Add taxonomy record with hierarchical support."""
         
-        logger.info(f"Adding taxonomy: {scientific_name}")
-
         with self.get_connection() as conn:
             try:
-                # Check if taxonomy already exists
-                cursor = conn.execute(
-                    "SELECT tax_id FROM taxonomy WHERE scientific_name = ?",
-                    (scientific_name,)
-                )
-                existing = cursor.fetchone()
+                # Check if taxonomy already exists (based on full lineage)
+                cursor = conn.execute("""
+                    SELECT tax_id FROM taxonomy 
+                    WHERE kingdom = ? AND phylum = ? AND class_ = ? 
+                    AND order_ = ? AND family = ? AND genus = ? AND species = ?
+                """, (kingdom, phylum, class_, order_, family, genus, species))
                 
+                existing = cursor.fetchone()
                 if existing:
                     return existing['tax_id']
                 
                 # Insert new taxonomy
                 cursor = conn.execute("""
                     INSERT INTO taxonomy 
-                    (kingdom, phylum, class, "order", family, genus, species, 
-                     scientific_name, ncbi_taxid)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (kingdom, phylum, class_, order, family, genus, species,
-                      scientific_name, ncbi_taxid))
+                    (kingdom, phylum, class_, order_, family, genus, species, parent_tax_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (kingdom, phylum, class_, order_, family, genus, species, parent_tax_id))
                 
                 tax_id = cursor.lastrowid
-                logger.debug(f"Added taxonomy: {scientific_name} (ID: {tax_id})")
+                logger.debug(f"Added taxonomy: {genus} {species} (ID: {tax_id})")
                 return tax_id
                 
             except Exception as e:
-                logger.error(f"Failed to add taxonomy {scientific_name}: {e}")
+                logger.error(f"Failed to add taxonomy: {e}")
+                raise
+    
+    def add_seq_tax(self, seq_id: str, tax_id: int, backbone: str,
+                    status: str = 'Pending') -> None:
+        """Link sequence to taxonomy with backbone information."""
+        
+        with self.get_connection() as conn:
+            try:
+                conn.execute("""
+                    INSERT OR REPLACE INTO seq_tax
+                    (seq_id, tax_id, backbone, status)
+                    VALUES (?, ?, ?, ?)
+                """, (seq_id, tax_id, backbone, status))
+                
+                logger.debug(f"Linked sequence {seq_id} to taxonomy {tax_id} via {backbone}")
+                
+            except Exception as e:
+                logger.error(f"Failed to link sequence to taxonomy: {e}")
                 raise
     
     @staticmethod
-    def calculate_md5(sequence: str) -> str:
-        """Calculate MD5 hash for sequence deduplication."""
-        return hashlib.md5(sequence.upper().encode()).hexdigest()
-    
-    @staticmethod
-    def calculate_gc_content(sequence: str) -> float:
-        """Calculate GC content percentage."""
-        sequence = sequence.upper().replace('-', '')
+    def calculate_percentage_n(sequence: str) -> float:
+        """Calculate percentage of N characters in sequence."""
         if not sequence:
             return 0.0
-        gc_count = sequence.count('G') + sequence.count('C')
-        return gc_count / len(sequence)
+        n_count = sequence.upper().count('N')
+        return (n_count / len(sequence)) * 100
     
     def add_sequence(self, source_id: int, original_id: str, sequence: str,
-                     taxonomy_info: Dict[str, Any] = None) -> str:
-        """Add sequence with automatic deduplication and quality metrics."""
+                     barcode: str = None, parent_seq_id: str = None, barcode_status: str = 'Pending') -> str:
+        """Add sequence with automatic quality metrics calculation."""
         
         # Generate unique sequence ID
         seq_id = str(uuid.uuid4())
@@ -307,108 +242,144 @@ class DatabaseManager:
         # Clean and validate sequence
         clean_sequence = sequence.upper().strip()
         sequence_length = len(clean_sequence.replace('-', ''))
-        md5_hash = self.calculate_md5(clean_sequence)
-        gc_content = self.calculate_gc_content(clean_sequence)
+        percentage_n = self.calculate_percentage_n(clean_sequence)
         
         with self.get_connection() as conn:
             try:
-                # Check for existing sequence by MD5
-                cursor = conn.execute(
-                    "SELECT seq_id FROM sequences WHERE md5 = ?",
-                    (md5_hash,)
-                )
-                existing = cursor.fetchone()
-                
-                if existing:
-                    logger.debug(f"Sequence already exists: {existing['seq_id']}")
-                    return existing['seq_id']
-                
                 # Insert new sequence
                 conn.execute("""
                     INSERT INTO sequences 
-                    (seq_id, source_id, original_id, sequence, length, md5, gc_content)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (seq_id, source_id, original_id, sequence, length, 
+                     percentage_n, barcode, barcode_status, parent_seq_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (seq_id, source_id, original_id, clean_sequence, 
-                      sequence_length, md5_hash, gc_content))
-                
-                # Add taxonomy if provided
-                if taxonomy_info:
-                    tax_id = self.add_taxonomy(**taxonomy_info)
-                    self.link_sequence_taxonomy(seq_id, tax_id, method="original")
+                      sequence_length, percentage_n, barcode, barcode_status, parent_seq_id))
                 
                 logger.debug(f"Added sequence: {original_id} -> {seq_id}")
                 return seq_id
                 
-            except sqlite3.IntegrityError as e:
-                if "UNIQUE constraint failed" in str(e):
-                    logger.warning(f"Duplicate sequence detected: {original_id}")
-                    # Return existing sequence ID
-                    cursor = conn.execute(
-                        "SELECT seq_id FROM sequences WHERE md5 = ?",
-                        (md5_hash,)
-                    )
-                    return cursor.fetchone()['seq_id']
-                raise
             except Exception as e:
                 logger.error(f"Failed to add sequence {original_id}: {e}")
                 raise
     
-    def link_sequence_taxonomy(self, seq_id: str, tax_id: int, method: str,
-                              confidence: float = None, is_primary: bool = False) -> None:
-        """Link sequence to taxonomy with method and confidence."""
+    def link_sequence_taxonomy(self, seq_id: str, tax_id: int, backbone: str,
+                              status: str = 'pending', confidence: float = None) -> None:
+        """Link sequence to taxonomy with backbone information."""
         
         with self.get_connection() as conn:
             try:
                 conn.execute("""
-                    INSERT OR REPLACE INTO sequence_taxonomy
-                    (seq_id, tax_id, method, confidence, is_primary)
+                    INSERT OR REPLACE INTO seq_tax
+                    (seq_id, tax_id, backbone, status, confidence)
                     VALUES (?, ?, ?, ?, ?)
-                """, (seq_id, tax_id, method, confidence, is_primary))
+                """, (seq_id, tax_id, backbone, status, confidence))
                 
-                logger.debug(f"Linked sequence {seq_id} to taxonomy {tax_id}")
+                logger.debug(f"Linked sequence {seq_id} to taxonomy {tax_id} via {backbone}")
                 
             except Exception as e:
                 logger.error(f"Failed to link sequence to taxonomy: {e}")
                 raise
     
-    def log_transformation(self, seq_id: str, step: str, tool_name: str,
-                          tool_version: str = None, parameters: Dict = None,
-                          success: bool = True, error_message: str = None,
-                          execution_time: float = None) -> None:
-        """Log a transformation step for audit trail."""
-        
-        params_json = json.dumps(parameters) if parameters else None
+    def get_sequence_hierarchy(self, seq_id: str) -> List[Dict]:
+        """Get the complete hierarchy for a sequence (parent -> children)."""
         
         with self.get_connection() as conn:
-            try:
-                conn.execute("""
-                    INSERT INTO transformations
-                    (seq_id, step, tool_name, tool_version, parameters,
-                     success, error_message, execution_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (seq_id, step, tool_name, tool_version, params_json,
-                      success, error_message, execution_time))
-                
-                logger.debug(f"Logged transformation: {step} for {seq_id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to log transformation: {e}")
-                raise
+            # Get all sequences in the hierarchy
+            cursor = conn.execute("""
+                WITH RECURSIVE seq_hierarchy AS (
+                    -- Base case: find the root sequence
+                    SELECT seq_id, original_id, parent_seq_id, 0 as level
+                    FROM sequences 
+                    WHERE seq_id = ? OR seq_id IN (
+                        SELECT parent_seq_id FROM sequences WHERE seq_id = ?
+                    )
+                    UNION ALL
+                    -- Recursive case: find children
+                    SELECT s.seq_id, s.original_id, s.parent_seq_id, h.level + 1
+                    FROM sequences s
+                    INNER JOIN seq_hierarchy h ON s.parent_seq_id = h.seq_id
+                )
+                SELECT * FROM seq_hierarchy ORDER BY level, seq_id
+            """, (seq_id, seq_id))
+            
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_taxonomic_lineage(self, tax_id: int) -> List[Dict]:
+        """Get complete taxonomic lineage from root to specified taxonomy."""
+        
+        with self.get_connection() as conn:
+            cursor = conn.execute("""
+                WITH RECURSIVE tax_lineage AS (
+                    -- Base case: start from the specified taxonomy
+                    SELECT tax_id, kingdom, phylum, class_, order_, family, genus, species, 
+                           parent_tax_id, 0 as level
+                    FROM taxonomy 
+                    WHERE tax_id = ?
+                    UNION ALL
+                    -- Recursive case: traverse up the hierarchy
+                    SELECT t.tax_id, t.kingdom, t.phylum, t.class_, t.order_, t.family, 
+                           t.genus, t.species, t.parent_tax_id, l.level + 1
+                    FROM taxonomy t
+                    INNER JOIN tax_lineage l ON t.tax_id = l.parent_tax_id
+                )
+                SELECT * FROM tax_lineage ORDER BY level DESC
+            """, (tax_id,))
+            
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_sequences_by_taxonomy(self, tax_id: int, backbone: str = None) -> List[Dict]:
+        """Get all sequences associated with a specific taxonomy."""
+        
+        query = """
+            SELECT s.seq_id, s.original_id, s.length, s.barcode,
+                   st.backbone, st.status, st.confidence
+            FROM sequences s
+            INNER JOIN seq_tax st ON s.seq_id = st.seq_id
+            WHERE st.tax_id = ?
+        """
+        params = [tax_id]
+        
+        if backbone:
+            query += " AND st.backbone = ?"
+            params.append(backbone)
+            
+        query += " ORDER BY s.original_id"
+        
+        with self.get_connection() as conn:
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
     
     def get_source_stats(self) -> List[Dict]:
         """Get statistics for all data sources."""
         
         with self.get_connection() as conn:
             cursor = conn.execute("""
-                SELECT s.name, s.version, s.date_download,
+                SELECT s.name, s.date_download,
                        COUNT(seq.seq_id) as sequence_count,
                        AVG(seq.length) as avg_length,
                        MIN(seq.length) as min_length,
-                       MAX(seq.length) as max_length
+                       MAX(seq.length) as max_length,
+                       AVG(seq.percentage_n) as avg_n_content
                 FROM sources s
                 LEFT JOIN sequences seq ON s.source_id = seq.source_id
-                GROUP BY s.source_id, s.name, s.version
+                GROUP BY s.source_id, s.name
                 ORDER BY s.date_download DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_backbone_stats(self) -> List[Dict]:
+        """Get statistics by backbone."""
+        
+        with self.get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT st.backbone,
+                       COUNT(DISTINCT st.seq_id) as sequence_count,
+                       COUNT(DISTINCT st.tax_id) as taxonomy_count,
+                       COUNT(CASE WHEN st.status = 'validated' THEN 1 END) as validated_count,
+                       AVG(st.confidence) as avg_confidence
+                FROM seq_tax st
+                GROUP BY st.backbone
+                ORDER BY sequence_count DESC
             """)
             return [dict(row) for row in cursor.fetchall()]
     
@@ -439,28 +410,101 @@ class DatabaseManager:
             """)
             checks['orphaned_sequences'] = cursor.fetchone()['count']
             
-            # Check duplicate sequences by MD5
+            # Check for circular references in taxonomy
             cursor = conn.execute("""
-                SELECT md5, COUNT(*) as count FROM sequences
-                GROUP BY md5 HAVING COUNT(*) > 1
+                WITH RECURSIVE tax_check AS (
+                    SELECT tax_id, parent_tax_id, 1 as depth
+                    FROM taxonomy 
+                    WHERE parent_tax_id IS NOT NULL
+                    UNION ALL
+                    SELECT t.tax_id, t.parent_tax_id, tc.depth + 1
+                    FROM taxonomy t
+                    INNER JOIN tax_check tc ON t.parent_tax_id = tc.tax_id
+                    WHERE tc.depth < 20  -- Prevent infinite loops
+                )
+                SELECT COUNT(*) as count FROM tax_check WHERE depth >= 20
             """)
-            checks['duplicate_sequences'] = len(cursor.fetchall())
+            checks['circular_taxonomy_refs'] = cursor.fetchone()['count']
             
             # Database size
             cursor = conn.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
             checks['database_size_bytes'] = cursor.fetchone()['size']
             
         checks['is_valid'] = (checks['foreign_key_violations'] == 0 and 
-                             checks['orphaned_sequences'] == 0)
+                             checks['orphaned_sequences'] == 0 and
+                             checks['circular_taxonomy_refs'] == 0)
         
         return checks
+
+    def list_tables(self) -> List[str]:
+        """List all tables in the database."""
+        with self.get_connection() as conn:
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            return [row['name'] for row in cursor.fetchall()]
+    
+    def optimize_for_bulk_insert_advanced(self):
+        """Version avancée des optimisations DB avec paramètres plus agressifs."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                logger.info("Applying advanced bulk insert optimizations...")
+                
+                # Configuration ultra-agressive pour vitesse maximale
+                cursor.execute("PRAGMA synchronous = OFF")           # Pas de sync disque
+                cursor.execute("PRAGMA journal_mode = OFF")          # Pas de journal du tout
+                cursor.execute("PRAGMA foreign_keys = OFF")          # Pas de vérif FK
+                cursor.execute("PRAGMA cache_size = -10000000")      # 10GB de cache
+                cursor.execute("PRAGMA locking_mode = EXCLUSIVE")    # Verrous exclusifs
+                cursor.execute("PRAGMA temp_store = MEMORY")         # Tables temp en RAM
+                cursor.execute("PRAGMA mmap_size = 4294967296")      # 4GB de memory mapping
+                cursor.execute("PRAGMA page_size = 65536")           # Pages plus grandes
+                cursor.execute("PRAGMA auto_vacuum = NONE")          # Pas de vacuum auto
+                
+                # Désactiver l'autocommit pour contrôler les transactions
+                conn.isolation_level = "DEFERRED"
+                
+                logger.info("Advanced optimizations applied successfully")
+                
+        except Exception as e:
+            logger.warning(f"Could not apply all advanced optimizations: {e}")
+
+    def restore_safe_settings(self):
+        """
+        Restaure les paramètres de sécurité et de durabilité par défaut de SQLite.
+        
+        Cette méthode doit TOUJOURS être appelée après la fin des insertions en masse.
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            logger.info("Restoring safe database settings...")
+
+            # Réactiver la vérification des clés étrangères.
+            cursor.execute("PRAGMA foreign_keys = ON;")
+            
+            # Revenir au mode de journalisation par défaut (Write-Ahead Logging),
+            # qui est robuste et performant pour un usage normal.
+            cursor.execute("PRAGMA journal_mode = WAL;")
+
+            # Rétablir la synchronisation complète pour garantir la durabilité des données.
+            cursor.execute("PRAGMA synchronous = FULL;")
+            
+            # Optionnel : lancer une vérification de l'intégrité des clés étrangères
+            # integrity_check = cursor.execute("PRAGMA foreign_key_check;").fetchall()
+            # if integrity_check:
+            #     logger.error(f"Foreign key integrity errors found: {integrity_check}")
+
+        except Exception as e:
+            logger.warning(f"Could not restore safe database settings: {e}")
 
 
 # Convenience functions for Snakemake integration
 def get_database_manager(config: Dict) -> DatabaseManager:
     """Get configured database manager from Snakemake config."""
     db_dir = Path(config.get("database", {}).get("path", "data"))
-    db_name = config.get("database", {}).get("name", "pipeline.db")
+    db_name = config.get("database", {}).get("name", "its_pipeline.db")
     db_path = db_dir / db_name
 
     return DatabaseManager(db_path)

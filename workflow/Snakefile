@@ -33,9 +33,10 @@ rule all:
     input:
         # Base de données initialisée
         # "data/pipeline.db",
-        os.path.join(config["database"]["path"], config["database"]["name"]),
+        os.path.join(config["database"]["path"], config["database"]["name"]), # Database
         # Données formatées
-        expand("data/processed/{database}_formatted_report.json", database=DATABASES),
+        # expand("data/processed/{database}_formatted_report.json", database=DATABASES),
+        expand("data/processed/formatting_summary.json", database=DATABASES), # Rapport de formatage des bases
         # expand("data/processed/{database}_formatted.fasta", database=DATABASES),
         # Les fichiers d'entrée seront spécifiés ici
         # Exemple :

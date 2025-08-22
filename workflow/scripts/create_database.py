@@ -10,7 +10,9 @@ import json
 import time
 import logging
 import sys
+import os
 from pathlib import Path
+from datetime import datetime
 
 # Import du gestionnaire de base
 sys.path.append(str(Path(__file__).parent / "utils"))
@@ -59,13 +61,18 @@ def main():
         
         # Générer le rapport
         report_data = {
-            'database_path': str(output_db),
-            'creation_timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'creation_time_seconds': creation_time,
-            'initial_sources_added': metadata_inserted,
-            'integrity_check': integrity_report,
-            'schema_version': '1.0',
-            'status': 'success'
+            "timestamp": datetime.now().isoformat(),
+            "database": {
+                "path": output_db,
+                "size_mb": os.path.getsize(output_db) / (1024 * 1024),
+                "tables_created": db_manager.list_tables(),
+                "schema_version": "1.0"  # Versionnez votre schéma
+            },
+            "execution": {
+                "duration_seconds": round(time.time() - start_time, 2),
+                "sources_added": metadata_inserted
+            },
+            "validation": integrity_report  # Rapport d'intégrité existant
         }
         
         # Sauvegarder le rapport

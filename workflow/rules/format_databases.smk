@@ -1,5 +1,20 @@
 # workflow/rules/format_databases.smk
 
+# Règle de déduplication des taxonomies
+rule deduplicate_taxonomies:
+    input:
+        db = os.path.join(config["database"]["path"], config["database"]["name"]),
+        formatted = expand("data/processed/{database}_formatted_report.json", database=DATABASES),
+    output:
+        report = "data/processed/taxonomy_deduplication_report.json"
+    log:
+        "logs/format_databases/taxonomy_deduplication.log"
+    conda:
+        "../envs/format_databases.yaml"
+    script:
+        "../scripts/deduplicate_taxonomies.py"
+
+
 # Règle générique : input depuis config.yaml, script spécifique par DB
 rule format_database:
     input:
@@ -18,20 +33,17 @@ rule format_database:
     script:
         "../scripts/format_{wildcards.database}.py"
 
-
-# Agrégation : déclenche toutes les formatations puis produit un rapport
 rule format_all_databases:
     input:
-        db = os.path.join(config["database"]["path"], config["database"]["name"]),
-        formatted = expand("data/processed/{database}_formatted.fasta", database=DATABASES)
+        deduplication = "data/processed/taxonomy_deduplication_report.json"
     output:
         summary = "data/processed/formatting_summary.json"
     log:
         "logs/format_databases/all_formatting.log"
+    params:
+        formatted = expand("data/processed/{database}_formatted_report.json", database=DATABASES)
     conda:
         "../envs/format_databases.yaml"
     script:
         "../scripts/format_all_databases.py"
-
-
 
