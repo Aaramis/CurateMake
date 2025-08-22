@@ -308,14 +308,24 @@ class UNITEParser:
         tax_id_map = {}
         
         for tax_tuple in unique_taxonomies:
-            cursor.execute(
-                "SELECT tax_id FROM taxonomy WHERE kingdom=? AND phylum=? AND class_=? AND order_=? AND family=? AND genus=? AND species=?",
-                tax_tuple
-            )
+            columns = ["kingdom", "phylum", "class_", "order_", "family", "genus", "species"]
+
+            # Construction dynamique de la requête
+            query_parts = []
+            values = []
+            for col, val in zip(columns, tax_tuple):
+                if val is None:
+                    query_parts.append(f"{col} IS NULL")
+                else:
+                    query_parts.append(f"{col}=?")
+                    values.append(val)
+            
+            sql = f"SELECT tax_id FROM taxonomy WHERE {' AND '.join(query_parts)}"
+            cursor.execute(sql, values)
             result = cursor.fetchone()
             if result:
                 tax_id_map[tax_tuple] = result[0]
-        
+
         # 4. Insertion des séquences
         cursor.executemany(
             "INSERT INTO sequences (source_id, original_id, sequence, length) VALUES (?, ?, ?, ?)",
