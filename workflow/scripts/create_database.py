@@ -16,7 +16,7 @@ from datetime import datetime
 
 # Import du gestionnaire de base
 sys.path.append(str(Path(__file__).parent / "utils"))
-from db_manager import DatabaseManager, initialize_database
+from db_manager import initialize_database
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,7 +29,11 @@ def main():
         output_db = snakemake.output.db
         output_report = snakemake.output.report
         config = snakemake.config
-        
+        log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+        file_handler = logging.FileHandler(log_file, mode="w")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
+
         start_time = time.time()
         logger.info(f"Creating database: {output_db}")
 

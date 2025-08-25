@@ -30,6 +30,10 @@ def generate_comprehensive_summary() -> Dict:
         formatted_reports = snakemake.params.formatted
         deduplication_report = snakemake.input.deduplication
         output_file = snakemake.output.summary
+        log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+        file_handler = logging.FileHandler(log_file, mode="w")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
     else:
         # Mode test
         formatted_reports = []

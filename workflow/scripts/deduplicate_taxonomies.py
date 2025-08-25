@@ -329,6 +329,10 @@ def main():
         if 'snakemake' in globals():
             db_path = snakemake.params.db
             output_report = snakemake.output.report
+            log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+            file_handler = logging.FileHandler(log_file, mode="w")
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(file_handler)
         else:
             logger.warning("Mode test - utiliser avec Snakemake en production")
             # Créez une fausse base de données pour le test si nécessaire

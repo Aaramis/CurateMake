@@ -453,11 +453,16 @@ def main():
             output_report = snakemake.output[0]
             config_validation = snakemake.params.sequence_validation
             config = snakemake.config
+            log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+            file_handler = logging.FileHandler(log_file, mode="w")
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(file_handler)
         else:
             # Mode test
             logger.warning("Running in standalone test mode")
             input_file = "test_unite.fasta.gz"
             input_db = "test_output.sqlite"
+            log_file = "test_format_unite.log"
             config = {'database': {'path': input_db}}
             config_validation = {
                 'min_length': 50, 
