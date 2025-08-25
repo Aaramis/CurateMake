@@ -36,6 +36,7 @@ class SequenceRecord:
     original_id: str
     sequence: str
     length: int
+    n_frac: float
     kingdom: Optional[str] = None
     phylum: Optional[str] = None
     class_: Optional[str] = None
@@ -103,7 +104,6 @@ class UNITEParser:
         except Exception:
             self.stats['parsing_errors'] += 1
             return header.lstrip('>'), ()
-
 
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
         """Validation de séquence avec early exit."""
@@ -209,7 +209,7 @@ class UNITEParser:
         is_valid, seq_len, n_frac = self.validate_sequence(sequence)
         
         if is_valid:
-            chunk.append((header, sequence, seq_len))
+            chunk.append((header, sequence, seq_len, n_frac))
             self.stats['total_sequences'] += 1
             
             if len(chunk) >= FASTA_CHUNK_SIZE:
@@ -218,11 +218,11 @@ class UNITEParser:
         else:
             self.stats['filtered_sequences'] += 1
 
-    def sequence_processor_worker(self, chunk: List[Tuple[str, str, int]]) -> List[SequenceRecord]:
+    def sequence_processor_worker(self, chunk: List[Tuple[str, str, int, float]]) -> List[SequenceRecord]:
         """Worker avec structures de données plus efficaces."""
         results = []
         
-        for header, sequence, seq_len in chunk:
+        for header, sequence, seq_len, n_frac in chunk:
             seq_id, taxonomy_tuple = self._parse_taxonomy(header)
             tax_dict = dict(taxonomy_tuple) if taxonomy_tuple else {}
             
@@ -231,6 +231,7 @@ class UNITEParser:
                 original_id=seq_id,
                 sequence=sequence,
                 length=seq_len,
+                n_frac=n_frac,
                 **{k: tax_dict.get(k) for k in ['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']}
             )
             
@@ -250,7 +251,7 @@ class UNITEParser:
             try:
                 while True:
                     try:
-                        result_chunk = results_queue.get(timeout=60)
+                        result_chunk = results_queue.get(timeout=600)
                         if result_chunk is None:
                             break
                         
@@ -295,7 +296,7 @@ class UNITEParser:
             taxonomy_data.append(tax_tuple)
             
             # Séquence
-            sequence_data.append((source_id, record.original_id, record.sequence, record.length))
+            sequence_data.append((source_id, record.original_id, record.sequence, record.length, record.n_frac))
         
         # 2. Insertion des taxonomies (plus efficace)
         cursor.executemany(
@@ -328,7 +329,7 @@ class UNITEParser:
 
         # 4. Insertion des séquences
         cursor.executemany(
-            "INSERT INTO sequences (source_id, original_id, sequence, length) VALUES (?, ?, ?, ?)",
+            "INSERT INTO sequences (source_id, original_id, sequence, length, n_frac) VALUES (?, ?, ?, ?, ?)",
             sequence_data
         )
         

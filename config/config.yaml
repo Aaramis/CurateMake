@@ -11,17 +11,18 @@ database:
 # Chemins des bases de données (à remplir manuellement)
 databases:
   unite:
-    path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/UNITE/UNITE_large_test.fasta.gz"
-    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/UNITE/UNITE_public_19.02.2025.fasta.gz"  # Chemin vers le fichier UNITE téléchargé manuellement
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/UNITE/UNITE_large_test.fasta.gz"
+    path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/UNITE/UNITE_public_19.02.2025.fasta.gz"  # Chemin vers le fichier UNITE téléchargé manuellement
     
   # Exemple pour d'autres bases de données (à décommenter et compléter si nécessaire)
-  # bold:
-  #   path: "data/raw/bold/bold_sequences.fasta"
-  #   version: "latest"
+  bold:
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/BOLD/BOLD_Public.09-Feb-2024.tar.gz"
+    path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/BOLD/BOLD_Public.22-Aug-2025.tar.gz"
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/BOLD/BOLD_small.tar.gz"
   
   planits:
-    path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANITS_small.zip"
-    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANiTS_29-03-2020.zip"
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANITS_small.zip"
+    path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANiTS_29-03-2020.zip"
     # version: "latest"
   
   # caledna:

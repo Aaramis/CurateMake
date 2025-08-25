@@ -37,13 +37,32 @@ rule format_planits_database:
     script:
         "../scripts/format_planits.py"
 
+# Règle Bold
+rule format_bold_database:
+    input:
+        db = os.path.join(config["database"]["path"], config["database"]["name"]),
+        source = config["databases"]["bold"]["path"]
+    output:
+        report = "data/processed/bold_formatted_report.json"
+    log:
+        "logs/format_databases/bold_formatting.log"
+    conda:
+        "../envs/format_databases.yaml"
+    params:
+        database_name = "bold",
+        database_config = config["databases"]["bold"],
+        sequence_validation = config["sequence_validation"]
+    script:
+        "../scripts/format_bold.py"
+
 
 # Règle de déduplication des taxonomies
 rule deduplicate_taxonomies:
     input:
         formatted = [
-            "data/processed/unite_formatted_report.json",
-            "data/processed/planits_formatted_report.json"
+            # "data/processed/unite_formatted_report.json",
+            # "data/processed/planits_formatted_report.json",
+            "data/processed/bold_formatted_report.json"
         ]
     output:
         report = "data/processed/taxonomy_deduplication_report.json"
