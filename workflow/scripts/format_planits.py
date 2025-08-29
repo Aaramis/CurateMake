@@ -25,10 +25,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Constantes
-FASTA_CHUNK_SIZE = 10000  # Augmenté pour réduire l'overhead
-BATCH_SIZE = 10000       # Plus gros batches pour moins d'I/O DB
-QUEUE_SIZE = 20         # Plus de buffer pour éviter les blocages
-MIN_SEQUENCE_LENGTH = 50  # Filtrage précoce
+FASTA_CHUNK_SIZE = 10000    # Augmenté pour réduire l'overhead
+BATCH_SIZE = 10000          # Plus gros batches pour moins d'I/O DB
+QUEUE_SIZE = 20             # Plus de buffer pour éviter les blocages
+MIN_SEQUENCE_LENGTH = 50    # Filtrage précoce
 
 @dataclass
 class SequenceRecord:
@@ -283,7 +283,7 @@ class PLANITSParser:
             try:
                 while True:
                     try:
-                        result_chunk = results_queue.get(timeout=60)
+                        result_chunk = results_queue.get(timeout=6000)
                         if result_chunk is None:
                             break
                         
@@ -393,8 +393,6 @@ class PLANITSParser:
             "INSERT INTO seq_tax (seq_id, tax_id, backbone, status) VALUES (?, ?, ?, ?)",
             relation_data   
         )
-
-        logger.info(f"Creating {len(relation_data)} seq_tax relations")
 
     def process_planits_database(self, input_file: str, source_name: str = "PLANITS", 
                                 source_version: str = "unknown") -> Dict:
@@ -524,7 +522,6 @@ def main():
         from db_manager import get_database_manager
         
         db_manager = get_database_manager(config)
-        db_manager.create_schema()
         
         # Parser
         parser = PLANITSParser(db_manager, config_validation)
@@ -556,20 +553,6 @@ def main():
             'its_ITS': stats.get('its_ITS', 0),
             'its_ITS1': stats.get('its_ITS1', 0),
             'its_ITS2': stats.get('its_ITS2', 0),
-            'optimizations_applied': [
-                'zip_file_processing',
-                'sintax_format_parsing', 
-                'barcode_type_detection',
-                'early_sequence_validation',
-                'optimized_regex_parsing',
-                'lru_cache_taxonomy_parsing',
-                'bulk_database_operations',
-                'streaming_chunk_processing',
-                'thread_pool_parallelism',
-                'prepared_sql_statements',
-                'transaction_batching',
-                'dataclass_optimization'
-            ],
             'performance_metrics': {
                 'cpu_cores_used': os.cpu_count(),
                 'memory_optimizations': True,

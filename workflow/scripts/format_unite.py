@@ -8,7 +8,6 @@ import sys
 import gzip
 import re
 import time
-import mmap
 import logging
 import json
 import sqlite3
@@ -133,44 +132,8 @@ class UNITEParser:
         chunk = []
         
         try:
-            # Déterminer si le fichier est compressé
-            is_gzipped = file_path.endswith('.gz')
-            
-            if is_gzipped:
-                # Pour les fichiers gzippés, on ne peut pas utiliser mmap
-                with gzip.open(file_path, 'rt', encoding='utf-8') as f:
-                    self._process_fasta_stream(f, chunk, queue)
-            else:
-                # Memory mapping pour les fichiers non compressés
-                with open(file_path, 'rb') as f:
-                    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        # Traiter par chunks de 1MB
-                        chunk_size = 1024 * 1024
-                        buffer = ""
-                        
-                        for i in range(0, len(mm), chunk_size):
-                            chunk_data = mm[i:i+chunk_size].decode('utf-8', errors='ignore')
-                            buffer += chunk_data
-                            
-                            # Traiter les lignes complètes
-                            lines = buffer.split('\n')
-                            buffer = lines[-1]  # Garder la ligne incomplète
-                            
-                            for line in lines[:-1]:
-                                if line.startswith('>'):
-                                    if len(chunk) >= 2:  # header + sequence
-                                        self._add_to_chunk(chunk[-2], chunk[-1], chunk, queue)
-                                    chunk = [line.strip()]
-                                elif chunk:
-                                    if len(chunk) == 1:
-                                        chunk.append(line.strip())
-                                    else:
-                                        chunk[1] += line.strip()
-                        
-                        # Traiter le dernier chunk
-                        if len(chunk) >= 2:
-                            self._add_to_chunk(chunk[0], chunk[1], [], queue)
-                            
+            with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+                self._process_fasta_stream(f, chunk, queue)
         except Exception as e:
             logger.error(f"Error in FASTA reader: {e}", exc_info=True)
         finally:
@@ -251,7 +214,7 @@ class UNITEParser:
             try:
                 while True:
                     try:
-                        result_chunk = results_queue.get(timeout=600)
+                        result_chunk = results_queue.get(timeout=6000)
                         if result_chunk is None:
                             break
                         
@@ -329,7 +292,7 @@ class UNITEParser:
 
         # 4. Insertion des séquences
         cursor.executemany(
-            "INSERT INTO sequences (source_id, original_id, sequence, length, n_frac) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO sequences (source_id, original_id, sequence, length, percentage_n) VALUES (?, ?, ?, ?, ?)",
             sequence_data
         )
         
@@ -476,7 +439,6 @@ def main():
         from db_manager import get_database_manager
         
         db_manager = get_database_manager(config)
-        db_manager.create_schema()
         
         # Parser
         parser = UNITEParser(db_manager, config_validation)
@@ -505,18 +467,6 @@ def main():
             'input_file': input_file,
             'stats': dict(stats),
             'processing_rate_per_second': rate,
-            'optimizations_applied': [
-                'memory_mapped_file_reading',
-                'early_sequence_validation',
-                'optimized_regex_parsing',
-                'lru_cache_taxonomy_parsing',
-                'bulk_database_operations',
-                'streaming_chunk_processing',
-                'thread_pool_parallelism',
-                'prepared_sql_statements',
-                'transaction_batching',
-                'dataclass_optimization'
-            ],
             'performance_metrics': {
                 'cpu_cores_used': os.cpu_count(),
                 'memory_optimizations': True,

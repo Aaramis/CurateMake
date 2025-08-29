@@ -90,26 +90,28 @@ class BOLDParser:
 
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
         """Validation de séquence avec early exit."""
-        if not sequence or sequence.upper() == 'NONE':
+        if not sequence:
             return False, 0, 1.0
         
+        sequence = sequence.upper().strip().replace('-', '').replace(' ', '').replace('.', '')
+
         seq_len = len(sequence)
         if seq_len < self.min_length:
             return False, seq_len, 0.0
         
         # Comptage des N
-        n_count = sequence.upper().count('N')
+        n_count = sequence.count('N') + sequence.count('n')
         n_fraction = n_count / seq_len
         
         if n_fraction > self.max_n_fraction:
             return False, seq_len, n_fraction
         
-        # Validation des caractères (plus rapide avec set sur échantillon)
-        sample_seq = sequence[:100].upper()  # Check sur 100 premiers chars seulement
-        if not all(c in self.valid_chars for c in sample_seq if c.isalpha()):
+        # Validation des caractères (plus rapide avec set)
+        if not all(c.upper() in self.valid_chars for c in sequence):
             return False, seq_len, n_fraction
         
         return True, seq_len, n_fraction
+
 
     def extract_tsv_from_tar(self, tar_path: str) -> str:
         """Extrait le fichier TSV du tar.gz et retourne son chemin."""
@@ -217,6 +219,23 @@ class BOLDParser:
                 queue.put(None)  # Signal de fin pour les consommateurs
                 logger.info(f"Pandas TSV reader finished. Total lines processed: {line_count}")
 
+    def _clean_sequence(self, sequence: str) -> str:
+        """Nettoyage complet de la séquence - supprime tous les caractères non valides."""
+        if not sequence:
+            return ""
+        
+        # Conversion en majuscules et suppression des caractères spéciaux
+        sequence = sequence.upper().strip()
+        
+        # Suppression des tirets, espaces, etc.
+        sequence = sequence.replace('-', '').replace(' ', '').replace('.', '')
+        
+        # Filtrage des caractères valides seulement
+        valid_chars = self.valid_chars
+        cleaned_sequence = ''.join(c for c in sequence if c in valid_chars)
+        
+        return cleaned_sequence
+
     def sequence_processor_worker(self, chunk: List[Tuple[Dict, int]]) -> List[SequenceRecord]:
         """Worker pour traitement des enregistrements BOLD."""
         results = []
@@ -235,7 +254,8 @@ class BOLDParser:
                 species = self._clean_taxonomic_field(row_data.get('species'))
                 
                 # Nettoyage de la séquence
-                sequence = row_data.get('nuc', '').strip().upper().replace('-', '')
+                raw_sequence = row_data.get('nuc', '').strip().upper().replace('-', '')
+                sequence = self._clean_sequence(raw_sequence)
                 
                 # Création de l'enregistrement
                 record = SequenceRecord(
@@ -287,7 +307,7 @@ class BOLDParser:
             try:
                 while True:
                     try:
-                        result_chunk = results_queue.get(timeout=600)
+                        result_chunk = results_queue.get(timeout=6000)
                         if result_chunk is None:
                             break
                         
@@ -375,16 +395,18 @@ class BOLDParser:
                 tax_id_map[tax_tuple] = result[0]
         
         # 5. Relations seq_tax
+        sequences_for_mapping = [record.sequence for record in batch]
+
         cursor.execute(
-            f"""SELECT original_id, seq_id FROM sequences 
-                WHERE source_id = ? AND original_id IN ({','.join(['?'] * len(batch))})""",
-            (source_id, *[record.original_id for record in batch])
+            f"""SELECT sequence, seq_id FROM sequences 
+                WHERE source_id = ? AND sequence IN ({','.join(['?'] * len(batch))})""",
+            (source_id, *sequences_for_mapping)
         )
         seq_id_map = {row[0]: row[1] for row in cursor.fetchall()}
         
         relation_data = []
         for record in batch:
-            seq_id = seq_id_map.get(record.original_id)
+            seq_id = seq_id_map.get(record.sequence)
             tax_tuple = (
                 record.kingdom, record.phylum, record.class_, record.order_,
                 record.family, record.genus, record.species
@@ -395,12 +417,11 @@ class BOLDParser:
                 relation_data.append((seq_id, tax_id, 'Raw', 'Pending'))
         
         cursor.executemany(
-            "INSERT INTO seq_tax (seq_id, tax_id, backbone, status) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO seq_tax (seq_id, tax_id, backbone, status) VALUES (?, ?, ?, ?)",
             relation_data
         )
 
-    def process_bold_database(self, input_file: str, source_name: str = "BOLD", 
-                             source_version: str = "unknown") -> Dict:
+    def process_bold_database(self, input_file: str, source_name: str = "BOLD") -> Dict:
         """Pipeline de traitement BOLD."""
         start_time = time.time()
         logger.info(f"Starting BOLD processing: {input_file}")
@@ -535,19 +556,12 @@ def main():
         from db_manager import get_database_manager
         
         db_manager = get_database_manager(config)
-        db_manager.create_schema()
-        
-        # Vérification que la table a les bonnes colonnes pour BOLD
-        # db_manager.ensure_bold_columns()
         
         # Parser
         parser = BOLDParser(db_manager, config_validation)
         
         # Traitement
-        stats = parser.process_bold_database(
-            input_file=input_file, 
-            source_version="latest"
-        )
+        stats = parser.process_bold_database(input_file=input_file)
         
         # Optimisation finale
         db_manager.vacuum_database()
@@ -564,18 +578,6 @@ def main():
             'accepted_markers': list(ACCEPTED_MARKERS),
             'stats': dict(stats),
             'processing_rate_per_second': rate,
-            'optimizations_applied': [
-                'tar_gz_extraction',
-                'csv_reader_with_delimiter',
-                'early_marker_filtering',
-                'early_sequence_validation',
-                'bulk_database_operations',
-                'streaming_chunk_processing',
-                'thread_pool_parallelism',
-                'prepared_sql_statements',
-                'transaction_batching',
-                'extended_taxonomy_support'
-            ],
             'performance_metrics': {
                 'cpu_cores_used': os.cpu_count(),
                 'memory_optimizations': True,
