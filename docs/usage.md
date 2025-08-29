@@ -41,21 +41,29 @@ Le pipeline utilise plusieurs bases de données qui doivent être téléchargée
 ### Téléchargement manuel
 
 Nécessaire, vous devez télécharger manuellement les bases de données :
+Placez les fichiers téléchargés dans le répertoire approprié sous `data/raw/[nom_de_la_base_de_donnees]` et mettez à jour le fichier de configuration.
 
-1. **UNITE** : Téléchargez depuis [le site officiel](https://unite.ut.ee/repository.php)
-2. **BOLD** : Utilisez l'[API BOLD](http://www.boldsystems.org/index.php/API_Public/combined)
-3. **PLANiTS** : Consultez le [dépôt GitHub](https://github.com/apellu/PLANiTS)
-4. **CALeDNA** : Voir le [dépôt CALeDNA](https://github.com/caledna/caledna)
-
-Placez les fichiers téléchargés dans le répertoire approprié sous `data/raw/` et mettez à jour le fichier de configuration.
-
-
-#### UNITE
+1. **UNITE**
 
 Rendez-vous sur le site officiel de [UNITE](https://unite.ut.ee/repository.php) et téléchargez la base de données la plus récente.
 Vous devriez obtenir un fichier .fasta.gz
 
 
+2. **BOLD**
+ 
+Rendez-vous sur le site officiel de [BOLD](https://bench.boldsystems.org/index.php/datapackages/Latest) et téléchargez la base de données la plus récente.
+Vous devriez obtenir un fichier .tar.gz
+
+
+3. **PLANiTS**
+
+Rendez-vous sur le github de [PLANiTS](https://github.com/apallavicini/PLANiTS) et clonez le repository.
+Vous devriez obtenir un fichier nommé "PLANiTS_29-03-2020.zip".
+
+4. **CALeDNA**
+
+Rendez-vous sur le site officiel de [CALeDNA](https://ucedna.com/reference-databases-for-metabarcoding) et téléchargez la base de données la plus récente de PITS et FITS
+Vous devriez obtenir 4 fichiers
 
 ### 2. Exécution complète
 

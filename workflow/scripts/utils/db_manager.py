@@ -440,7 +440,7 @@ class DatabaseManager:
             return [row['name'] for row in cursor.fetchall()]
     
     def optimize_for_bulk_insert_advanced(self):
-        """Version avancée des optimisations DB avec paramètres plus agressifs."""
+        """Version avancée des optimisations DB"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -448,15 +448,12 @@ class DatabaseManager:
                 logger.info("Applying advanced bulk insert optimizations...")
                 
                 # Configuration ultra-agressive pour vitesse maximale
-                cursor.execute("PRAGMA synchronous = OFF")           # Pas de sync disque
-                cursor.execute("PRAGMA journal_mode = OFF")          # Pas de journal du tout
                 cursor.execute("PRAGMA foreign_keys = OFF")          # Pas de vérif FK
                 cursor.execute("PRAGMA cache_size = -10000000")      # 10GB de cache
                 cursor.execute("PRAGMA locking_mode = EXCLUSIVE")    # Verrous exclusifs
                 cursor.execute("PRAGMA temp_store = MEMORY")         # Tables temp en RAM
                 cursor.execute("PRAGMA mmap_size = 4294967296")      # 4GB de memory mapping
                 cursor.execute("PRAGMA page_size = 65536")           # Pages plus grandes
-                cursor.execute("PRAGMA auto_vacuum = NONE")          # Pas de vacuum auto
                 
                 # Désactiver l'autocommit pour contrôler les transactions
                 conn.isolation_level = "DEFERRED"
@@ -469,7 +466,6 @@ class DatabaseManager:
     def restore_safe_settings(self):
         """
         Restaure les paramètres de sécurité et de durabilité par défaut de SQLite.
-        
         Cette méthode doit TOUJOURS être appelée après la fin des insertions en masse.
         """
         try:

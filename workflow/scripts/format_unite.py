@@ -8,7 +8,6 @@ import sys
 import gzip
 import re
 import time
-import mmap
 import logging
 import json
 import sqlite3
@@ -36,6 +35,7 @@ class SequenceRecord:
     original_id: str
     sequence: str
     length: int
+    n_frac: float
     kingdom: Optional[str] = None
     phylum: Optional[str] = None
     class_: Optional[str] = None
@@ -104,7 +104,6 @@ class UNITEParser:
             self.stats['parsing_errors'] += 1
             return header.lstrip('>'), ()
 
-
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
         """Validation de séquence avec early exit."""
         if not sequence:
@@ -133,44 +132,8 @@ class UNITEParser:
         chunk = []
         
         try:
-            # Déterminer si le fichier est compressé
-            is_gzipped = file_path.endswith('.gz')
-            
-            if is_gzipped:
-                # Pour les fichiers gzippés, on ne peut pas utiliser mmap
-                with gzip.open(file_path, 'rt', encoding='utf-8') as f:
-                    self._process_fasta_stream(f, chunk, queue)
-            else:
-                # Memory mapping pour les fichiers non compressés
-                with open(file_path, 'rb') as f:
-                    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        # Traiter par chunks de 1MB
-                        chunk_size = 1024 * 1024
-                        buffer = ""
-                        
-                        for i in range(0, len(mm), chunk_size):
-                            chunk_data = mm[i:i+chunk_size].decode('utf-8', errors='ignore')
-                            buffer += chunk_data
-                            
-                            # Traiter les lignes complètes
-                            lines = buffer.split('\n')
-                            buffer = lines[-1]  # Garder la ligne incomplète
-                            
-                            for line in lines[:-1]:
-                                if line.startswith('>'):
-                                    if len(chunk) >= 2:  # header + sequence
-                                        self._add_to_chunk(chunk[-2], chunk[-1], chunk, queue)
-                                    chunk = [line.strip()]
-                                elif chunk:
-                                    if len(chunk) == 1:
-                                        chunk.append(line.strip())
-                                    else:
-                                        chunk[1] += line.strip()
-                        
-                        # Traiter le dernier chunk
-                        if len(chunk) >= 2:
-                            self._add_to_chunk(chunk[0], chunk[1], [], queue)
-                            
+            with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+                self._process_fasta_stream(f, chunk, queue)
         except Exception as e:
             logger.error(f"Error in FASTA reader: {e}", exc_info=True)
         finally:
@@ -209,7 +172,7 @@ class UNITEParser:
         is_valid, seq_len, n_frac = self.validate_sequence(sequence)
         
         if is_valid:
-            chunk.append((header, sequence, seq_len))
+            chunk.append((header, sequence, seq_len, n_frac))
             self.stats['total_sequences'] += 1
             
             if len(chunk) >= FASTA_CHUNK_SIZE:
@@ -218,11 +181,11 @@ class UNITEParser:
         else:
             self.stats['filtered_sequences'] += 1
 
-    def sequence_processor_worker(self, chunk: List[Tuple[str, str, int]]) -> List[SequenceRecord]:
+    def sequence_processor_worker(self, chunk: List[Tuple[str, str, int, float]]) -> List[SequenceRecord]:
         """Worker avec structures de données plus efficaces."""
         results = []
         
-        for header, sequence, seq_len in chunk:
+        for header, sequence, seq_len, n_frac in chunk:
             seq_id, taxonomy_tuple = self._parse_taxonomy(header)
             tax_dict = dict(taxonomy_tuple) if taxonomy_tuple else {}
             
@@ -231,6 +194,7 @@ class UNITEParser:
                 original_id=seq_id,
                 sequence=sequence,
                 length=seq_len,
+                n_frac=n_frac,
                 **{k: tax_dict.get(k) for k in ['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']}
             )
             
@@ -250,7 +214,7 @@ class UNITEParser:
             try:
                 while True:
                     try:
-                        result_chunk = results_queue.get(timeout=60)
+                        result_chunk = results_queue.get(timeout=6000)
                         if result_chunk is None:
                             break
                         
@@ -295,7 +259,7 @@ class UNITEParser:
             taxonomy_data.append(tax_tuple)
             
             # Séquence
-            sequence_data.append((source_id, record.original_id, record.sequence, record.length))
+            sequence_data.append((source_id, record.original_id, record.sequence, record.length, record.n_frac))
         
         # 2. Insertion des taxonomies (plus efficace)
         cursor.executemany(
@@ -328,7 +292,7 @@ class UNITEParser:
 
         # 4. Insertion des séquences
         cursor.executemany(
-            "INSERT INTO sequences (source_id, original_id, sequence, length) VALUES (?, ?, ?, ?)",
+            "INSERT INTO sequences (source_id, original_id, sequence, length, percentage_n) VALUES (?, ?, ?, ?, ?)",
             sequence_data
         )
         
@@ -453,11 +417,16 @@ def main():
             output_report = snakemake.output[0]
             config_validation = snakemake.params.sequence_validation
             config = snakemake.config
+            log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+            file_handler = logging.FileHandler(log_file, mode="w")
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(file_handler)
         else:
             # Mode test
             logger.warning("Running in standalone test mode")
             input_file = "test_unite.fasta.gz"
             input_db = "test_output.sqlite"
+            log_file = "test_format_unite.log"
             config = {'database': {'path': input_db}}
             config_validation = {
                 'min_length': 50, 
@@ -470,7 +439,6 @@ def main():
         from db_manager import get_database_manager
         
         db_manager = get_database_manager(config)
-        db_manager.create_schema()
         
         # Parser
         parser = UNITEParser(db_manager, config_validation)
@@ -499,18 +467,6 @@ def main():
             'input_file': input_file,
             'stats': dict(stats),
             'processing_rate_per_second': rate,
-            'optimizations_applied': [
-                'memory_mapped_file_reading',
-                'early_sequence_validation',
-                'optimized_regex_parsing',
-                'lru_cache_taxonomy_parsing',
-                'bulk_database_operations',
-                'streaming_chunk_processing',
-                'thread_pool_parallelism',
-                'prepared_sql_statements',
-                'transaction_batching',
-                'dataclass_optimization'
-            ],
             'performance_metrics': {
                 'cpu_cores_used': os.cpu_count(),
                 'memory_optimizations': True,

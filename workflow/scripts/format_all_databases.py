@@ -8,12 +8,12 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Any
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_report(report_path: str) -> Dict:
+def load_report(report_path: str) -> Dict[str, Any]:
     """Charge un rapport JSON."""
     try:
         with open(report_path, 'r') as f:
@@ -22,7 +22,7 @@ def load_report(report_path: str) -> Dict:
         logger.error(f"Erreur lors du chargement de {report_path}: {e}")
         return {}
 
-def generate_comprehensive_summary() -> Dict:
+def generate_comprehensive_summary() -> Dict[str, Any]:
     """Génère un résumé complet de toutes les opérations."""
     
     # Configuration Snakemake
@@ -30,9 +30,19 @@ def generate_comprehensive_summary() -> Dict:
         formatted_reports = snakemake.params.formatted
         deduplication_report = snakemake.input.deduplication
         output_file = snakemake.output.summary
+        log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+        file_handler = logging.FileHandler(log_file, mode="w")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
     else:
-        # Mode test
-        formatted_reports = []
+        # Mode test (pour l'exemple)
+        # Remplacez ces chemins par les vôtres si vous testez en dehors de Snakemake
+        formatted_reports = [
+            "data/processed/BOLD_formatted_report.json",
+            "data/processed/CALeDNA_Multi_formatted_report.json",
+            "data/processed/PLANITS_formatted_report.json",
+            "data/processed/UNITE_formatted_report.json"
+        ]
         deduplication_report = "data/processed/taxonomy_deduplication_report.json"
         output_file = "data/processed/formatting_summary.json"
     
@@ -52,17 +62,32 @@ def generate_comprehensive_summary() -> Dict:
     # 1. Traitement des rapports de formatage par base
     logger.info("Consolidation des rapports de formatage...")
     
-    for report_path in formatted_reports:
+    all_report_paths = []
+    for item in formatted_reports:
+        if isinstance(item, list):
+            all_report_paths.extend(item)
+        else:
+            all_report_paths.append(item)
+
+
+    for report_path in all_report_paths:
         report = load_report(report_path)
         if report:
             db_name = Path(report_path).stem.replace('_formatted_report', '')
             
+            stats = report.get('stats') or report.get('aggregated_stats', {})
+            
+            input_file_info = report.get('input_file')
+            if not input_file_info:
+                input_files_list = report.get('input_files', [])
+                input_file_info = ", ".join(input_files_list) if input_files_list else 'N/A'
+
             db_summary = {
                 'database': db_name,
                 'source': report.get('source', 'Unknown'),
                 'version': report.get('version', 'Unknown'),
-                'input_file': report.get('input_file', ''),
-                'stats': report.get('stats', {}),
+                'input_file': input_file_info,
+                'stats': stats,
                 'processing_rate': report.get('processing_rate_per_second', 0),
                 'optimizations': report.get('optimizations_applied', []),
                 'success': True
@@ -71,7 +96,6 @@ def generate_comprehensive_summary() -> Dict:
             summary['databases_processed'].append(db_summary)
             
             # Agrégation des statistiques
-            stats = report.get('stats', {})
             total_sequences += stats.get('processed_sequences', 0)
             total_processing_time += stats.get('processing_time', 0)
         else:
@@ -100,7 +124,7 @@ def generate_comprehensive_summary() -> Dict:
             summary['warnings'].append("Problème d'intégrité détecté après la déduplication")
             summary['success'] = False
     else:
-        summary['warnings'].append("Rapport de déduplication non disponible")
+        summary['warnings'].append(f"Rapport de déduplication non disponible: {deduplication_report}")
         summary['taxonomy_deduplication'] = {'executed': False}
     
     # 3. Statistiques globales
@@ -116,16 +140,12 @@ def generate_comprehensive_summary() -> Dict:
     
     # 4. Recommandations
     recommendations = []
-    
     if summary['taxonomy_deduplication'].get('duplicates_removed', 0) > 0:
         recommendations.append("Taxonomies dupliquées supprimées avec succès")
-    
     if not summary['taxonomy_deduplication'].get('integrity_verified', True):
         recommendations.append("ATTENTION: Vérifier manuellement l'intégrité de la base")
-    
     if total_processing_time > 3600:  # Plus d'1 heure
         recommendations.append("Considérer l'optimisation des paramètres pour les gros volumes")
-    
     summary['recommendations'] = recommendations
     
     # 5. Sauvegarde
