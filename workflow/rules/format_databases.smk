@@ -15,7 +15,7 @@ def get_caledna_basenames():
 # Règle UNITE
 rule format_unite_database:
     input:
-        db = os.path.join(config["database"]["path"], config["database"]["name"]),
+        db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
         source = config["databases"]["unite"]["path"]
     output:
         report = "data/processed/unite_formatted_report.json"
@@ -35,7 +35,7 @@ rule format_unite_database:
 # Règle PLANITS
 rule format_planits_database:
     input:
-        db = os.path.join(config["database"]["path"], config["database"]["name"]),
+        db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
         source = config["databases"]["planits"]["path"]
     output:
         report = "data/processed/planits_formatted_report.json"
@@ -54,7 +54,7 @@ rule format_planits_database:
 # Règle Bold
 rule format_bold_database:
     input:
-        db = os.path.join(config["database"]["path"], config["database"]["name"]),
+        db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
         source = config["databases"]["bold"]["path"]
     output:
         report = "data/processed/bold_formatted_report.json"
@@ -73,7 +73,7 @@ rule format_bold_database:
 
 rule format_caledna_database:
     input:
-        db = os.path.join(config["database"]["path"], config["database"]["name"]),
+        db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
         file = lambda wildcards: next(f for f in get_caledna_files() 
                                      if os.path.splitext(os.path.basename(f))[0] == wildcards.caledna_file)
     output:

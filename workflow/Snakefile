@@ -24,6 +24,7 @@ if not DATABASES:
 # Inclusion des règles modulaires
 include: "rules/database.smk"
 include: "rules/format_databases.smk"
+include: "rules/harmonize_taxo.smk"
 # include: "rules/itsx.smk"
 # include: "rules/msa.smk"
 # include: "rules/sativa.smk"
@@ -32,15 +33,20 @@ include: "rules/format_databases.smk"
 rule all:
     input:
         # Base de données initialisée
-        # "data/pipeline.db",
-        os.path.join(config["database"]["path"], config["database"]["name"]), # Database
+        # "data/its.db",
+        # os.path.join(config["database"]["path"], config["database"]["name"]), # Database
         # Données formatées
         # expand("data/processed/{database}_formatted_report.json", database=DATABASES),
-        expand("data/processed/formatting_summary.json", database=DATABASES), # Rapport de formatage des bases
+        # expand("data/processed/formatting_summary.json", database=DATABASES), # Rapport de formatage des bases
         # expand("data/processed/{database}_formatted.fasta", database=DATABASES),
-        # Les fichiers d'entrée seront spécifiés ici
-        # Exemple :
-        # "data/processed/unite_parsed.fasta"
+        "data/processed/col_matching_report.json"
+
+
+# Règle pour exécuter seulement le matching taxonomique
+rule harmonize_only:
+    """Exécute seulement l'harmonisation taxonomique si le formatage est déjà fait."""
+    input:
+        "data/processed/col_matching_report.json"
 
 # Règle de nettoyage
 rule clean:
@@ -86,9 +92,3 @@ rule database_only:
     """Initialise seulement la base de données."""
     input:
         "data/pipeline.db",
-        # "data/database_creation_report.json"
-
-# # Point d'entrée pour le téléchargement seul
-# rule download_only:
-#     input:
-#         "data/raw/download_summary.json"

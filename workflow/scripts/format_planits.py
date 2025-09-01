@@ -496,7 +496,7 @@ def main():
     try:
         # Configuration Snakemake
         if 'snakemake' in globals():
-            input_db = snakemake.input[0]
+            input_db = snakemake.input.db
             input_file = snakemake.input[1]
             output_report = snakemake.output[0]
             config_validation = snakemake.params.sequence_validation

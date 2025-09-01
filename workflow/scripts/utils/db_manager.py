@@ -484,10 +484,6 @@ class DatabaseManager:
                 # Rétablir la synchronisation complète pour garantir la durabilité des données.
                 cursor.execute("PRAGMA synchronous = FULL;")
                 
-                # Optionnel : lancer une vérification de l'intégrité des clés étrangères
-                # integrity_check = cursor.execute("PRAGMA foreign_key_check;").fetchall()
-                # if integrity_check:
-                #     logger.error(f"Foreign key integrity errors found: {integrity_check}")
 
         except Exception as e:
             logger.warning(f"Could not restore safe database settings: {e}")
