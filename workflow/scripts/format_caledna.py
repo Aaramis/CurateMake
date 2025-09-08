@@ -405,7 +405,7 @@ class CALeDNAParser:
             tax_tuple = (record.kingdom, record.phylum, record.class_, 
                         record.order_, record.family, record.genus, record.species)
             taxonomy_data.append(tax_tuple)
-            sequence_data.append((source_id, record.original_id, record.sequence, record.length, record.n_frac))
+            sequence_data.append((source_id, record.original_id, record.sequence, record.length, record.n_frac, "ITS2"))
         
         # Insertion des taxonomies
         cursor.executemany(
@@ -436,7 +436,7 @@ class CALeDNAParser:
 
         # Insertion des séquences
         cursor.executemany(
-            "INSERT INTO sequences (source_id, original_id, sequence, length, percentage_n) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO sequences (source_id, original_id, sequence, length, percentage_n, barcode) VALUES (?, ?, ?, ?, ?, ?)",
             sequence_data
         )
         

@@ -12,63 +12,63 @@ def get_caledna_basenames():
     files = get_caledna_files()
     return [os.path.splitext(os.path.basename(f))[0] for f in files]
 
-# Règle UNITE
-rule format_unite_database:
-    input:
-        db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
-        source = config["databases"]["unite"]["path"]
-    output:
-        report = "data/processed/unite_formatted_report.json"
-    log:
-        "logs/format_databases/unite_formatting.log"
-    conda:
-        "../envs/format_databases.yaml"
-    resources: db_lock=GLOBAL_DB_LOCK
-    params:
-        database_name = "unite",
-        database_config = config["databases"]["unite"],
-        sequence_validation = config["sequence_validation"]
-    script:
-        "../scripts/format_unite.py"
+# # Règle UNITE
+# rule format_unite_database:
+#     input:
+#         db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
+#         source = config["databases"]["unite"]["path"]
+#     output:
+#         report = "data/processed/unite_formatted_report.json"
+#     log:
+#         "logs/format_databases/unite_formatting.log"
+#     conda:
+#         "../envs/format_databases.yaml"
+#     resources: db_lock=GLOBAL_DB_LOCK
+#     params:
+#         database_name = "unite",
+#         database_config = config["databases"]["unite"],
+#         sequence_validation = config["sequence_validation"]
+#     script:
+#         "../scripts/format_unite.py"
 
 
-# Règle PLANITS
-rule format_planits_database:
-    input:
-        db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
-        source = config["databases"]["planits"]["path"]
-    output:
-        report = "data/processed/planits_formatted_report.json"
-    log:
-        "logs/format_databases/planits_formatting.log"
-    conda:
-        "../envs/format_databases.yaml"
-    resources: db_lock=GLOBAL_DB_LOCK
-    params:
-        database_name = "planits",
-        database_config = config["databases"]["planits"],
-        sequence_validation = config["sequence_validation"]
-    script:
-        "../scripts/format_planits.py"
+# # Règle PLANITS
+# rule format_planits_database:
+#     input:
+#         db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
+#         source = config["databases"]["planits"]["path"]
+#     output:
+#         report = "data/processed/planits_formatted_report.json"
+#     log:
+#         "logs/format_databases/planits_formatting.log"
+#     conda:
+#         "../envs/format_databases.yaml"
+#     resources: db_lock=GLOBAL_DB_LOCK
+#     params:
+#         database_name = "planits",
+#         database_config = config["databases"]["planits"],
+#         sequence_validation = config["sequence_validation"]
+#     script:
+#         "../scripts/format_planits.py"
 
-# Règle Bold
-rule format_bold_database:
-    input:
-        db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
-        source = config["databases"]["bold"]["path"]
-    output:
-        report = "data/processed/bold_formatted_report.json"
-    log:
-        "logs/format_databases/bold_formatting.log"
-    conda:
-        "../envs/format_databases.yaml"
-    resources: db_lock=GLOBAL_DB_LOCK
-    params:
-        database_name = "bold",
-        database_config = config["databases"]["bold"],
-        sequence_validation = config["sequence_validation"]
-    script:
-        "../scripts/format_bold.py"
+# # Règle Bold
+# rule format_bold_database:
+#     input:
+#         db = ancient(os.path.join(config["database"]["path"], config["database"]["name"])),
+#         source = config["databases"]["bold"]["path"]
+#     output:
+#         report = "data/processed/bold_formatted_report.json"
+#     log:
+#         "logs/format_databases/bold_formatting.log"
+#     conda:
+#         "../envs/format_databases.yaml"
+#     resources: db_lock=GLOBAL_DB_LOCK
+#     params:
+#         database_name = "bold",
+#         database_config = config["databases"]["bold"],
+#         sequence_validation = config["sequence_validation"]
+#     script:
+#         "../scripts/format_bold.py"
 
 
 rule format_caledna_database:
@@ -95,9 +95,9 @@ rule format_caledna_database:
 rule deduplicate_taxonomies:
     input:
         formatted = [
-            "data/processed/unite_formatted_report.json",
-            "data/processed/planits_formatted_report.json",
-            "data/processed/bold_formatted_report.json",
+            # "data/processed/unite_formatted_report.json",
+            # "data/processed/planits_formatted_report.json",
+            # "data/processed/bold_formatted_report.json",
             expand("data/processed/caledna_{caledna_file}_formatted_report.json",
                         caledna_file=get_caledna_basenames())
         ]
@@ -124,9 +124,9 @@ rule format_all_databases:
         "logs/format_databases/all_formatting.log"
     params:
         formatted = [
-            "data/processed/unite_formatted_report.json",
-            "data/processed/planits_formatted_report.json",
-            "data/processed/bold_formatted_report.json",
+            # "data/processed/unite_formatted_report.json",
+            # "data/processed/planits_formatted_report.json",
+            # "data/processed/bold_formatted_report.json",
             expand("data/processed/caledna_{caledna_file}_formatted_report.json",
                         caledna_file=get_caledna_basenames())
         ]

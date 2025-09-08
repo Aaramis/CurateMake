@@ -76,7 +76,7 @@ class DatabaseManager:
             FOREIGN KEY (parent_seq_id) REFERENCES sequences(seq_id) ON DELETE SET NULL,
             CHECK (length > 0),
             CHECK (percentage_n >= 0 AND percentage_n <= 100),
-            CHECK (barcode_status IN ('Pending', 'Duplicate', 'ITSx')),
+            CHECK (barcode_status IN ('Pending', 'Duplicate', 'ITSx', 'Processed', 'no_detection')),
             CHECK (barcode IN ('ITS', 'ITS1', 'ITS2', 'LSU', 'SSU', '5.8S'))
         );
         

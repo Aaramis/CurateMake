@@ -327,8 +327,8 @@ class PLANITSParser:
                         record.order_, record.family, record.genus, record.species)
             taxonomy_data.append(tax_tuple)
             
-            # Séquence
-            sequence_data.append((source_id, record.original_id, record.sequence, record.length))
+            # CORRECTION : Ajouter le barcode dans les données de séquence
+            sequence_data.append((source_id, record.original_id, record.sequence, record.length, record.barcode))
         
         # 2. Insertion des taxonomies (plus efficace)
         cursor.executemany(
@@ -366,12 +366,13 @@ class PLANITSParser:
                 tax_id_map[query_tuple] = result[0]
         
         
-        # 4. Insertion des séquences
+        # 4. CORRECTION : Insertion des séquences avec barcode
         cursor.executemany(
-            "INSERT INTO sequences (source_id, original_id, sequence, length) VALUES (?, ?, ?, ?)",
+            "INSERT INTO sequences (source_id, original_id, sequence, length, barcode) VALUES (?, ?, ?, ?, ?)",
             sequence_data
         )
         
+        # Le reste du code reste identique...
         # 5. Récupération des seq_ids et création des relations
         cursor.execute(
             f"SELECT original_id, seq_id FROM sequences WHERE source_id = ? AND original_id IN ({','.join(['?'] * len(batch))})",

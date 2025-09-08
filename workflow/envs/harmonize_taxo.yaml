@@ -1,16 +1,10 @@
-# envs/harmonize_taxo.yaml
-#
-# Environnement Conda pour l'harmonisation taxonomique
-# à utiliser avec Snakemake et le script CoL_taxonomic_matcher.py
-
 name: harmonize_taxo
-
 channels:
   - conda-forge
   - bioconda
   - defaults
-
 dependencies:
-  - python=3.10 
-  - requests
-  - pandas
+  - python=3.10
+  - requests=2.31.0
+  - pandas=2.0.3
+  - pip
