@@ -57,3 +57,28 @@ rule run_itsx:
         
         touch {output.done}
         """
+
+rule process_itsx_results:
+    input:
+        itsx_done="data/processed/itsx_run.done",
+    params:
+        db=os.path.join(config["database"]["path"], config["database"]["name"]),
+        itsx_dir="data/ITSx",
+        min_length=config["sequence_validation"]["min_length"],
+        max_n_fraction=config["sequence_validation"]["max_n_fraction"]
+    output:
+        report="data/processed/itsx_process.json"
+    log:
+        "logs/ITSX/process_itsx_results.log"
+    conda:
+        "../envs/itsx.yaml"
+    shell:
+        """
+        python workflow/scripts/get_itsx_results.py \
+            --database {params.db} \
+            --itsx-dir {params.itsx_dir} \
+            --min-length {params.min_length} \
+            --max-n-fraction {params.max_n_fraction} \
+            --output-report {output.report} \
+            --log-file {log}
+        """

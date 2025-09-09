@@ -11,6 +11,7 @@ rule col_taxonomic_matching:
         # deduplication="data/processed/taxonomy_deduplication_report.json"
     params:
         db=os.path.join(config["database"]["path"], config["database"]["name"]),
+        batch_size=config["CoL_api"]["batch_size"]
     output:
         report="data/processed/col_matching_report.json"
     log:

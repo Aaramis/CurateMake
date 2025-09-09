@@ -41,7 +41,8 @@ rule all:
         # expand("data/processed/{database}_formatted.fasta", database=DATABASES),
         # "data/processed/col_matching_report.json"
         # "data/processed/itsx_report.json"
-        "data/processed/itsx_run.done"
+        # "data/processed/itsx_run.done"
+        "data/processed/itsx_process.json"
 
 
 # Règle pour exécuter seulement le matching taxonomique
