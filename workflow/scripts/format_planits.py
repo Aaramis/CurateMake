@@ -19,19 +19,19 @@ import multiprocessing as mp
 from dataclasses import dataclass
 from io import TextIOWrapper
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Constantes
-FASTA_CHUNK_SIZE = 10000    # Augmenté pour réduire l'overhead
-BATCH_SIZE = 10000          # Plus gros batches pour moins d'I/O DB
-QUEUE_SIZE = 20             # Plus de buffer pour éviter les blocages
-MIN_SEQUENCE_LENGTH = 50    # Filtrage précoce
+# Constants
+FASTA_CHUNK_SIZE = 10000    # Increased to reduce overhead
+BATCH_SIZE = 10000          # Larger batches to reduce DB I/O
+QUEUE_SIZE = 20             # More buffer to avoid stalls
+MIN_SEQUENCE_LENGTH = 50    # Early filtering
 
 @dataclass
 class SequenceRecord:
-    """Structure de données pour les séquences."""
+    """Data container for PLANITS sequences."""
     original_id: str
     sequence: str
     length: int
@@ -45,14 +45,14 @@ class SequenceRecord:
     species: Optional[str] = None
 
 class PLANITSParser:
-    """Parser PLANITS."""
+    """PLANITS parser and ingestion orchestrator."""
     
     def __init__(self, db_manager, config_validation: Dict):
         self.db_manager = db_manager
         self.config_validation = config_validation
         self.batch_size = BATCH_SIZE
         
-        # Statistiques thread-safe
+        # Thread-safe statistics
         self.stats = mp.Manager().dict({
             'total_sequences': 0,
             'processed_sequences': 0,
@@ -64,35 +64,35 @@ class PLANITSParser:
             'its_ITS2': 0
         })
         
-        # Patterns regex compilés
+        # Pre-compiled regex
         self.version_pattern = re.compile(r'(\d{1,2}\.\d{1,2}\.\d{4})')
         
-        # Précompilation des caractères valides
+        # Precompute allowed characters
         self.valid_chars = set(self.config_validation.get('valid_chars', 'ATCGN'))
         self.min_length = self.config_validation.get('min_length', MIN_SEQUENCE_LENGTH)
         self.max_n_fraction = self.config_validation.get('max_n_fraction', 0.1)
 
-    @lru_cache(maxsize=50000)  # Cache plus grand
+    @lru_cache(maxsize=50000)  # Larger cache
     def _parse_planits_taxonomy(self, header: str, barcode_type: str) -> Tuple[str, Tuple]:
-        """Parse des headers PLANITS format SINTAX.
+        """Parse PLANITS headers in SINTAX format.
         
         Format: >MK696133.1;tax=p:Chlorophyta,c:Chlorophyceae,o:Chlamydomonadales,f:NA,g:NA,s:unknown Chlamydomonadales ;
 
-        Attention il n'y a pas de kingdom dans le header
+        Note that the header does not contain kingdom information.
         """
         try:
             header = header.lstrip('>')
             
-            # Séparer l'ID de la taxonomie
+            # Split the ID from taxonomy
             if ';tax=' in header:
                 seq_id_part, tax_part = header.split(';tax=', 1)
                 seq_id = seq_id_part.strip()
                 seq_id = seq_id + f"_{barcode_type}"
                 
-                # Extraire la partie taxonomique (avant le dernier ';')
-                tax_string = tax_part.split(';')[0]  # Prendre seulement la partie avant le dernier ';'
+                # Extract the taxonomy (before the trailing ';')
+                tax_string = tax_part.split(';')[0]
                 
-                # Parser la taxonomie
+                # Parse the taxonomy
                 ranks = {}
                 for entry in tax_string.split(','):
                     if ':' in entry:
@@ -100,7 +100,7 @@ class PLANITSParser:
                         rank_code = rank_code.strip()
                         value = value.strip()
                         
-                        # Mapping des codes de rang vers les noms complets
+                        # Map rank codes to full names
                         rank_mapping = {
                             'k': 'kingdom',
                             'p': 'phylum', 
@@ -113,14 +113,14 @@ class PLANITSParser:
                         
                         rank_name = rank_mapping.get(rank_code, rank_code)
                         
-                        # Nettoyer la valeur
+                        # Clean the value
                         if value and value.lower() not in ['na', 'unknown', '']:
-                            # Traiter les cas spéciaux pour species
+                            # Handle the special case for species
                             if rank_name == 'species' and ' ' in value:
-                                # Garder seulement le nom d'espèce (après le genre)
+                                # Keep only the species name (after the genus)
                                 parts = value.split()
                                 if len(parts) >= 2:
-                                    value = ' '.join(parts[:2])  # Genre + espèce
+                                    value = ' '.join(parts[:2])  # Genus + species
                             
                             ranks[rank_name] = value
                         else:
@@ -129,7 +129,7 @@ class PLANITSParser:
                 return seq_id, tuple(sorted(ranks.items()))
             
             else:
-                # Pas de taxonomie trouvée
+                # No taxonomy found
                 return header.strip(), ()
                 
         except Exception as e:
@@ -138,7 +138,7 @@ class PLANITSParser:
             return header.lstrip('>').strip(), ()
 
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
-        """Validation de séquence avec early exit."""
+        """Early-exit sequence validation."""
         if not sequence:
             return False, 0, 1.0
         
@@ -146,21 +146,21 @@ class PLANITSParser:
         if seq_len < self.min_length:
             return False, seq_len, 0.0
         
-        # Comptage des N
+        # Count Ns
         n_count = sequence.count('N') + sequence.count('n')
         n_fraction = n_count / seq_len
         
         if n_fraction > self.max_n_fraction:
             return False, seq_len, n_fraction
         
-        # Validation des caractères (plus rapide avec set)
-        if not all(c.upper() in self.valid_chars for c in sequence[:100]):  # Check sur 100 premiers chars seulement
+        # Character validation (limited to first 100 chars for speed)
+        if not all(c.upper() in self.valid_chars for c in sequence[:100]):
             return False, seq_len, n_fraction
         
         return True, seq_len, n_fraction
 
     def extract_barcode_type(self, filename: str) -> str:
-        """Extrait le type de barcode depuis le nom de fichier."""
+        """Extract the barcode type from the filename."""
         filename_lower = filename.lower()
         if 'its1.sintax' in filename_lower:
             return 'ITS1'
@@ -173,12 +173,12 @@ class PLANITSParser:
             return 'ITS'  # Default
 
     def fasta_reader_zip(self, zip_path: str, queue: Queue):
-        """Lecteur FASTA pour fichiers ZIP PLANITS."""
+        """FASTA reader dedicated to PLANITS ZIP archives."""
         logger.info(f"Starting ZIP reader for {zip_path}")
         
         try:
             with zipfile.ZipFile(zip_path, 'r') as zip_file:
-                # Chercher les fichiers SINTAX_format.fas
+                # Look for *.SINTAX_format.fas files
                 sintax_files = [f for f in zip_file.namelist() 
                               if f.endswith('.SINTAX_format.fas')]
                 
@@ -189,18 +189,18 @@ class PLANITSParser:
                     barcode_type = self.extract_barcode_type(sintax_file)
                     
                     with zip_file.open(sintax_file) as file:
-                        # Wrapper pour traiter comme fichier texte
+                        # Wrap as a text stream
                         text_file = TextIOWrapper(file, encoding='utf-8')
                         self._process_fasta_stream(text_file, barcode_type, queue)
                         
         except Exception as e:
             logger.error(f"Error in ZIP reader: {e}", exc_info=True)
         finally:
-            queue.put(None)  # Signal de fin
+            queue.put(None)  # End signal
             logger.info("ZIP reader finished")
 
     def _process_fasta_stream(self, stream, barcode_type: str, queue: Queue):
-        """Traitement d'un stream FASTA."""
+        """Process a FASTA stream."""
         header, sequence_parts = None, []
         chunk = []
         
@@ -211,7 +211,7 @@ class PLANITSParser:
                 
             if line.startswith('>'):
                 if header and sequence_parts:
-                    sequence = ''.join(sequence_parts).replace('-', '')  # Enlever les alignements
+                    sequence = ''.join(sequence_parts).replace('-', '')  # Remove alignment characters
                     self._add_to_chunk(header, sequence, barcode_type, chunk, queue)
                 
                 header = line
@@ -219,18 +219,18 @@ class PLANITSParser:
             else:
                 sequence_parts.append(line)
         
-        # Dernier enregistrement
+        # Handle final record
         if header and sequence_parts:
             sequence = ''.join(sequence_parts).replace('-', '')
             self._add_to_chunk(header, sequence, barcode_type, chunk, queue)
         
-        # Envoyer le chunk restant
+        # Send any remaining chunk
         if chunk:
             queue.put(chunk[:])
 
     def _add_to_chunk(self, header: str, sequence: str, barcode_type: str, chunk: List, queue: Queue):
-        """Ajoute une séquence au chunk avec validation précoce."""
-        # Validation précoce pour éviter le traitement inutile
+        """Add a validated sequence to the chunk."""
+        # Validate early to skip useless work
         is_valid, seq_len, n_frac = self.validate_sequence(sequence)
         
         if is_valid:
@@ -239,26 +239,26 @@ class PLANITSParser:
             self.stats[f'its_{barcode_type}'] += 1
             
             if len(chunk) >= FASTA_CHUNK_SIZE:
-                queue.put(chunk[:])  # Copie du chunk
+                queue.put(chunk[:])  # Copy the chunk
                 chunk.clear()
         else:
             self.stats['filtered_sequences'] += 1
 
     def sequence_processor_worker(self, chunk: List[Tuple[str, str, int, str]]) -> List[SequenceRecord]:
-        """Worker avec structures de données plus efficaces."""
+        """Worker leveraging efficient data structures."""
         results = []
         
         for header, sequence, seq_len, barcode_type in chunk:
             seq_id, taxonomy_tuple = self._parse_planits_taxonomy(header, barcode_type)
             tax_dict = dict(taxonomy_tuple) if taxonomy_tuple else {}
             
-            # Création directe du SequenceRecord
+            # Build the SequenceRecord directly
             record = SequenceRecord(
                 original_id=seq_id,
                 sequence=sequence,
                 length=seq_len,
                 barcode=barcode_type,
-                kingdom="Plantae",  # Valeur forcée
+                kingdom="Plantae",  # Forced value
                 phylum=tax_dict.get('phylum'),
                 class_=tax_dict.get('class_'),
                 order_=tax_dict.get('order_'),
@@ -307,7 +307,7 @@ class PLANITSParser:
 
     def _flush_batch_sqlalchemy(self, batch: List[SequenceRecord], source_id: str):
         """Flush batch using SQLAlchemy bulk operations (source_id is UUID string)."""
-        # 1. Préparer les données de taxonomie
+        # 1. Prepare taxonomy payload
         taxonomy_data = []
         taxonomy_map = {}
 
@@ -329,7 +329,7 @@ class PLANITSParser:
         # 2. Bulk insert taxonomies
         tax_id_map = self.db_manager.bulk_insert_taxonomies(taxonomy_data)
 
-        # 3. Préparer les données de séquence
+        # 3. Prepare sequence rows
         sequence_data = []
         for record in batch:
             seq_dict = {
@@ -345,7 +345,7 @@ class PLANITSParser:
         # 4. Bulk insert sequences
         seq_id_map = self.db_manager.bulk_insert_sequences(sequence_data)
 
-        # 5. Préparer les relations
+        # 5. Prepare seq_tax relations
         relation_data = []
         for record in batch:
             seq_id = seq_id_map.get(record.original_id)
@@ -366,30 +366,30 @@ class PLANITSParser:
 
     def process_planits_database(self, input_file: str, source_name: str = "PLANITS", 
                                 source_version: str = "unknown") -> Dict:
-        """Pipeline de traitement PLANITS."""
+        """PLANITS processing pipeline."""
         start_time = time.time()
         logger.info(f"Starting PLANITS processing: {input_file}")
         
-        # Vérification que c'est un fichier ZIP
+        # Ensure we are dealing with a ZIP file
         if not input_file.endswith('.zip'):
             raise ValueError(f"Expected ZIP file, got: {input_file}")
         
-        # Configuration DB pour performance maximale
+        # Configure DB for peak performance
         self.db_manager.optimize_for_bulk_insert_advanced()
         source_id = self.db_manager.add_source(name=source_name, file_path=input_file)
         
-        # Files d'attente
+        # Queues
         fasta_queue = Queue(maxsize=QUEUE_SIZE)
         results_queue = Queue(maxsize=QUEUE_SIZE)
         
-        # Calcul optimal du nombre de workers
+        # Compute optimal worker count
         cpu_count = os.cpu_count()
-        num_workers = max(2, cpu_count - 2)  # Garder 2 CPUs pour reader/writer
+        num_workers = max(2, cpu_count - 2)  # Keep 2 CPUs for reader/writer
         logger.info(f"Using {num_workers} worker threads on {cpu_count} CPUs")
         
         try:
             with ThreadPoolExecutor(max_workers=num_workers + 2) as executor:
-                # Lancer reader et writer
+                # Launch reader and writer
                 writer_future = executor.submit(
                     self.db_writer_consumer, source_id, results_queue
                 )
@@ -397,7 +397,7 @@ class PLANITSParser:
                     self.fasta_reader_zip, input_file, fasta_queue
                 )
                 
-                # Traitement parallèle des chunks
+                # Process chunks in parallel
                 worker_futures = []
                 processed_chunks = 0
                 
@@ -407,12 +407,12 @@ class PLANITSParser:
                         if chunk is None:
                             break
                         
-                        # Soumettre le traitement
+                        # Submit for processing
                         future = executor.submit(self.sequence_processor_worker, chunk)
                         worker_futures.append(future)
                         processed_chunks += 1
                         
-                        # Traitement en streaming pour éviter la surcharge mémoire
+                        # Stream results to avoid memory pressure
                         if len(worker_futures) >= num_workers * 2:
                             completed_future = next(as_completed(worker_futures))
                             worker_futures.remove(completed_future)
@@ -422,11 +422,11 @@ class PLANITSParser:
                         logger.warning("Reader timeout - assuming completion")
                         break
                 
-                # Traiter les futures restants
+                # Handle remaining futures
                 for future in as_completed(worker_futures):
                     results_queue.put(future.result())
                 
-                # Signaler la fin et attendre
+                # Signal completion and wait
                 results_queue.put(None)
                 writer_future.result()
                 reader_future.result()
@@ -437,14 +437,14 @@ class PLANITSParser:
             logger.error(f"Critical error in processing pipeline: {e}", exc_info=True)
             raise
         finally:
-            # Restaurer les paramètres normaux
+            # Restore default settings
             self.db_manager.restore_safe_settings()
         
-        # Finalisation
+        # Finalization
         end_time = time.time()
         self.stats['processing_time'] = end_time - start_time
         
-        # Statistiques finales
+        # Final statistics
         total_seqs = self.stats['total_sequences']
         processed_seqs = self.stats['processed_sequences']
         filtered_seqs = self.stats['filtered_sequences']
@@ -460,11 +460,11 @@ class PLANITSParser:
         
         return dict(self.stats)
 
-# Point d'entrée
+# Entry point
 def main():
-    """Point d'entrée principal."""
+    """Script entry point."""
     try:
-        # Configuration Snakemake
+        # Snakemake configuration
         if 'snakemake' in globals():
             input_db = snakemake.input.db
             input_file = snakemake.input[1]
@@ -476,7 +476,7 @@ def main():
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             logger.addHandler(file_handler)
         else:
-            # Mode test
+            # Test mode
             logger.warning("Running in standalone test mode")
             input_file = "PLANITS_small.zip"
             input_db = "test_output.sqlite"
@@ -487,7 +487,7 @@ def main():
                 'max_n_fraction': 0.1
             }
 
-        # Import et initialisation
+        # Import and initialization
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
         
@@ -496,20 +496,20 @@ def main():
         # Parser
         parser = PLANITSParser(db_manager, config_validation)
         
-        # Détection de version
+        # Detect version
         version_match = parser.version_pattern.search(Path(input_file).name)
         version = version_match.group(1) if version_match else "unknown"
         
-        # Traitement
+        # Processing
         stats = parser.process_planits_database(
             input_file=input_file, 
             source_version=version
         )
         
-        # Optimisation finale
+        # Final optimization
         db_manager.vacuum_database()
         
-        # Génération du rapport
+        # Report generation
         processing_time = stats.get('processing_time', 1)
         processed_seqs = stats.get('processed_sequences', 0)
         rate = processed_seqs / processing_time if processing_time > 0 else 0
@@ -532,7 +532,7 @@ def main():
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Sauvegarde du rapport
+        # Save the report
         if 'snakemake' in globals():
             with open(output_report, 'w') as f:
                 json.dump(report_data, f, indent=2)

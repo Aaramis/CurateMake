@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-Traite UN SEUL barcode ITSx (pour parallélisation Snakemake).
+Process a single ITSx barcode (parallelized via Snakemake).
 """
 import logging
 import sys
 import json
 import uuid
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Iterator, Optional
 from datetime import datetime
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+
+try:
+    from psycopg2.errors import SerializationFailure as PGSerializationFailure
+except ImportError:  # pragma: no cover - psycopg2 not always installed (e.g., SQLite mode)
+    PGSerializationFailure = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def parse_fasta_streaming(file_path: Path) -> Iterator[Tuple[str, str]]:
-    """Parse un fichier FASTA en streaming."""
+    """Stream a FASTA file and yield (header, sequence) tuples."""
     if not file_path.exists():
         return
 
@@ -45,7 +52,7 @@ def parse_fasta_streaming(file_path: Path) -> Iterator[Tuple[str, str]]:
 
 
 def parse_header(header: str) -> Optional[str]:
-    """Extrait le seq_id du header."""
+    """Extract the seq_id from a FASTA header."""
     try:
         return header.split('|', 1)[0]
     except IndexError:
@@ -57,7 +64,7 @@ def parse_header(header: str) -> Optional[str]:
 # ============================================================================
 
 class BarcodeITSxProcessor:
-    """Traite un seul barcode ITSx."""
+    """Process a single ITSx barcode."""
 
     def __init__(self, db_manager, barcode: str, itsx_dir: Path, data_dir: Path, config: Dict):
         self.db_manager = db_manager
@@ -72,7 +79,7 @@ class BarcodeITSxProcessor:
         self.sql_variable_limit = 900 if db_manager.db_type == "sqlite" else 10000
 
     def _get_parent_metadata(self, parent_ids: List[str]) -> Dict[str, Dict]:
-        """Récupère métadonnées des séquences parentes."""
+        """Retrieve metadata for the parent sequences."""
         if not parent_ids:
             return {}
 
@@ -120,7 +127,7 @@ class BarcodeITSxProcessor:
         return all_metadata
 
     def _bulk_insert_sequences(self, sequences_batch: List[Dict]) -> int:
-        """Insertion en masse avec executemany."""
+        """Insert sequences in bulk using executemany."""
         if not sequences_batch:
             return 0
 
@@ -174,36 +181,66 @@ class BarcodeITSxProcessor:
             return len(sequences_batch)
 
         except Exception as e:
-            logger.error(f"Erreur insertion: {e}")
+            logger.error(f"Insert error: {e}")
             raise
 
+    def _is_serialization_failure(self, error: OperationalError) -> bool:
+        """Return True if the exception comes from a PostgreSQL serialization failure."""
+        orig = getattr(error, "orig", None)
+        if orig is None:
+            return False
+        if getattr(orig, "pgcode", None) == "40001":  # PostgreSQL serialization_failure
+            return True
+        if PGSerializationFailure and isinstance(orig, PGSerializationFailure):
+            return True
+        return False
+
     def _bulk_update_status(self, updates: List[Tuple[str, str]]) -> int:
-        """Mise à jour par lots des statuts."""
+        """Bulk update barcode statuses."""
         if not updates:
             return 0
 
         sequences_table = self.db_manager.sequences_table
 
-        with self.db_manager.get_session() as session:
-            if self.db_manager.db_type == "postgresql":
-                # Use READ COMMITTED isolation level to avoid serialization failures
-                session.execute(text("SET LOCAL TRANSACTION ISOLATION LEVEL READ COMMITTED"))
+        if self.db_manager.db_type == "postgresql":
+            payload = [{"seq_id": seq_id, "status": status} for status, seq_id in updates]
+            max_retries = self.config.get("status_update_retries", 3)
 
-                session.execute(text("DROP TABLE IF EXISTS temp_updates"))
-                session.execute(text("""
-                    CREATE TEMP TABLE temp_updates (seq_id TEXT PRIMARY KEY, status TEXT)
-                """))
-                session.execute(
-                    text("INSERT INTO temp_updates (seq_id, status) VALUES (:seq_id, :status)"),
-                    [{"seq_id": seq_id, "status": status} for status, seq_id in updates]
-                )
-                session.execute(text(f"""
-                    UPDATE {sequences_table} AS s
-                    SET barcode_status = t.status
-                    FROM temp_updates AS t
-                    WHERE s.seq_id = t.seq_id
-                """))
-            else:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    with self.db_manager.get_session() as session:
+                        session.execute(text("SET LOCAL TRANSACTION ISOLATION LEVEL READ COMMITTED"))
+                        session.execute(text("DROP TABLE IF EXISTS temp_updates"))
+                        session.execute(text("""
+                            CREATE TEMP TABLE temp_updates (seq_id TEXT PRIMARY KEY, status TEXT)
+                        """))
+                        session.execute(
+                            text("INSERT INTO temp_updates (seq_id, status) VALUES (:seq_id, :status)"),
+                            payload
+                        )
+                        session.execute(text(f"""
+                            UPDATE {sequences_table} AS s
+                            SET barcode_status = t.status
+                            FROM temp_updates AS t
+                            WHERE s.seq_id = t.seq_id
+                        """))
+                    break
+                except OperationalError as exc:
+                    if self._is_serialization_failure(exc) and attempt < max_retries:
+                        backoff = 0.5 * attempt
+                        logger.warning(
+                            "Serialization failure while updating barcode statuses for %s "
+                            "(attempt %d/%d). Retrying in %.1fs...",
+                            self.barcode,
+                            attempt,
+                            max_retries,
+                            backoff
+                        )
+                        time.sleep(backoff)
+                        continue
+                    raise
+        else:
+            with self.db_manager.get_session() as session:
                 session.execute(text("""
                     CREATE TEMPORARY TABLE IF NOT EXISTS temp_updates (
                         seq_id TEXT PRIMARY KEY, status TEXT
@@ -227,12 +264,10 @@ class BarcodeITSxProcessor:
                     WHERE seq_id IN (SELECT seq_id FROM temp_updates)
                 """))
 
-            session.commit()
-
         return len(updates)
 
     def _validate_sequence(self, sequence: str) -> bool:
-        """Valide une séquence."""
+        """Validate a sequence against length and ambiguity thresholds."""
         if len(sequence) < self.min_length:
             return False
         n_fraction = sequence.upper().count('N') / len(sequence) if sequence else 1.0
@@ -241,7 +276,7 @@ class BarcodeITSxProcessor:
     def _read_region_file_once(self, barcode_dir: Path, region: str,
                                parent_metadata: Dict) -> Tuple[List[Dict], Dict[str, str]]:
         """
-        Lit un fichier région UNE SEULE FOIS.
+        Read a region-specific ITSx FASTA file exactly once.
 
         Returns:
             (insert_data, region_sequences_dict)
@@ -277,8 +312,8 @@ class BarcodeITSxProcessor:
         return insert_data, region_sequences
 
     def process(self) -> Dict:
-        """Traite le barcode complet."""
-        logger.info(f"=== Traitement barcode: {self.barcode} ===")
+        """Run the complete ITSx workflow for this barcode."""
+        logger.info(f"=== Processing barcode: {self.barcode} ===")
 
         stats = {
             "barcode": self.barcode,
@@ -295,7 +330,7 @@ class BarcodeITSxProcessor:
             barcode_dir = self.itsx_dir / self.barcode
 
             # ================================================================
-            # ÉTAPE 1: Marquer "Processed"
+            # STEP 1: mark parent sequences as "Processed"
             # ================================================================
             original_fasta = self.data_dir / f"{self.barcode}.fasta"
 
@@ -309,10 +344,10 @@ class BarcodeITSxProcessor:
                     updates = [("Processed", pid) for pid in parent_ids]
                     self._bulk_update_status(updates)
                     stats["initial_sequences_processed"] = len(parent_ids)
-                    logger.info(f"Marqué {len(parent_ids)} séquences 'Processed'")
+                    logger.info(f"Marked {len(parent_ids)} sequences as 'Processed'")
 
             # ================================================================
-            # ÉTAPE 2: Collecter parent_ids
+            # STEP 2: collect parent_ids
             # ================================================================
             all_parent_ids = set()
             for region in ["ITS1", "ITS2", "5_8S"]:
@@ -325,9 +360,9 @@ class BarcodeITSxProcessor:
             parent_metadata = self._get_parent_metadata(list(all_parent_ids))
 
             # ================================================================
-            # ÉTAPE 3: Lire chaque fichier 1× seulement
+            # STEP 3: single-pass parsing for each region file
             # ================================================================
-            logger.info("Lecture fichiers ITSx (1× chacun)...")
+            logger.info("Reading each ITSx region file once...")
 
             its1_insert, its1_seqs = self._read_region_file_once(barcode_dir, "ITS1", parent_metadata)
             its2_insert, its2_seqs = self._read_region_file_once(barcode_dir, "ITS2", parent_metadata)
@@ -337,7 +372,7 @@ class BarcodeITSxProcessor:
             stats["subregions"]["ITS2"] = {"found": len(its2_insert), "inserted": 0}
 
             # ================================================================
-            # ÉTAPE 4: Insérer ITS1 et ITS2
+            # STEP 4: insert ITS1 and ITS2 sequences
             # ================================================================
             total_inserted = 0
 
@@ -347,7 +382,7 @@ class BarcodeITSxProcessor:
                     inserted = self._bulk_insert_sequences(batch)
                     stats["subregions"]["ITS1"]["inserted"] += inserted
                     total_inserted += inserted
-                logger.info(f"ITS1: {stats['subregions']['ITS1']['inserted']} insérées")
+                logger.info(f"ITS1: inserted {stats['subregions']['ITS1']['inserted']} sequences")
 
             if its2_insert:
                 for i in range(0, len(its2_insert), self.insert_batch_size):
@@ -355,16 +390,16 @@ class BarcodeITSxProcessor:
                     inserted = self._bulk_insert_sequences(batch)
                     stats["subregions"]["ITS2"]["inserted"] += inserted
                     total_inserted += inserted
-                logger.info(f"ITS2: {stats['subregions']['ITS2']['inserted']} insérées")
+                logger.info(f"ITS2: inserted {stats['subregions']['ITS2']['inserted']} sequences")
 
             # ================================================================
-            # ÉTAPE 5: Reconstruction ITS
+            # STEP 5: reconstruct full ITS sequences
             # ================================================================
             common_ids = set(its1_seqs.keys()) & set(its58s_seqs.keys()) & set(its2_seqs.keys())
             stats["reconstructed_its"]["common_parents"] = len(common_ids)
 
             if common_ids:
-                logger.info(f"Reconstruction {len(common_ids)} séquences ITS")
+                logger.info(f"Reconstructing {len(common_ids)} ITS sequences")
 
                 reconstruction_batch = []
                 for parent_id in common_ids:
@@ -390,10 +425,10 @@ class BarcodeITSxProcessor:
                         stats["reconstructed_its"]["inserted"] += inserted
                         total_inserted += inserted
 
-                    logger.info(f"ITS: {stats['reconstructed_its']['inserted']} reconstruites")
+                    logger.info(f"ITS: reconstructed {stats['reconstructed_its']['inserted']} sequences")
 
             # ================================================================
-            # ÉTAPE 6: No detection
+            # STEP 6: mark "no detection" sequences
             # ================================================================
             no_detection_fasta = barcode_dir / f"{self.barcode}_no_detections.fasta"
 
@@ -407,17 +442,17 @@ class BarcodeITSxProcessor:
                     updates = [("no_detection", nid) for nid in no_detection_ids]
                     self._bulk_update_status(updates)
                     stats["no_detection"] = len(no_detection_ids)
-                    logger.info(f"Marqué {len(no_detection_ids)} no_detection")
+                    logger.info(f"Marked {len(no_detection_ids)} sequences as 'no_detection'")
 
             stats["total_new_sequences"] = total_inserted
             stats["end_time"] = datetime.now().isoformat()
-            logger.info(f"✓ {self.barcode}: {total_inserted} séquences insérées")
+            logger.info(f"✓ {self.barcode}: inserted {total_inserted} sequences")
 
         except Exception as e:
             stats["status"] = "Error"
             stats["error_message"] = str(e)
             stats["end_time"] = datetime.now().isoformat()
-            logger.error(f"Erreur {self.barcode}: {e}", exc_info=True)
+            logger.error(f"Error while processing {self.barcode}: {e}", exc_info=True)
 
         return stats
 
@@ -427,15 +462,15 @@ class BarcodeITSxProcessor:
 # ============================================================================
 
 def main():
-    """Point d'entrée Snakemake."""
+    """Snakemake entry point."""
     if 'snakemake' not in globals():
-        logger.error("Ce script doit être exécuté via Snakemake")
+        logger.error("This script must be executed via Snakemake")
         sys.exit(1)
 
     sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
     from db_manager import get_database_manager
 
-    # Paramètres Snakemake
+    # Snakemake parameters
     barcode = snakemake.wildcards.barcode
     itsx_dir = snakemake.params.itsx_dir
     data_dir = snakemake.params.data_dir
@@ -460,15 +495,15 @@ def main():
 
         report = processor.process()
 
-        # Écrire rapport
+        # Write report
         Path(output_report).parent.mkdir(parents=True, exist_ok=True)
         with open(output_report, 'w') as f:
             json.dump(report, f, indent=2)
 
-        logger.info(f"Rapport écrit: {output_report}")
+        logger.info(f"Report written: {output_report}")
 
     except Exception as e:
-        logger.critical(f"Erreur critique: {e}", exc_info=True)
+        logger.critical(f"Critical ITSx error: {e}", exc_info=True)
         error_report = {
             "barcode": barcode,
             "status": "Critical Error",

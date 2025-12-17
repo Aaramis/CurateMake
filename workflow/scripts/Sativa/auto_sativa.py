@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script SATIVA pour Snakemake
-Détection des misidentifications taxonomiques sur des MSA.
+SATIVA automation for Snakemake.
+Detect taxonomic misidentifications on MSAs.
 """
 
 import argparse
@@ -19,7 +19,7 @@ from typing import Optional, Tuple
 from dataclasses import dataclass, asdict
 
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
@@ -37,7 +37,7 @@ def _sanitize_label(value: str) -> str:
 
 @dataclass
 class SativaResult:
-    """Résultat d'exécution SATIVA."""
+    """SATIVA execution result metadata."""
     barcode: str
     tax_level: str
     taxon: str
@@ -57,35 +57,35 @@ class SativaResult:
 
 def is_output_complete(output_dir: Path, taxon: str) -> bool:
     """
-    Vérifie si une exécution SATIVA précédente s'est terminée correctement.
+    Determine whether a previous SATIVA run finished successfully.
 
     Args:
-        output_dir: Répertoire de sortie SATIVA
-        taxon: Nom du taxon
+        output_dir: SATIVA output directory.
+        taxon: Taxon name (base filename to check).
 
     Returns:
-        True si le résultat est complet, False sinon
+        True if the run is considered complete, otherwise False.
     """
     if not output_dir.exists():
         return False
 
-    # Vérifier le fichier summary
+    # Check the summary file
     summary_path = output_dir / "sativa.summary.json"
     if not summary_path.exists():
         return False
 
-    # Vérifier que le summary est valide
+    # Ensure the summary is valid JSON
     try:
         with summary_path.open('r') as f:
             result = json.load(f)
 
         status = result.get('status')
 
-        # Si skipped ou error, c'est considéré comme complet (pas besoin de relancer)
+        # If skipped or error, we consider it complete (no rerun)
         if status in ['skipped', 'error']:
             return True
 
-        # Si success, vérifier que les fichiers .mis existent
+        # If success, ensure the .mis file exists
         if status == 'success':
             mis_file = output_dir / f"{taxon}.mis"
             if mis_file.exists():
@@ -103,10 +103,10 @@ def is_output_complete(output_dir: Path, taxon: str) -> bool:
 
 def clean_incomplete_output(output_dir: Path):
     """
-    Nettoie un dossier de sortie incomplet ou corrompu.
+    Remove an incomplete or corrupted SATIVA output directory.
 
     Args:
-        output_dir: Répertoire à nettoyer
+        output_dir: Directory to delete.
     """
     if output_dir.exists():
         logger.warning(f"Cleaning incomplete/corrupted output directory: {output_dir}")
@@ -120,13 +120,13 @@ def clean_incomplete_output(output_dir: Path):
 
 def quick_msa_stats(msa_path: Path) -> Tuple[int, int]:
     """
-    Calcule rapidement les stats d'un MSA sans tout charger en RAM.
+    Compute quick stats (sequence count and alignment length) from an MSA.
 
     Args:
-        msa_path: Chemin vers le fichier MSA FASTA
+        msa_path: FASTA alignment path.
 
     Returns:
-        Tuple (nombre_sequences, longueur_alignement)
+        Tuple (num_sequences, alignment_length)
     """
     n_seq = 0
     max_len = 0
@@ -154,19 +154,19 @@ def quick_msa_stats(msa_path: Path) -> Tuple[int, int]:
 
 def parse_msa_to_sativa_format(msa_path: Path, output_dir: Path, taxon: str) -> Tuple[Path, Path]:
     """
-    Parse un MSA en fichiers .fasta et .tax pour SATIVA.
+    Convert an MSA to SATIVA's .fasta and .tax inputs.
 
-    Format MSA attendu:
+    Expected MSA header format:
     >seq_id|kingdom=X|phylum=Y|class=Z|order=A|family=B|genus=C|species=D
     SEQUENCE
 
     Args:
-        msa_path: Fichier MSA d'entrée
-        output_dir: Répertoire de sortie
-        taxon: Nom du taxon (pour nommer les fichiers)
+        msa_path: Input MSA file.
+        output_dir: Destination directory.
+        taxon: Taxon name used for generated filenames.
 
     Returns:
-        Tuple (fasta_path, tax_path)
+        Tuple (fasta_path, tax_path).
     """
     fasta_output = output_dir / f"{taxon}.fasta"
     tax_output = output_dir / f"{taxon}.tax"
@@ -232,24 +232,25 @@ def run_sativa(
     output_name: Optional[str] = None
 ) -> bool:
     """
-    Exécute SATIVA.
+    Execute SATIVA with the provided inputs.
 
     Args:
-        fasta_path: Fichier FASTA des séquences
-        tax_path: Fichier de taxonomie
-        output_dir: Répertoire de sortie (cwd pour SATIVA)
-        sativa_script: Chemin vers sativa.py
-        mode: Mode d'exécution SATIVA
-        confidence: Seuil de confiance
-        taxonomy_code: Code taxonomique
-        threads: Nombre de threads
-        timeout_seconds: Timeout en secondes (None = pas de limite)
+        fasta_path: FASTA sequences.
+        tax_path: Taxonomy file.
+        output_dir: Working/output directory for SATIVA.
+        sativa_script: Path to sativa.py.
+        mode: SATIVA execution mode.
+        confidence: Confidence threshold.
+        taxonomy_code: Taxonomy code passed to SATIVA.
+        threads: Number of threads for SATIVA.
+        timeout_seconds: Optional timeout (seconds).
+        output_name: Optional sanitized output stem.
 
     Returns:
-        True si succès, False sinon
+        True on success, False otherwise.
 
     Raises:
-        subprocess.TimeoutExpired: Si le timeout est atteint
+        subprocess.TimeoutExpired: When the timeout is reached.
     """
     command = [
         "python3",
@@ -308,7 +309,7 @@ def run_sativa(
 
 
 def main():
-    """Point d'entrée principal."""
+    """Main entry point (Snakemake or standalone)."""
     start_time = time.time()
 
     try:

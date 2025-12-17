@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Script d'extraction des séquences CoL depuis la base de données ITS pour Snakemake
-Génère des fichiers FASTA séparés par type de barcode.
+Extract CoL sequences from the ITS database for Snakemake runs
+and emit separate FASTA files per barcode.
 
-Version SQLAlchemy / DatabaseManager :
-- Utilise DatabaseManager (db_manager.py) et SQLAlchemy.
-- Compatible PostgreSQL et SQLite via la config Snakemake.
+SQLAlchemy / DatabaseManager flavor:
+- Relies on DatabaseManager (db_manager.py) with SQLAlchemy sessions.
+- Works with both PostgreSQL and SQLite depending on Snakemake config.
 """
 
 import json
@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 class SequenceExtractor:
-    """Extracteur de séquences depuis la base de données ITS via DatabaseManager."""
+    """Extract CoL sequences from the ITS database via DatabaseManager."""
 
     def __init__(self, db_manager, db_label: str):
         """
         Args:
-            db_manager: instance de DatabaseManager (PostgreSQL ou SQLite).
-            db_label: chemin ou label de la base (uniquement pour le rapport).
+            db_manager: DatabaseManager instance (PostgreSQL or SQLite).
+            db_label: database label/path used purely for logs and reports.
         """
         self.db_manager = db_manager
         # Juste pour le contexte dans le rapport / logs
@@ -42,8 +42,8 @@ class SequenceExtractor:
 
     def extract_col_sequences(self) -> Dict[str, List[Tuple[int, str, str, int]]]:
         """
-        Extrait toutes les séquences avec backbone 'CoL' et barcode_status 'Pending',
-        en utilisant du SQL brut compatible PostgreSQL/SQLite et les bons noms de tables.
+        Extract every sequence with backbone 'CoL' and barcode_status 'Pending'
+        using backend-agnostic SQL (PostgreSQL/SQLite).
         """
 
         sequences_table = self.db_manager.sequences_table
@@ -78,14 +78,14 @@ class SequenceExtractor:
                         (seq_id, sequence, original_id, tax_id)
                     )
 
-            logger.info("Séquences extraites par barcode :")
+            logger.info("Sequences extracted per barcode:")
             for barcode, sequences in sequences_by_barcode.items():
-                logger.info(f"  {barcode}: {len(sequences)} séquences")
+                logger.info(f"  {barcode}: {len(sequences)} sequences")
 
             return dict(sequences_by_barcode)
 
         except Exception as e:
-            logger.error(f"Erreur lors de l'extraction : {e}", exc_info=True)
+            logger.error(f"Error while extracting CoL sequences: {e}", exc_info=True)
             raise
 
     @staticmethod
@@ -94,19 +94,14 @@ class SequenceExtractor:
         output_dir: str = "output"
     ) -> List[str]:
         """
-        Écrit les fichiers FASTA pour chaque barcode.
+        Write one FASTA file per barcode.
 
-        Args
-        ----
-        sequences_by_barcode :
-            Dict des séquences groupées par barcode.
-        output_dir :
-            Répertoire de sortie.
+        Args:
+            sequences_by_barcode: Mapping of barcode -> list of sequences.
+            output_dir: Destination directory for FASTA files.
 
-        Returns
-        -------
-        List[str]
-            Liste des fichiers créés.
+        Returns:
+            List of created FASTA paths as strings.
         """
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -114,23 +109,23 @@ class SequenceExtractor:
         created_files: List[str] = []
 
         for barcode, sequences in sequences_by_barcode.items():
-            # Nom du fichier : [barcode].fasta
+            # Output: [barcode].fasta
             filename = f"{barcode}.fasta"
             filepath = output_path / filename
 
             try:
                 with filepath.open('w') as f:
                     for seq_id, sequence, original_id, tax_id in sequences:
-                        # Header avec seq_id et tax_id comme demandé
+                        # Header uses seq_id and tax_id as requested
                         header = f">{seq_id}|tax_id:{tax_id}|original_id:{original_id}"
                         f.write(f"{header}\n")
                         f.write(f"{sequence}\n")
 
-                logger.info(f"Fichier créé: {filepath} ({len(sequences)} séquences)")
+                logger.info(f"Created FASTA {filepath} with {len(sequences)} sequences")
                 created_files.append(str(filepath))
 
             except Exception as e:
-                logger.error(f"Erreur lors de l'écriture de {filename} : {e}", exc_info=True)
+                logger.error(f"Failed to write {filename}: {e}", exc_info=True)
                 raise
 
         return created_files
@@ -140,17 +135,13 @@ class SequenceExtractor:
         sequences_by_barcode: Dict[str, List[Tuple[int, str, str, int]]]
     ) -> Dict:
         """
-        Génère les statistiques d'extraction.
+        Build extraction statistics.
 
-        Args
-        ----
-        sequences_by_barcode :
-            Dict des séquences groupées par barcode.
+        Args:
+            sequences_by_barcode: Mapping of barcode -> sequences.
 
-        Returns
-        -------
-        Dict
-            Statistiques globales + détaillées par barcode.
+        Returns:
+            Dict containing global metrics and per-barcode breakdowns.
         """
         total_sequences = 0
         all_tax_ids: List[int] = []
@@ -184,7 +175,7 @@ class SequenceExtractor:
 
 
 def main():
-    """Point d'entrée principal."""
+    """Main entry point (Snakemake or standalone)."""
     start_time = time.time()
 
     try:
@@ -221,7 +212,7 @@ def main():
 
             Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-        logger.info("Début de l'extraction des séquences CoL...")
+        logger.info("Starting CoL sequence extraction...")
 
         # ================== Initialisation du DatabaseManager ==================
         sys.path.append(str(Path(__file__).parent.parent / "utils"))
@@ -235,7 +226,7 @@ def main():
         sequences_by_barcode = extractor.extract_col_sequences()
 
         if not sequences_by_barcode:
-            logger.warning("Aucune séquence CoL trouvée dans la base de données")
+            logger.warning("No CoL sequences were found in the database")
 
             processing_time = time.time() - start_time
 
@@ -261,12 +252,12 @@ def main():
             }
 
         else:
-            # Génération des fichiers FASTA
-            logger.info("Génération des fichiers FASTA...")
+            # FASTA generation
+            logger.info("Generating FASTA files...")
             created_files = extractor.write_fasta_files(sequences_by_barcode, output_dir)
 
-            # Génération des statistiques
-            logger.info("Calcul des statistiques...")
+            # Statistics generation
+            logger.info("Computing extraction statistics...")
             stats = extractor.generate_stats(sequences_by_barcode)
 
             processing_time = time.time() - start_time
@@ -289,28 +280,28 @@ def main():
                 'status': 'success'
             }
 
-            logger.info("Extraction terminée avec succès !")
-            logger.info(f"Total des séquences extraites : {total_sequences}")
-            logger.info(f"Fichiers FASTA générés : {len(created_files)}")
-            logger.info(f"Taux de traitement : {processing_rate:.0f} séquences/seconde")
+            logger.info("Extraction completed successfully!")
+            logger.info(f"Total sequences extracted: {total_sequences}")
+            logger.info(f"FASTA files generated: {len(created_files)}")
+            logger.info(f"Processing rate: {processing_rate:.0f} sequences/second")
 
         # ================== Sauvegarde du rapport ==================
         if 'snakemake' in globals() or output_report:
             Path(output_report).parent.mkdir(parents=True, exist_ok=True)
             with open(output_report, 'w') as f:
                 json.dump(report_data, f, indent=2)
-            logger.info(f"Rapport sauvegardé : {output_report}")
+            logger.info(f"Report saved to: {output_report}")
 
-        # Résumé pour mode standalone
+        # Standalone summary
         if 'snakemake' not in globals():
-            print("\n=== RÉSUMÉ ===")
-            print(f"Total des séquences extraites : {report_data['stats']['total_sequences']}")
-            print(f"Fichiers FASTA générés : {len(report_data['files_created'])}")
-            print(f"Répertoire de sortie : {output_dir}")
-            print(f"Temps de traitement : {processing_time:.2f}s")
+            print("\n=== SUMMARY ===")
+            print(f"Total sequences extracted: {report_data['stats']['total_sequences']}")
+            print(f"FASTA files generated: {len(report_data['files_created'])}")
+            print(f"Output directory: {output_dir}")
+            print(f"Processing time: {processing_time:.2f}s")
 
     except Exception as e:
-        logger.critical(f"Erreur fatale lors de l'extraction CoL: {e}", exc_info=True)
+        logger.critical(f"Fatal error during CoL extraction: {e}", exc_info=True)
         sys.exit(1)
 
 

@@ -335,7 +335,7 @@ def main():
     logger.info(f"  MSA prep: Total={MSA_unique_sequences:,}, ITS1={MSA_pre_ITS1}, "
                 f"ITS2={MSA_pre_ITS2}, ITS={MSA_pre_ITS}")
 
-    # --- Traitement MSA ---
+    # --- MSA Processing ---
     msa_barcode_results = safe_get(reports["msa_run"], ['results', 'barcode_results'], {})
 
     MSA_unprocessed_ITS1 = safe_get(msa_barcode_results, ['ITS1', 'sequences_unprocessed'], 0)

@@ -19,46 +19,39 @@ def run_mafft(sequences_df: pd.DataFrame,
               tax_columns: List[str],
               id_col: str = "seq_id") -> Optional[str]:
     """
-    Exécute MAFFT sur un ensemble de séquences, sauvegarde le résultat dans le dossier de sortie
-    et retourne l'alignement au format FASTA.
-    
+    Run MAFFT on a set of sequences, save the result, and return the FASTA path.
+
     Args:
-        sequences_df: DataFrame contenant les séquences à aligner
-        barcode: Code-barres des séquences
-        clade_name: Nom du clade
-        level: Niveau taxonomique (genre, famille, etc.)
-        output_folder: Dossier de sortie
-        seq_col: Nom de la colonne de séquences
-        tax_columns: Colonnes taxonomiques
-        id_col: Nom de la colonne d'identifiant
+        sequences_df: DataFrame containing the sequences to align.
+        barcode: Barcode label.
+        clade_name: Clade name.
+        level: Taxonomic level (family, genus, etc.).
+        output_folder: Root output directory.
+        seq_col: Column holding sequences.
+        tax_columns: Taxonomy columns for FASTA headers.
+        id_col: Identifier column.
 
-        
     Returns:
-        str: Path du fichier de sortie
+        Path to the MAFFT alignment file.
     """
-    # Créer le répertoire de sortie
-
-    # output_dir = f"{output_folder}/{barcode}/alignments_{level}"
     output_dir = Path(output_folder) / barcode / f"alignments_{level}"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = f"{output_dir}/{clade_name}_msa.fasta"
     # print(f"DEBUG3: {output_file}")
     
-    # Créer un fichier d'entrée temporaire
+    # Write temporary input file for MAFFT
     with tempfile.NamedTemporaryFile(mode='w+', suffix=".fasta", delete=False) as infile:
         try:
-            # Écrire les séquences dans le fichier temporaire
+            # Stream sequences into the temporary input
             for _, row in sequences_df.iterrows():
                 header = utils.create_fasta_header(row, tax_columns, id_col)
                 infile.write(f"{header}\n{row[seq_col]}\n")
             infile_path = infile.name
         except Exception as e:
-            print(f"Erreur lors de l'écriture du fichier d'entrée: {str(e)}")
+            print(f"Error while writing MAFFT input file: {str(e)}")
             return None
-    
-    # Exécuter MAFFT
-    #  mafft --genafpair --maxiterate 1000 input_file > output_file   Futur version 
-    # https://www.drive5.com/muscle5/ -> Muscle > mafft
+
+    # Execute MAFFT
     command = ["mafft", "--auto", "--quiet", "--thread", "-1", infile_path]
     try:
         # Rediriger la sortie directement vers le fichier de sortie
@@ -71,14 +64,14 @@ def run_mafft(sequences_df: pd.DataFrame,
                 check=True
             )
         
-        # Supprimer le fichier temporaire
+        # Cleanup temporary file
         os.unlink(infile_path)
         
         return output_file
         
     except subprocess.CalledProcessError as e:
-        print(f"Erreur lors de l'exécution de MAFFT: {e.stderr}")
-        # Supprimer le fichier temporaire en cas d'erreur
+        print(f"MAFFT failed: {e.stderr}")
+        # Cleanup on failure
         if os.path.exists(infile_path):
             os.unlink(infile_path)
         return None
@@ -92,31 +85,28 @@ def run_hmmscan(sequences_df: pd.DataFrame,
                 max_evalue: float = 0.001,
                 dom_e_value: float = 0.001) -> pd.DataFrame:
     """
-    Exécute hmmscan sur un DataFrame de séquences contre une base HMM.
-
-    hmmscan est l'outil approprié pour scanner plusieurs séquences contre une base de profils HMM.
-    Il est optimisé pour ce cas d'usage (plus rapide que hmmsearch pour ce scénario).
+    Run hmmscan against a pressed HMM database for multiple sequences.
 
     Args:
-        sequences_df: DataFrame contenant les colonnes ID_COL et SEQUENCE_COL
-        hmm_db_path: Chemin vers le fichier HMM pressé (avec hmmpress)
-        seq_col: Nom de la colonne de séquences
-        max_thread_workers: Nombre max de threads par worker
-        tax_columns: Colonnes taxonomiques
-        id_col: Nom de la colonne d'identifiant
-        max_evalue: Seuil E-value maximum pour conserver un hit (défaut: 0.001)
-        dom_e_value: Seuil E-value pour les domaines (défaut: 0.001)
+        sequences_df: DataFrame containing the sequences.
+        hmm_db_path: path to the pressed HMM database (hmmpress outputs present).
+        seq_col: sequence column name.
+        max_thread_workers: number of threads passed to hmmscan.
+        tax_columns: taxonomy columns to render FASTA headers.
+        id_col: identifier column.
+        max_evalue: maximum E-value threshold.
+        dom_e_value: domain-level E-value (currently unused, placeholder).
 
     Returns:
-        DataFrame avec les colonnes [id_col, 'assigned_msa', 'score']
+        DataFrame with columns [id_col, 'assigned_msa', 'score', 'e_value'].
     """
-    # Vérifier si la base HMM a été pressée, sinon exécuter hmmpress
+    # Ensure hmmpress artifacts exist; otherwise run hmmpress
     index_files = ['.h3f', '.h3i', '.h3m', '.h3p']
     needs_press = any(not os.path.exists(hmm_db_path + ext) for ext in index_files)
 
     if needs_press:
         try:
-            print(f"Exécution de hmmpress sur {hmm_db_path}...")
+            print(f"Running hmmpress on {hmm_db_path}...")
             subprocess.run(
                 ['hmmpress', '-f', hmm_db_path],
                 check=True,
@@ -125,14 +115,14 @@ def run_hmmscan(sequences_df: pd.DataFrame,
                 text=True
             )
         except subprocess.CalledProcessError as e:
-            print(f"Erreur lors de l'exécution de hmmpress: {e.stderr}")
+            print(f"hmmpress failed: {e.stderr}")
             return pd.DataFrame(columns=[id_col, 'assigned_msa', 'score'])
 
-    # Créer les fichiers temporaires
+    # Create temporary FASTA/tbl files
     with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False) as fasta_file, \
          tempfile.NamedTemporaryFile(mode='w', suffix='.tbl', delete=False) as tbl_file:
 
-        # Écrire le fichier FASTA
+        # Build FASTA input
         for _, row in sequences_df.iterrows():
             header = utils.create_fasta_header(row, tax_columns, id_col)
             fasta_file.write(f"{header}\n{row[seq_col]}\n")
@@ -140,21 +130,20 @@ def run_hmmscan(sequences_df: pd.DataFrame,
         tbl_path = tbl_file.name
 
     try:
-        # Exécuter hmmscan (optimisé pour scanner plusieurs séquences)
+        # Execute hmmscan
         command = [
             'hmmscan',
             '--tblout', tbl_path,
             '--cpu', str(max_thread_workers),
             '--noali',
-            # '-E', str(max_evalue),        # Seuil E-value pour accélération
-            # '--domE', str(dom_e_value), # Seuil E-value pour domaines
+            # '-E', str(max_evalue),        # Uncomment to enforce an E-value threshold
+            # '--domE', str(dom_e_value),   # Domain-level threshold (currently unused)
             hmm_db_path,
             fasta_path
         ]
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        # Parser les résultats
-        # IMPORTANT: hmmscan inverse les colonnes par rapport à hmmsearch (profil/seq).
+        # Parse hmmscan output (note: hmmscan swaps profile/sequence columns vs hmmsearch)
         hits = []
         with open(tbl_path, 'r') as f:
             for line in f:
@@ -163,7 +152,7 @@ def run_hmmscan(sequences_df: pd.DataFrame,
                 parts = line.split()
                 if len(parts) < 18:
                     continue
-                # Pour hmmscan: query (parts[2]) = seq_id, target (parts[0]) = profile_name
+                # hmmscan: query (parts[2]) = seq_id, target (parts[0]) = profile_name
                 seq_id = parts[2].split('|')[0]
                 hits.append({
                     id_col: seq_id,  # UUID string
@@ -185,10 +174,10 @@ def run_hmmscan(sequences_df: pd.DataFrame,
         return df.drop_duplicates(id_col)
 
     except subprocess.CalledProcessError as e:
-        print(f"Erreur hmmscan: {e.stderr}")
+        print(f"hmmscan failed: {e.stderr}")
         return pd.DataFrame(columns=[id_col, 'assigned_msa', 'score'])
     finally:
-        # Nettoyer les fichiers temporaires
+        # Cleanup temporary files
         for path in [fasta_path, tbl_path]:
             try:
                 if path and os.path.exists(path):
@@ -199,23 +188,23 @@ def run_hmmscan(sequences_df: pd.DataFrame,
 
 def create_hmm_database(hmm_dir: str, combined_hmm_path: str) -> bool:
     """
-    Concatène tous les fichiers .hmm d'un dossier et crée une base de données avec hmmpress.
+    Concatenate all .hmm files from a directory and run hmmpress on the result.
 
     Args:
-        hmm_dir (str): Chemin du dossier contenant les fichiers .hmm
-        combined_hmm_path (str): Chemin du fichier .hmm combiné à créer
+        hmm_dir (str): Directory containing .hmm files (recursively searched).
+        combined_hmm_path (str): Destination path for the combined HMM.
 
     Returns:
-        bool: True si succès, False sinon
+        bool: True on success, False otherwise.
     """
     try:
-        # Concaténer les fichiers .hmm (recherche récursive pour supporter des sous-répertoires par niveau)
+        # Recursively gather all .hmm files
         hmm_files = glob.glob(os.path.join(hmm_dir, '**', '*.hmm'), recursive=True)
         if not hmm_files:
-            print(f"Avertissement: Aucun fichier .hmm trouvé dans {hmm_dir}")
+            print(f"Warning: no .hmm files found in {hmm_dir}")
             return False
 
-        # Supprimer les anciens fichiers d'index s'ils existent
+        # Remove previous hmmpress artifacts
         for ext in ['.h3f', '.h3i', '.h3m', '.h3p']:
             if os.path.exists(combined_hmm_path + ext):
                 os.remove(combined_hmm_path + ext)
@@ -225,7 +214,7 @@ def create_hmm_database(hmm_dir: str, combined_hmm_path: str) -> bool:
                 with open(hmm_file, 'r') as infile:
                     outfile.write(infile.read())
 
-        # Lancer hmmpress
+        # Run hmmpress
         subprocess.run(
             ['hmmpress', combined_hmm_path],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -233,39 +222,39 @@ def create_hmm_database(hmm_dir: str, combined_hmm_path: str) -> bool:
         return True
 
     except subprocess.CalledProcessError as e:
-        print(f"Erreur lors de l'exécution de hmmpress: {e.stderr}")
+        print(f"hmmpress failed: {e.stderr}")
         return False
     except Exception as e:
-        print(f"Erreur inattendue lors de la création de la base HMM: {str(e)}")
+        print(f"Unexpected error while creating HMM database: {str(e)}")
         return False
 
 def combine_hmm_databases(hmm_paths: List[str], output_path: str) -> bool:
     """
-    Combine plusieurs bases HMM en une seule.
+    Merge multiple HMM databases into one.
 
     Args:
-        hmm_paths: Liste des chemins vers les bases HMM à combiner
-        output_path: Chemin de sortie de la base combinée
+        hmm_paths: List of paths to existing HMM databases.
+        output_path: Destination for the combined database.
 
     Returns:
-        True si succès, False sinon
+        True on success, False otherwise.
     """
     try:
-        # Supprimer les anciens index
+        # Remove previous hmmpress artifacts
         for ext in ['.h3f', '.h3i', '.h3m', '.h3p']:
             if os.path.exists(output_path + ext):
                 os.remove(output_path + ext)
 
-        # Concaténer les fichiers HMM
+        # Concatenate HMM files
         with open(output_path, 'w') as outfile:
             for hmm_path in hmm_paths:
                 if os.path.exists(hmm_path):
                     with open(hmm_path, 'r') as infile:
                         outfile.write(infile.read())
                 else:
-                    print(f"Avertissement: Fichier HMM introuvable: {hmm_path}")
+                    print(f"Warning: missing HMM file {hmm_path}")
 
-        # Indexer avec hmmpress
+        # Rebuild indexes with hmmpress
         subprocess.run(
             ['hmmpress', '-f', output_path],
             check=True,
@@ -276,30 +265,30 @@ def combine_hmm_databases(hmm_paths: List[str], output_path: str) -> bool:
 
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Erreur lors de l'exécution de hmmpress: {e.stderr}")
+        print(f"hmmpress failed: {e.stderr}")
         return False
     except Exception as e:
-        print(f"Erreur inattendue lors de la combinaison des bases HMM: {str(e)}")
+        print(f"Unexpected error while combining HMM databases: {str(e)}")
         return False
 
 
 def run_hmmbuild(msa_path: str, hmm_path: str, barcode: str = None) -> bool:
     """
-    Exécute hmmbuild pour générer un fichier HMM à partir d'un alignement MSA avec un nom unique.
+    Execute hmmbuild to generate a profile from a single MSA.
 
     Args:
-        msa_path (str): Chemin du fichier d'alignement MSA (FASTA)
-        hmm_path (str): Chemin de sortie du fichier HMM
-        barcode (str, optional): Barcode pour préfixer le nom du profile (éviter les conflits)
+        msa_path (str): path to the MSA FASTA.
+        hmm_path (str): destination HMM file.
+        barcode (str, optional): optional barcode prefix for the profile name.
 
     Returns:
-        bool: True si succès, False sinon
+        bool: True on success, False otherwise.
     """
     try:
-        # Extraire le nom du clade depuis le path
+        # Extract clade name from filename
         clade_name = Path(msa_path).stem.replace('_msa', '')
 
-        # Préfixer avec le barcode si fourni
+        # Prefix with barcode if provided
         if barcode:
             profile_name = f"{barcode}_{clade_name}"
         else:
@@ -314,10 +303,10 @@ def run_hmmbuild(msa_path: str, hmm_path: str, barcode: str = None) -> bool:
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Erreur lors de l'exécution de hmmbuild pour {msa_path}: {e.stderr}")
+        print(f"hmmbuild failed for {msa_path}: {e.stderr}")
         return False
     except Exception as e:
-        print(f"Erreur inattendue lors de hmmbuild pour {msa_path}: {str(e)}")
+        print(f"Unexpected error during hmmbuild for {msa_path}: {str(e)}")
         return False
 
 
@@ -325,10 +314,10 @@ def run_hmmbuild(msa_path: str, hmm_path: str, barcode: str = None) -> bool:
 def run_mafft_add(new_sequences_df: pd.DataFrame,
                   existing_msa_path: str,
                   output_msa_path: str,
-                  seq_col: str,
-                  tax_columns: List[str],
-                  max_thread_workers: int,
-                  id_col: str = "seq_id") -> bool:
+                 seq_col: str,
+                 tax_columns: List[str],
+                 max_thread_workers: int,
+                 id_col: str = "seq_id") -> bool:
     """
     Adds sequences from a DataFrame to an existing MSA file using mafft --add.
 
@@ -336,15 +325,15 @@ def run_mafft_add(new_sequences_df: pd.DataFrame,
         new_sequences_df: DataFrame with the sequences to add.
         existing_msa_path: Path to the existing MSA file (in FASTA format).
         output_msa_path: Path to write the updated MSA file.
-        seq_col: Nom de la colonne de séquences
-        tax_columns: Colonnes taxonomiques
-        id_col: Nom de la colonne d'identifiant
+        seq_col: Sequence column name.
+        tax_columns: Taxonomy columns.
+        id_col: Identifier column name.
         
     Returns:
         True if successful, False otherwise.
     """
     if not os.path.exists(existing_msa_path):
-        print(f"Erreur : Le fichier MSA existant n'a pas été trouvé : {existing_msa_path}")
+        print(f"Error: existing MSA file not found: {existing_msa_path}")
         return False
 
     # Create a temporary file for the new sequences to be added
@@ -375,18 +364,18 @@ def run_mafft_add(new_sequences_df: pd.DataFrame,
             return True
 
         except subprocess.CalledProcessError as e:
-            print(f"Erreur lors de l'exécution de mafft --add pour {os.path.basename(existing_msa_path)}.")
-            print(f"Stderr: {e.stderr}")
+            print(f"mafft --add failed for {os.path.basename(existing_msa_path)}.")
+            print(f"stderr: {e.stderr}")
             return False
         except Exception as e:
-            print(f"Une erreur inattendue est survenue lors de l'alignement de profil : {str(e)}")
+            print(f"Unexpected error during profile alignment: {str(e)}")
             return False
 
 
 def run_trimal_and_identify_removed(input_msa_path: str, seq_overlap_threshold: int, seq_resoverlap_threshold: int) -> set:
     """
-    Exécute trimal sur un MSA, écrase le fichier d'entrée avec le résultat nettoyé,
-    et retourne les IDs des séquences qui ont été supprimées.
+    Run trimal on an MSA, overwrite the original file with the cleaned result,
+    and return the IDs of sequences that were removed.
     """
     if not os.path.exists(input_msa_path) or os.path.getsize(input_msa_path) == 0:
         return set()
@@ -395,42 +384,42 @@ def run_trimal_and_identify_removed(input_msa_path: str, seq_overlap_threshold: 
     trimmed_msa_path = "" # Initialisation
 
     try:
-        # 1. Lire les IDs de séquences originales avant le nettoyage
+        # 1. Read original sequence IDs before trimming
         original_ids = utils.get_fasta_ids(input_msa_path)
         if not original_ids:
             return set()
 
-        # 2. Créer un fichier de sortie temporaire
+        # 2. Create a temporary output file
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".fasta", dir=output_dir) as tmp_out:
             trimmed_msa_path = tmp_out.name
 
-        # 3. Construire et exécuter la commande trimal
+        # 3. Run trimal with the configured thresholds
         command = [
             'trimal',
             '-in', input_msa_path,
             '-out', trimmed_msa_path,
             '-seqoverlap', str(seq_overlap_threshold),
             '-resoverlap', str(seq_resoverlap_threshold),
-            '-noallgaps' # Retire les colonnes avec uniquement des gaps
+            '-noallgaps'  # Drop columns containing only gaps
         ]
         subprocess.run(command, capture_output=True, text=True, check=True)
 
-        # 4. Lire les IDs du fichier nettoyé
+        # 4. Read IDs from the cleaned file
         trimmed_ids = utils.get_fasta_ids(trimmed_msa_path)
 
-        # 5. Identifier les séquences supprimées et mettre à jour le fichier MSA
+        # 5. Identify removed sequences and replace the original file
         removed_ids = set(original_ids) - set(trimmed_ids)
         os.replace(trimmed_msa_path, input_msa_path)
 
         return removed_ids
 
     except subprocess.CalledProcessError as e:
-        print(f"Erreur Trimal sur {os.path.basename(input_msa_path)}: {e.stderr}")
+        print(f"trimal failed on {os.path.basename(input_msa_path)}: {e.stderr}")
         if os.path.exists(trimmed_msa_path):
             os.remove(trimmed_msa_path)
         return set()
     except Exception as e:
-        print(f"Erreur inattendue durant le nettoyage Trimal: {e}")
+        print(f"Unexpected error during Trimal cleanup: {e}")
         if os.path.exists(trimmed_msa_path):
             os.remove(trimmed_msa_path)
         return set()

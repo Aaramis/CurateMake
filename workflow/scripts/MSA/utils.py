@@ -4,49 +4,49 @@ from typing import List
 
 def create_fasta_header(row: pd.Series, tax_columns: List[str], id_col: str = "seq_id") -> str:
     """
-    Crée un en-tête FASTA complet à partir d'une ligne de DataFrame.
-    Format : >ID|k__kingdom;p__phylum;c__class;...
+    Build a FASTA header from a DataFrame row.
+    Format: >ID|kingdom=...|phylum=...|...
 
     Args:
-        row: Une Series pandas représentant une séquence et sa taxonomie.
-        tax_columns: Colonnes taxonomiques
-        id_col: Nom de la colonne d'identifiant
+        row: pandas Series representing a sequence + taxonomy.
+        tax_columns: Taxonomy columns to include.
+        id_col: Identifier column name (default seq_id).
 
     Returns:
-        Un en-tête formaté pour un fichier FASTA.
+        FASTA header string.
     """
-    # Récupère l'identifiant de base de la séquence
+    # Grab the base identifier
     base_id = row[id_col]
     
     taxonomy_parts = []
     for col_name in tax_columns:
-        # Vérifie si la colonne existe et si sa valeur n'est pas nulle
+        # Ensure column exists and value is not NaN
         if col_name in row and pd.notna(row[col_name]):
             value = row[col_name]
-            # Ajoute la partie au format 'nom_colonne=valeur'
+            # Append as column=value
             taxonomy_parts.append(f"{col_name}={value}")
 
-    # Assemble la chaîne de taxonomie avec des '|'
+    # Assemble taxonomy chain
     if taxonomy_parts:
         taxonomy_string = "|".join(taxonomy_parts)
-        # Combine l'ID et la taxonomie pour l'en-tête final
+        # Combine ID + taxonomy
         return f">{base_id}|{taxonomy_string}"
     else:
-        # Si aucune information taxonomique n'est trouvée, retourne juste l'ID
+        # No taxonomy data available
         return f">{base_id}"
 
 
 def get_fasta_ids(fasta_path: str) -> list:
-    """Lit un fichier FASTA et retourne une liste des en-têtes de séquences."""
+    """Return the sequence headers from a FASTA file."""
     ids = []
     try:
         with open(fasta_path, 'r') as f:
             for line in f:
                 if line.startswith('>'):
-                    # Extrait l'ID (le premier mot après '>')
+                    # Grab the first token after '>'
                     ids.append(line[1:].split()[0].strip())
     except FileNotFoundError:
-        print(f"Avertissement: Fichier non trouvé {fasta_path}")
+        print(f"Warning: FASTA file not found {fasta_path}")
     return ids
 
 
@@ -73,10 +73,10 @@ def analyze_msa_file(msa_path, logger):
             
             for seq in sequences[1:]:
                 if len(seq) != alignment_length:
-                    logger.warning(f"Incohérence dans la longueur des séquences dans {msa_path}")
+                    logger.warning(f"Inconsistent alignment length detected in {msa_path}")
                     break
             
             return num_sequences, alignment_length
     except Exception as e:
-        logger.error(f"Erreur lors de l'analyse du fichier MSA {msa_path}: {str(e)}")
+        logger.error(f"Failed to analyze MSA file {msa_path}: {str(e)}")
         return 0, 0

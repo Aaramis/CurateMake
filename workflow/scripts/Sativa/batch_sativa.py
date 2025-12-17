@@ -30,7 +30,7 @@ from auto_sativa import (
 from dataclasses import asdict
 
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
@@ -40,25 +40,25 @@ logger = logging.getLogger(__name__)
 
 def cleanup_old_temp_files(sativa_script_path: Path, retention_hours: int = 24, cleanup_enabled: bool = True):
     """
-    Nettoie les fichiers temporaires SATIVA anciens.
+    Remove stale SATIVA temporary folders.
 
     Args:
-        sativa_script_path: Chemin vers le script SATIVA
-        retention_hours: Durée de rétention des fichiers temp (en heures)
-        cleanup_enabled: Active/désactive le nettoyage
+        sativa_script_path: Path to the SATIVA script (used to locate tmp dir).
+        retention_hours: Retention period for temp folders.
+        cleanup_enabled: Disable if cleanup should be skipped.
     """
     if not cleanup_enabled:
-        logger.info("Cleanup des fichiers temporaires désactivé")
+        logger.info("Temporary file cleanup disabled")
         return
 
     tmp_dir = sativa_script_path.parent / "sativa" / "tmp"
 
     if not tmp_dir.exists():
-        logger.info(f"Dossier temporaire inexistant : {tmp_dir}")
+        logger.info(f"Temporary directory not found: {tmp_dir}")
         return
 
-    logger.info(f"Nettoyage des fichiers temporaires dans : {tmp_dir}")
-    logger.info(f"Rétention : {retention_hours}h")
+    logger.info(f"Cleaning temporary files in {tmp_dir}")
+    logger.info(f"Retention window: {retention_hours}h")
 
     now = time.time()
     cleaned = 0
@@ -72,22 +72,22 @@ def cleanup_old_temp_files(sativa_script_path: Path, retention_hours: int = 24, 
             age_hours = (now - folder.stat().st_mtime) / 3600
 
             if age_hours > retention_hours:
-                # Calculer la taille avant suppression
+                # Calculate size prior to deletion
                 folder_size = sum(f.stat().st_size for f in folder.rglob('*') if f.is_file())
                 total_size += folder_size
 
-                logger.debug(f"Suppression : {folder.name} (âge: {age_hours:.1f}h, taille: {folder_size / 1024 / 1024:.1f} MB)")
+                logger.debug(f"Deleting {folder.name} (age {age_hours:.1f}h, size {folder_size / 1024 / 1024:.1f} MB)")
 
                 shutil.rmtree(folder, ignore_errors=True)
                 cleaned += 1
 
         if cleaned > 0:
-            logger.info(f"✓ {cleaned} dossiers temporaires supprimés ({total_size / 1024 / 1024:.1f} MB libérés)")
+            logger.info(f"✓ Removed {cleaned} temp directories ({total_size / 1024 / 1024:.1f} MB freed)")
         else:
-            logger.info("Aucun fichier temporaire à nettoyer")
+            logger.info("No temporary directories required cleaning")
 
     except Exception as e:
-        logger.warning(f"Erreur lors du nettoyage des fichiers temporaires : {e}")
+        logger.warning(f"Error while cleaning temporary SATIVA directories: {e}")
 
 
 def _infer_taxon_from_filename(msa_file: Path) -> str:
@@ -107,10 +107,10 @@ def _infer_taxon_from_filename(msa_file: Path) -> str:
 
 def get_all_msa_files(msa_dir: Path, barcodes: List[str], tax_levels: List[str]) -> List[Tuple[str, str, str, Path]]:
     """
-    Récupère tous les fichiers MSA disponibles.
+    Enumerate every available MSA file for the requested barcodes/levels.
 
     Returns:
-        Liste de tuples (barcode, tax_level, taxon, msa_path)
+        List of tuples (barcode, tax_level, taxon, msa_path)
     """
     msa_files = []
 
@@ -118,19 +118,19 @@ def get_all_msa_files(msa_dir: Path, barcodes: List[str], tax_levels: List[str])
         logger.warning(f"MSA directory does not exist: {msa_dir}")
         return []
 
-    # Parcourir les barcodes
+    # Iterate over barcodes
     for barcode in barcodes:
         barcode_dir = msa_dir / barcode
         if not barcode_dir.exists():
             continue
 
-        # Parcourir les niveaux taxonomiques
+        # Iterate over taxonomic levels
         for tax_level in tax_levels:
             tax_dir = barcode_dir / f"alignments_{tax_level}"
             if not tax_dir.exists():
                 continue
 
-            # Trouver tous les fichiers MSA
+            # Gather candidate MSA files
             trimmed_files = sorted(tax_dir.glob("*_msa.trimmed.fasta"))
             candidate_files = trimmed_files if trimmed_files else sorted(tax_dir.glob("*_msa.fasta"))
 
@@ -158,10 +158,7 @@ def process_single_msa(
     timeout_seconds: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Traite un seul MSA avec SATIVA.
-
-    Returns:
-        Dictionnaire avec les résultats (summary JSON)
+    Process one MSA through SATIVA and return its summary JSON payload.
     """
     start_time = time.time()
 
@@ -343,7 +340,7 @@ def process_single_msa(
 
 
 def main():
-    """Point d'entrée principal."""
+    """Main entry point."""
     overall_start_time = time.time()
 
     try:

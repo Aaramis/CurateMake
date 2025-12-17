@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-BOLD Parser - Import BOLD TSV-in-TAR into the unified SQLAlchemy DB.
+BOLD Parser - Import BOLD TSV-in-TAR archives into the unified SQLAlchemy DB.
 
-- Lecture d'un tar.gz contenant un TSV BOLD
-- Parsing en streaming avec pandas (chunks)
-- Filtrage par marker ITS / ITS1 / ITS2
-- Validation/cleaning des séquences
-- Insertion bulk optimisée via SQLAlchemy :
+- Read a tar.gz archive containing a BOLD TSV
+- Stream-parse it with pandas chunks
+- Filter on ITS / ITS1 / ITS2 markers
+- Validate and clean the sequences
+- Perform optimized bulk inserts through SQLAlchemy:
     - Taxonomy
     - Sequences
-    - SeqTax (avec déduplication silencieuse (Option A))
-- Statistiques de traitement + rapport JSON (utilisé par Snakemake)
+    - SeqTax (with silent deduplication, Option A)
+- Produce processing statistics + JSON report (used by Snakemake)
 """
 
 import os
@@ -29,26 +29,26 @@ import multiprocessing as mp
 
 import pandas as pd
 
-# Logging global
+# Global logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Constantes de performance
-BATCH_SIZE = 10_000       # Taille des batches pour l'écriture DB
-QUEUE_SIZE = 20           # Taille des queues entre reader / workers / writer
-MIN_SEQUENCE_LENGTH = 50  # Longueur mini par défaut
-TSV_CHUNK_SIZE = 10_000   # Taille des chunks Pandas
+# Performance constants
+BATCH_SIZE = 10_000       # Batch size used when writing to the database
+QUEUE_SIZE = 20           # Queue size between reader / workers / writer
+MIN_SEQUENCE_LENGTH = 50  # Default minimum sequence length
+TSV_CHUNK_SIZE = 10_000   # pandas chunk size
 
-# Markers ITS acceptés
+# Accepted ITS markers
 ACCEPTED_MARKERS = {"ITS", "ITS1", "ITS2"}
 
 
 @dataclass
 class SequenceRecord:
-    """Structure de données pour une séquence BOLD normalisée."""
+    """Data container for a normalized BOLD sequence."""
     original_id: str
     sequence: str
     length: int
@@ -63,14 +63,14 @@ class SequenceRecord:
 
 
 class BOLDParser:
-    """Pipeline de parsing & insertion BOLD vers la base SQLAlchemy."""
+    """Parsing and ingestion pipeline from BOLD into the SQLAlchemy database."""
 
     def __init__(self, db_manager, config_validation: Dict):
         self.db_manager = db_manager
         self.config_validation = config_validation
         self.batch_size = BATCH_SIZE
 
-        # Statistiques partagées
+        # Shared statistics
         self.stats = mp.Manager().dict({
             "total_sequences": 0,
             "processed_sequences": 0,
@@ -80,12 +80,12 @@ class BOLDParser:
             "processing_time": 0.0,
         })
 
-        # Validation des séquences
+        # Sequence validation settings
         self.valid_chars = set(self.config_validation.get("valid_chars", "ATCGN"))
         self.min_length = self.config_validation.get("min_length", MIN_SEQUENCE_LENGTH)
         self.max_n_fraction = self.config_validation.get("max_n_fraction", 0.1)
 
-        # Mapping des colonnes BOLD (au cas où tu veuilles réutiliser plus tard)
+        # Mapping of BOLD columns kept for potential reuse later
         self.column_mapping = {
             "sampleid": "sampleid",
             "record_id": "record_id",
@@ -101,10 +101,10 @@ class BOLDParser:
         }
 
     # --------------------------
-    # 1. Validation des séquences
+    # 1. Sequence validation
     # --------------------------
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
-        """Validation rapide de séquence (longueur, N, caractères autorisés)."""
+        """Fast sequence validation (length, N content, allowed characters)."""
         if not sequence:
             return False, 0, 1.0
 
@@ -132,10 +132,10 @@ class BOLDParser:
         return True, seq_len, n_fraction
 
     # --------------------------
-    # 2. Extraction du TSV
+    # 2. TSV extraction
     # --------------------------
     def extract_tsv_from_tar(self, tar_path: str) -> str:
-        """Extrait le TSV depuis un .tar.gz BOLD et retourne le chemin local."""
+        """Extract the TSV from a BOLD .tar.gz archive and return its path."""
         logger.info(f"Extracting TSV from {tar_path}")
 
         with tarfile.open(tar_path, "r:gz") as tar:
@@ -163,10 +163,10 @@ class BOLDParser:
         return str(extracted_path)
 
     # --------------------------
-    # 3. Reader TSV → queue
+    # 3. TSV reader → queue
     # --------------------------
     def tsv_reader(self, file_path: str, queue: Queue) -> None:
-        """Lecture TSV robuste avec pandas + chunking, push dans queue."""
+        """Robust chunked TSV reader using pandas that pushes into the queue."""
         logger.info(f"Starting pandas TSV reader for {file_path}")
         line_count = 0
 
@@ -243,10 +243,10 @@ class BOLDParser:
             )
 
     # --------------------------
-    # 4. Nettoyage des champs
+    # 4. Field cleaning
     # --------------------------
     def _clean_sequence(self, sequence: str) -> str:
-        """Nettoyage complet de la séquence : majuscules + filtres chars valides."""
+        """Deep-clean a sequence: uppercase + valid character filter."""
         if not sequence:
             return ""
 
@@ -256,7 +256,7 @@ class BOLDParser:
         return "".join(c for c in sequence if c in self.valid_chars)
 
     def _clean_taxonomic_field(self, value: Optional[str]) -> Optional[str]:
-        """Nettoie un champ taxonomique (None si vide/NA/etc.)."""
+        """Clean a taxonomy field (return None if empty / NA / etc.)."""
         if value is None:
             return None
 
@@ -267,7 +267,7 @@ class BOLDParser:
         return val.replace("_", " ").strip()
 
     def _clean_field(self, value: str) -> Optional[str]:
-        """Nettoyage général pour un champ string."""
+        """Generic cleaning routine for a string field."""
         if value is None:
             return None
         val = str(value).strip()
@@ -276,13 +276,13 @@ class BOLDParser:
         return val
 
     # --------------------------
-    # 5. Worker de transformation
+    # 5. Transformation worker
     # --------------------------
     def sequence_processor_worker(
         self, chunk: List[Tuple[Dict, int]]
     ) -> List[SequenceRecord]:
         """
-        Transforme un chunk de lignes TSV (dict) en SequenceRecord normalisés.
+        Transform a chunk of TSV rows (dict) into normalized SequenceRecords.
         """
         results: List[SequenceRecord] = []
 
@@ -324,12 +324,12 @@ class BOLDParser:
         return results
 
     # --------------------------
-    # 6. Writer DB (bulk SQLAlchemy)
+    # 6. Database writer (bulk SQLAlchemy)
     # --------------------------
     def db_writer_consumer(self, source_id: str, results_queue: Queue) -> None:
         """
-        Consommateur qui récupère des SequenceRecord depuis results_queue,
-        les flushe en base par batches via SQLAlchemy.
+        Consumer that pulls SequenceRecords from results_queue and flushes them
+        to the database in batches through SQLAlchemy.
 
         Args:
             source_id: Source ID (UUID string)
@@ -373,14 +373,14 @@ class BOLDParser:
         self, batch: List[SequenceRecord], source_id: str
     ) -> None:
         """
-        Flush d'un batch de SequenceRecord vers la base via db_manager (source_id is UUID string) :
+        Flush a batch of SequenceRecords through db_manager (source_id is UUID):
 
-        1. Prépare les taxonomies
+        1. Prepare taxonomy records
         2. Bulk insert taxonomies → tax_id_map
-        3. Prépare les séquences
-        4. Bulk insert séquences → seq_id_map
-        5. Prépare relations seq_tax (Raw/Pending) avec DÉDUPLICATION (Option A)
-        6. Bulk insert seq_tax
+        3. Prepare sequences
+        4. Bulk insert sequences → seq_id_map
+        5. Prepare seq_tax relations (Raw/Pending) with silent deduplication
+        6. Bulk insert seq_tax entries
         """
         # 1. Taxonomies
         taxonomy_data: List[Dict] = []
@@ -412,7 +412,7 @@ class BOLDParser:
 
         tax_id_map = self.db_manager.bulk_insert_taxonomies(taxonomy_data)
 
-        # 2. Séquences
+        # 2. Sequences
         sequence_data: List[Dict] = []
         for record in batch:
             seq_dict = {
@@ -427,7 +427,7 @@ class BOLDParser:
 
         seq_id_map = self.db_manager.bulk_insert_sequences(sequence_data)
 
-        # 3. Relations seq_tax (avec déduplication)
+        # 3. Seq_tax relations (with deduplication)
         relation_set = set()  # (seq_id, tax_id, 'Raw')
         relation_data: List[Dict] = []
 
@@ -441,7 +441,7 @@ class BOLDParser:
 
             key = (seq_id, tax_id, "Raw")
             if key in relation_set:
-                # Option A : dédup silencieuse
+                # Option A: silent deduplication
                 continue
 
             relation_set.add(key)
@@ -459,21 +459,21 @@ class BOLDParser:
             self.db_manager.bulk_insert_seq_tax(relation_data)
 
     # --------------------------
-    # 7. Orchestration complète
+    # 7. Full orchestration
     # --------------------------
     def process_bold_database(self, input_file: str, source_name: str = "BOLD") -> Dict:
         """
-        Pipeline complet de traitement BOLD :
-        - configure DB pour bulk
-        - extrait TSV
-        - lance reader + workers + writer
-        - nettoie, restaure DB
-        - renvoie les stats
+        Complete BOLD processing pipeline:
+        - configure DB for bulk operations
+        - extract the TSV file
+        - launch reader + workers + writer
+        - clean up and restore DB settings
+        - return processing statistics
         """
         start_time = time.time()
         logger.info(f"Starting BOLD processing: {input_file}")
 
-        # Optimisations DB (no-op en V2 mais gardé pour compat)
+        # DB optimizations (no-op in V2 but kept for compatibility)
         self.db_manager.optimize_for_bulk_insert_advanced()
         source_id = self.db_manager.add_source(name=source_name, file_path=input_file)
 
@@ -555,7 +555,7 @@ class BOLDParser:
 
 
 # --------------------------
-# 8. Point d'entrée script
+# 8. Script entry point
 # --------------------------
 def main():
     try:

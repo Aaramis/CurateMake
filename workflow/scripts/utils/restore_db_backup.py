@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script pour restaurer la base de données ITS à partir d'un backup.
+Restore the ITS database from a backup.
 
 Usage:
     python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db
@@ -16,27 +16,27 @@ from datetime import datetime
 
 def verify_database(db_path: Path) -> bool:
     """
-    Vérifie l'intégrité d'une base de données SQLite.
+    Verify the integrity of a SQLite database.
 
     Args:
-        db_path: Chemin vers le fichier de base de données
+        db_path: Path to the database file
 
     Returns:
-        True si la DB est valide, False sinon
+        True if the DB is valid, False otherwise
     """
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # # Vérifier l'intégrité
+        # # Run a full integrity check
         # cursor.execute("PRAGMA integrity_check")
         # result = cursor.fetchone()
 
         # if result[0] != "ok":
-        #     print(f"❌ Erreur d'intégrité: {result[0]}")
+        #     print(f"❌ Integrity error: {result[0]}")
         #     return False
 
-        # Vérifier que les tables principales existent
+        # Ensure that the main tables exist
         cursor.execute("""
             SELECT name FROM sqlite_master
             WHERE type='table' AND name IN ('sources', 'sequences', 'taxonomy', 'seq_tax')
@@ -46,41 +46,41 @@ def verify_database(db_path: Path) -> bool:
 
         if tables != expected_tables:
             missing = expected_tables - tables
-            print(f"❌ Tables manquantes: {missing}")
+            print(f"❌ Missing tables: {missing}")
             return False
 
-        # Afficher quelques statistiques
-        print("\n📊 Statistiques de la base de données:")
+        # Display a few statistics
+        print("\n📊 Database statistics:")
         for table in ['sources', 'sequences', 'taxonomy', 'seq_tax']:
             cursor.execute(f"SELECT COUNT(*) FROM {table}")
             count = cursor.fetchone()[0]
-            print(f"  - {table}: {count:,} entrées")
+            print(f"  - {table}: {count:,} entries")
 
         conn.close()
         return True
 
     except sqlite3.Error as e:
-        print(f"❌ Erreur SQLite: {e}")
+        print(f"❌ SQLite error: {e}")
         return False
     except Exception as e:
-        print(f"❌ Erreur: {e}")
+        print(f"❌ Error: {e}")
         return False
 
 
 def create_safety_backup(db_path: Path) -> Path:
     """
-    Crée une sauvegarde de sécurité de la DB actuelle.
+    Create a safety backup of the current database.
 
     Args:
-        db_path: Chemin vers le fichier de base de données actuel
+        db_path: Path to the current database file
 
     Returns:
-        Chemin vers le fichier de backup créé
+        Path to the created backup file
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.parent / f"{db_path.stem}_before_restore_{timestamp}.db"
 
-    print(f"💾 Création d'une sauvegarde de sécurité: {backup_path.name}")
+    print(f"💾 Creating a safety backup: {backup_path.name}")
     shutil.copy2(db_path, backup_path)
 
     return backup_path
@@ -88,66 +88,66 @@ def create_safety_backup(db_path: Path) -> Path:
 
 def restore_database(backup_path: Path, target_path: Path, skip_verification: bool = False) -> bool:
     """
-    Restaure la base de données à partir d'un backup.
+    Restore the database from a backup file.
 
     Args:
-        backup_path: Chemin vers le fichier de backup
-        target_path: Chemin vers le fichier cible
-        skip_verification: Si True, ne vérifie pas l'intégrité du backup
+        backup_path: Path to the backup file
+        target_path: Path to the destination DB
+        skip_verification: Skip integrity checks when True
 
     Returns:
-        True si la restauration a réussi, False sinon
+        True when the restoration succeeds, False otherwise
     """
     print("=" * 70)
-    print("🔄 RESTAURATION DE LA BASE DE DONNÉES")
+    print("🔄 DATABASE RESTORATION")
     print("=" * 70)
 
-    # Vérifier que le backup existe
+    # Ensure the backup exists
     if not backup_path.exists():
-        print(f"❌ Erreur: Le fichier de backup n'existe pas: {backup_path}")
+        print(f"❌ Error: Backup file does not exist: {backup_path}")
         return False
 
-    print(f"\n📁 Fichier de backup: {backup_path}")
-    print(f"📁 Fichier cible: {target_path}")
-    print(f"📦 Taille du backup: {backup_path.stat().st_size / (1024**2):.2f} MB")
+    print(f"\n📁 Backup file: {backup_path}")
+    print(f"📁 Target file: {target_path}")
+    print(f"📦 Backup size: {backup_path.stat().st_size / (1024**2):.2f} MB")
 
-    # Vérifier l'intégrité du backup
+    # Verify backup integrity
     if not skip_verification:
-        print("\n🔍 Vérification de l'intégrité du backup...")
+        print("\n🔍 Checking backup integrity...")
         if not verify_database(backup_path):
-            print("❌ Le fichier de backup est corrompu ou invalide.")
+            print("❌ The backup file is corrupted or invalid.")
             return False
-        print("✅ Le backup est valide.")
+        print("✅ Backup looks valid.")
 
-    # Créer une sauvegarde de sécurité si le fichier cible existe
+    # Create a safety backup when the target already exists
     if target_path.exists():
         try:
             safety_backup = create_safety_backup(target_path)
-            print(f"✅ Sauvegarde de sécurité créée: {safety_backup.name}")
+            print(f"✅ Safety backup created: {safety_backup.name}")
         except Exception as e:
-            print(f"⚠️  Impossible de créer une sauvegarde de sécurité: {e}")
-            response = input("Continuer quand même? (y/N): ")
+            print(f"⚠️  Unable to create a safety backup: {e}")
+            response = input("Continue anyway? (y/N): ")
             if response.lower() != 'y':
-                print("❌ Restauration annulée.")
+                print("❌ Restoration aborted.")
                 return False
 
-    # Restaurer le backup
-    print(f"\n🔄 Restauration en cours...")
+    # Restore the backup
+    print(f"\n🔄 Restoring backup...")
     try:
         shutil.copy2(backup_path, target_path)
-        print(f"✅ Fichier copié avec succès.")
+        print(f"✅ File copied successfully.")
     except Exception as e:
-        print(f"❌ Erreur lors de la copie: {e}")
+        print(f"❌ Error during copy: {e}")
         return False
 
-    # Vérifier la base restaurée
-    print("\n🔍 Vérification de la base restaurée...")
+    # Validate the restored database
+    print("\n🔍 Checking the restored database...")
     if not verify_database(target_path):
-        print("❌ La base restaurée est invalide!")
+        print("❌ Restored database is invalid!")
         return False
 
     print("\n" + "=" * 70)
-    print("✅ RESTAURATION RÉUSSIE!")
+    print("✅ RESTORATION COMPLETE!")
     print("=" * 70)
 
     return True
@@ -155,10 +155,10 @@ def restore_database(backup_path: Path, target_path: Path, skip_verification: bo
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Restaure la base de données ITS à partir d'un backup.",
+        description="Restore the ITS database from a backup.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Exemples:
+Examples:
   python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db
   python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db --target data/db/its.db
   python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db --skip-verification
@@ -169,52 +169,52 @@ Exemples:
         '--backup',
         type=Path,
         required=True,
-        help='Chemin vers le fichier de backup à restaurer'
+        help='Path to the backup file to restore'
     )
 
     parser.add_argument(
         '--target',
         type=Path,
         default=None,
-        help='Chemin vers le fichier cible (défaut: data/db/its.db)'
+        help='Path to the destination file (default: data/db/its.db)'
     )
 
     parser.add_argument(
         '--skip-verification',
         action='store_true',
-        help='Ne pas vérifier l\'intégrité du backup avant restauration'
+        help='Skip backup integrity verification before restoring'
     )
 
     args = parser.parse_args()
 
-    # Déterminer le chemin cible
+    # Determine the target path
     if args.target is None:
-        # Utiliser le chemin par défaut
+        # Use the default path
         target_path = Path("data/db/its.db")
     else:
         target_path = args.target
 
-    # Convertir les chemins en absolus
+    # Convert to absolute paths
     backup_path = args.backup.resolve()
     target_path = target_path.resolve()
 
-    # Vérifier que backup et target ne sont pas le même fichier
+    # Ensure backup and target are not the same file
     if backup_path == target_path:
-        print("❌ Erreur: Le fichier de backup et le fichier cible sont identiques!")
+        print("❌ Error: Backup and target files are identical!")
         return 1
 
-    # Demander confirmation
-    print(f"\n⚠️  Vous allez restaurer:")
+    # Ask for confirmation
+    print(f"\n⚠️  You are about to restore:")
     print(f"   FROM: {backup_path}")
     print(f"   TO:   {target_path}")
     print()
-    response = input("Confirmer la restauration? (y/N): ")
+    response = input("Confirm the restoration? (y/N): ")
 
     if response.lower() != 'y':
-        print("❌ Restauration annulée.")
+        print("❌ Restoration aborted.")
         return 0
 
-    # Restaurer
+    # Restore
     success = restore_database(backup_path, target_path, args.skip_verification)
 
     return 0 if success else 1

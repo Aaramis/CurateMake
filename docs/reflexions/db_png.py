@@ -2,12 +2,12 @@ from graphviz import Digraph
 
 def generate_updated_schema_png(output_file="its_db_schema.png"):
     """
-    Génère un schéma de base de données mise à jour selon la nouvelle documentation.
+    Generate an updated database schema diagram following the refreshed documentation.
     """
-    # Créer un diagramme
+    # Create diagram
     dot = Digraph(comment="ITS Pipeline Database Schema", format="png")
     
-    # --- 1. Configuration globale ---
+    # --- 1. Global configuration ---
     dot.attr(rankdir="TB",
              splines="polyline",
              bgcolor="white",
@@ -20,7 +20,7 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
     dot.attr('edge', fontname="Helvetica", fontsize="13", fontcolor="#2c3e50",
              labeldistance="3.0", labelfontsize="14")
 
-    # --- 2. Palette ---
+    # --- 2. Color palette ---
     colors = {
         "primary": "#2c3e50",
         "bg_table": "#ffffff",
@@ -31,7 +31,7 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
         "self_ref": "#7f8c8d"
     }
     
-    # --- 3. Tables mises à jour ---
+    # --- 3. Updated tables ---
     tables = {
         "Sources": [
             ("source_ID", "PK"),
@@ -44,7 +44,7 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
             ("original_ID", ""),
             ("sequence", ""),
             ("length", ""),
-            ("percentage_N", ""),  # %N renommé pour éviter le %
+            ("percentage_N", ""),  # renamed to avoid percent symbol in column name
             ("barcode", ""),
             ("barcode_status", ""), 
             ("parent_seq_ID", "FK") 
@@ -58,17 +58,17 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
             ("family", ""),
             ("genus", ""),
             ("species", ""),
-            ("parent_tax_ID", "FK")  # Auto-référence hiérarchique
+            ("parent_tax_ID", "FK")  # Hierarchical self-reference
         ],
         "Seq_Tax": [
             ("seq_ID", "FK,PK"),
             ("tax_ID", "FK,PK"),
-            ("backbone", ""),  # Ancien source_name -> backbone
+            ("backbone", ""),  # Formerly source_name -> now backbone
             ("status", "")
         ]
     }
     
-    # --- 4. Construction des tables ---
+    # --- 4. Build tables ---
     for table_name, fields in tables.items():
         label = f'<<TABLE BORDER="2" CELLBORDER="1" CELLSPACING="0" CELLPADDING="8" COLOR="{colors["border"]}">'
         label += f'<TR><TD BGCOLOR="{colors["primary"]}" ALIGN="CENTER" COLSPAN="2">'
@@ -102,7 +102,7 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
         label += "</TABLE>>"
         dot.node(table_name, label=label)
     
-    # --- 5. Relations 1:N classiques ---
+    # --- 5. Standard 1:N relationships ---
     # Sources -> Sequences
     dot.edge("Sources:f0_pk:e", "Sequences:f1",
              taillabel="1", headlabel="N",
@@ -121,7 +121,7 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
              dir="both", arrowhead="crow", arrowtail="tee",
              penwidth="2.5", color=colors["edge"])
     
-    # --- 6. Relations hiérarchiques (auto-références) ---
+    # --- 6. Hierarchical (self-reference) relations ---
     # Sequences.parent_seq_ID -> Sequences.seq_ID
     dot.edge("Sequences:f8_pk:e", "Sequences:f0_pk:e",
              fontsize="11", fontcolor=colors["self_ref"],
@@ -136,28 +136,28 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
              constraint="false", dir="both",
              arrowhead="crow", arrowtail="tee")
     
-    # --- 7. Titre du diagramme ---
-    title = ('<FONT POINT-SIZE="20"><B>Schéma de la base de données - Pipeline ITS (Mise à jour)</B></FONT><BR/>')
+    # --- 7. Diagram title ---
+    title = ('<FONT POINT-SIZE="20"><B>ITS Pipeline Database Schema (Updated)</B></FONT><BR/>')
     dot.attr(label=f'<{title}>', labelloc="t", fontcolor=colors["primary"])
     
-    # --- 8. Légende enrichie ---
+    # --- 8. Legend ---
     legend = ('<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6" '
               f'COLOR="{colors["border"]}" BGCOLOR="white">'
               f'<TR><TD BGCOLOR="{colors["primary"]}" ALIGN="CENTER">'
-              '<FONT COLOR="white" POINT-SIZE="12"><B>Légende</B></FONT></TD></TR>'
+              '<FONT COLOR="white" POINT-SIZE="12"><B>Legend</B></FONT></TD></TR>'
               f'<TR><TD BGCOLOR="{colors["pk_bg"]}" ALIGN="LEFT">'
-              '<B>Champ</B> <FONT COLOR="#e74c3c"><B>[PK]</B></FONT> = Clé primaire</TD></TR>'
+              '<B>Field</B> <FONT COLOR="#e74c3c"><B>[PK]</B></FONT> = Primary key</TD></TR>'
               f'<TR><TD BGCOLOR="{colors["fk_bg"]}" ALIGN="LEFT">'
-              '<I>Champ</I> <FONT COLOR="#3498db"><B>[FK]</B></FONT> = Clé étrangère</TD></TR>'
+              '<I>Field</I> <FONT COLOR="#3498db"><B>[FK]</B></FONT> = Foreign key</TD></TR>'
               f'<TR><TD BGCOLOR="{colors["fk_bg"]}" ALIGN="LEFT">'
-              '<I><B>Champ</B></I> <FONT COLOR="#9b59b6"><B>[FK,PK]</B></FONT> = Clé composite</TD></TR>'
-              '<TR><TD BGCOLOR="white" ALIGN="LEFT">──→ Relation 1:N standard</TD></TR>'
-              '<TR><TD BGCOLOR="white" ALIGN="LEFT">┅┅→ Auto-référence hiérarchique</TD></TR>'
+              '<I><B>Field</B></I> <FONT COLOR="#9b59b6"><B>[FK,PK]</B></FONT> = Composite key</TD></TR>'
+              '<TR><TD BGCOLOR="white" ALIGN="LEFT">──→ Standard 1:N relationship</TD></TR>'
+              '<TR><TD BGCOLOR="white" ALIGN="LEFT">┅┅→ Hierarchical self-reference</TD></TR>'
               '</TABLE>>')
     dot.node("Legend", label=legend, shape="plaintext")
     
-    # --- 9. Organisation spatiale ---
-    # Tables principales sur la même ligne
+    # --- 9. Spatial organization ---
+    # Align the main tables on the same rank
     with dot.subgraph() as s:
         s.attr(rank='same')
         s.node('Sources')
@@ -165,19 +165,19 @@ def generate_updated_schema_png(output_file="its_db_schema.png"):
         s.node('Seq_Tax')
         s.node('Taxonomy')
 
-    # Arêtes invisibles pour forcer l'ordre horizontal
+    # Invisible edges to enforce ordering
     dot.edge('Sources', 'Sequences', style='invis')
     dot.edge('Sequences', 'Seq_Tax', style='invis')
     dot.edge('Seq_Tax', 'Taxonomy', style='invis')
 
-    # Légende en bas
+    # Place legend at the bottom
     with dot.subgraph() as s:
         s.attr(rank='sink')
         s.node('Legend')
     
-    # --- 10. Rendu ---
+    # --- 10. Render diagram ---
     dot.render(output_file.replace('.png', ''), view=False, cleanup=True)
-    print(f"✅ Schéma mis à jour sauvegardé sous : {output_file}")
+    print(f"✅ Updated schema saved to: {output_file}")
 
 if __name__ == "__main__":
     generate_updated_schema_png()

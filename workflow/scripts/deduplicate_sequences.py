@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Script de déduplication des séquences
-Détecte et marque les doublons de séquences basés sur sequence+barcode+tax_id.
+Sequence deduplication script.
+Detect and mark duplicate sequences based on sequence + barcode + tax_id.
 """
 
 import os
@@ -18,12 +18,12 @@ from sqlalchemy import func, text
 sys.path.append(str(Path(__file__).parent / "utils"))
 from db_models import Sequence
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class SequenceDeduplicator:
-    """Gestionnaire de déduplication des séquences."""
+    """Sequence deduplication manager."""
 
     def __init__(self, db_manager):
         self.db_manager = db_manager
@@ -37,32 +37,32 @@ class SequenceDeduplicator:
         }
 
     def setup_database(self):
-        """Crée les index nécessaires pour la performance si ils n'existent pas."""
-        logger.info("Vérification et création des index pour l'optimisation...")
+        """Create indexes required for performant deduplication."""
+        logger.info("Verifying/creating indexes for deduplication...")
 
         with self.db_manager.get_session() as session:
-            # Index crucial pour accélérer la détection des doublons
+            # Essential indexes for deduplication
             session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sequences_seq_barcode ON {self.db_manager.sequences_table}(sequence, barcode)"))
             session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sequences_barcode_status ON {self.db_manager.sequences_table}(barcode_status)"))
             session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_seq_tax_seq_id ON {self.db_manager.seq_tax_table}(seq_id)"))
             session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_seq_tax_tax_id ON {self.db_manager.seq_tax_table}(tax_id)"))
 
-            # Index composite pour accélérer la jointure et le GROUP BY
+            # Composite index to speed grouping
             session.execute(text(f"""
                 CREATE INDEX IF NOT EXISTS idx_sequences_dedup_composite
                 ON {self.db_manager.sequences_table}(sequence, barcode, barcode_status)
             """))
 
             session.commit()
-        logger.info("Index prêts.")
+        logger.info("Indexes ready.")
 
     def find_duplicate_sequences(self) -> List[Tuple[str, List[str]]]:
         """
-        Trouve tous les doublons de séquences en utilisant une requête SQL optimisée.
-        Un doublon est défini par: même sequence + même barcode + même tax_id.
-        Retourne une liste de tuples: (seq_id_à_garder, [liste_des_seq_ids_à_marquer_comme_doublons])
+        Find duplicate sequences via a single SQL query.
+        A duplicate means identical (sequence, barcode, tax_id).
+        Returns a list of tuples: (seq_id_to_keep, [seq_ids_to_mark_duplicate]).
         """
-        logger.info("Recherche des doublons de séquences via SQL...")
+        logger.info("Searching for duplicate sequences via SQL...")
 
         duplicate_groups = []
 
@@ -131,17 +131,17 @@ class SequenceDeduplicator:
         self.stats['unique_sequences_kept'] = len(duplicate_groups)
 
         logger.info(
-            f"Trouvé {self.stats['duplicate_groups']} groupes de doublons "
-            f"({self.stats['duplicates_marked']} séquences à marquer)"
+            f"Found {self.stats['duplicate_groups']} duplicate groups "
+            f"({self.stats['duplicates_marked']} sequences to flag)"
         )
 
         return duplicate_groups
 
     def mark_duplicate_sequences(self, duplicate_groups: List[Tuple[str, List[str]]]):
         """
-        Marque les séquences dupliquées en mettant barcode_status = 'Duplicate'.
+        Mark duplicate sequences by setting barcode_status = 'Duplicate'.
         """
-        logger.info("Marquage des séquences dupliquées...")
+        logger.info("Marking duplicate sequences...")
 
         if not duplicate_groups:
             return
@@ -158,7 +158,7 @@ class SequenceDeduplicator:
                 for _, seq_ids_to_mark in duplicate_groups:
                     all_seq_ids_to_mark.extend(seq_ids_to_mark)
 
-                logger.info(f"Marquage de {len(all_seq_ids_to_mark)} séquences comme doublons...")
+                logger.info(f"Flagging {len(all_seq_ids_to_mark)} sequences as duplicates...")
 
                 for i in range(0, len(all_seq_ids_to_mark), batch_size):
                     batch = all_seq_ids_to_mark[i:i + batch_size]
@@ -184,28 +184,28 @@ class SequenceDeduplicator:
                         result = session.execute(update_query, params)
 
                     total_marked += result.rowcount
-                    logger.debug(f"Lot {i//batch_size + 1}: {result.rowcount} séquences marquées")
+                    logger.debug(f"Batch {i//batch_size + 1}: {result.rowcount} sequences marked")
 
                 session.commit()
-                logger.info(f"Marquage terminé avec succès. {total_marked} séquences marquées comme doublons.")
+                logger.info(f"Marking complete. {total_marked} sequences marked as duplicates.")
 
             except Exception as e:
                 session.rollback()
-                logger.error(f"Erreur lors du marquage : {e}", exc_info=True)
+                logger.error(f"Error while marking duplicates: {e}", exc_info=True)
                 raise
 
             self.stats['duplicates_marked'] = total_marked
 
 
     def verify_integrity(self) -> bool:
-        """Vérifie l'intégrité après la déduplication."""
-        logger.info("Vérification de l'intégrité finale...")
+        """Verify integrity after deduplication."""
+        logger.info("Performing final integrity checks...")
 
         sequences_table = self.db_manager.sequences_table
         seq_tax_table  = self.db_manager.seq_tax_table
 
         with self.db_manager.get_session() as session:
-            # Vérifier qu'il n'y a plus de doublons non marqués
+            # Ensure no unmarked duplicates remain
             result = session.execute(text(f"""
                 SELECT COUNT(*) FROM (
                     SELECT s.sequence, s.barcode, st.tax_id, COUNT(*) as cnt
@@ -218,14 +218,14 @@ class SequenceDeduplicator:
             """))
             remaining_duplicates = result.scalar()
 
-            # Compter les séquences marquées comme doublons
+            # Count sequences marked as duplicates
             result = session.execute(text(f"""
                 SELECT COUNT(*) FROM {sequences_table}
                 WHERE barcode_status = 'Duplicate'
             """))
             marked_duplicates = result.scalar()
 
-            # Vérifier les relations orphelines dans seq_tax
+            # Check for orphaned seq_tax rows
             result = session.execute(text(f"""
                 SELECT COUNT(*) FROM {seq_tax_table} st
                 LEFT JOIN {sequences_table} s ON st.seq_id = s.seq_id
@@ -233,28 +233,28 @@ class SequenceDeduplicator:
             """))
             orphaned_relations = result.scalar()
 
-            logger.info(f"Vérification: {remaining_duplicates} doublons non marqués restants, "
-                       f"{marked_duplicates} séquences marquées comme doublons, "
-                       f"{orphaned_relations} relations orphelines")
+            logger.info(f"Integrity check: {remaining_duplicates} unmarked duplicates remaining, "
+                       f"{marked_duplicates} sequences flagged as duplicates, "
+                       f"{orphaned_relations} orphaned relations")
 
             if remaining_duplicates == 0 and orphaned_relations == 0:
-                logger.info("✓ Intégrité vérifiée avec succès.")
+                logger.info("✓ Integrity verification passed.")
                 return True
             else:
-                logger.warning(f"⚠ Problèmes d'intégrité détectés: "
-                               f"{remaining_duplicates} doublons non marqués restants, "
-                               f"{orphaned_relations} relations orphelines.")
+                logger.warning(f"⚠ Integrity issues detected: "
+                               f"{remaining_duplicates} unmarked duplicates, "
+                               f"{orphaned_relations} orphaned relations.")
                 return False
 
     def get_deduplication_summary(self) -> dict:
-        """Génère un résumé détaillé de la déduplication."""
+        """Build a detailed deduplication summary."""
         summary = {}
 
         sequences_table = self.db_manager.sequences_table
         seq_tax_table  = self.db_manager.seq_tax_table
 
         with self.db_manager.get_session() as session:
-            # Statistiques par barcode_status
+            # Stats per barcode_status
             result = session.execute(text(f"""
                 SELECT barcode_status, COUNT(*) as count
                 FROM {sequences_table}
@@ -263,7 +263,7 @@ class SequenceDeduplicator:
             """))
             summary['sequences_by_status'] = {row[0]: row[1] for row in result}
 
-            # Statistiques par barcode
+            # Stats per barcode
             result = session.execute(text(f"""
                 SELECT barcode, COUNT(*) as count
                 FROM {sequences_table}
@@ -273,7 +273,7 @@ class SequenceDeduplicator:
             """))
             summary['duplicates_by_barcode'] = {row[0]: row[1] for row in result}
 
-            # Top 10 des tax_id avec le plus de doublons
+            # Top 10 tax IDs with most duplicates
             result = session.execute(text(f"""
                 SELECT st.tax_id, COUNT(*) as duplicate_count
                 FROM {sequences_table} s
@@ -291,87 +291,87 @@ class SequenceDeduplicator:
         return summary
 
     def optimize_database(self):
-        """Optimise la base de données après la déduplication."""
-        logger.info("Optimisation de la base de données (ANALYZE)...")
+        """Optimize the database after deduplication."""
+        logger.info("Running database optimization (ANALYZE)...")
 
         if self.db_manager.db_type == "sqlite":
             with self.db_manager.get_session() as session:
                 session.execute(text("ANALYZE"))
                 session.commit()
         elif self.db_manager.db_type == "postgresql":
-            # PostgreSQL nécessite AUTOCOMMIT pour ANALYZE
+            # PostgreSQL requires AUTOCOMMIT for ANALYZE
             with self.db_manager.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                 conn.execute(text("ANALYZE"))
 
-        logger.info("Optimisation terminée.")
+        logger.info("Database optimization completed.")
     
     def deduplicate_sequences(self):
-        """Processus complet de déduplication des séquences."""
+        """Full end-to-end deduplication workflow."""
         start_time = time.time()
-        logger.info("Démarrage de la déduplication des séquences")
+        logger.info("Starting sequence deduplication")
 
         try:
             with self.db_manager.get_session() as session:
                 # Use ORM query instead of raw SQL
                 self.stats['initial_sequence_count'] = session.query(func.count(Sequence.seq_id)).scalar()
-            logger.info(f"Nombre initial de séquences : {self.stats['initial_sequence_count']}")
+            logger.info(f"Initial sequence count: {self.stats['initial_sequence_count']}")
 
-            # 0. Préparation : création des index
+            # 0. Prepare indexes
             self.setup_database()
 
-            # 1. Trouver les doublons
+            # 1. Find duplicates
             duplicate_groups = self.find_duplicate_sequences()
 
             if not duplicate_groups:
-                logger.info("Aucun doublon trouvé.")
+                logger.info("No duplicates detected.")
                 self.stats['processing_time'] = time.time() - start_time
                 return
 
-            # 2. Marquer les doublons
+            # 2. Mark duplicates
             self.mark_duplicate_sequences(duplicate_groups)
 
-            # 3. Vérifier l'intégrité
+            # 3. Verify integrity
             integrity_ok = self.verify_integrity()
 
-            # 4. Mettre à jour les stats finales
+            # 4. Update final stats
             with self.db_manager.get_session() as session:
                 # Use ORM queries instead of raw SQL
                 self.stats['final_sequence_count'] = session.query(func.count(Sequence.seq_id)).scalar()
 
-                # Compter les séquences uniques (non marquées comme doublons)
+                # Count unique (non-duplicate) sequences
                 self.stats['unique_sequences_kept'] = session.query(
                     func.count(Sequence.seq_id)
                 ).filter(
                     Sequence.barcode_status != 'Duplicate'
                 ).scalar()
 
-            # 5. Optimiser la base de données
+            # 5. Optimize database
             self.optimize_database()
 
         except Exception as e:
-            logger.error(f"Erreur durant la déduplication: {e}", exc_info=True)
+            logger.error(f"Error during deduplication: {e}", exc_info=True)
             raise
         finally:
             self.stats['processing_time'] = time.time() - start_time
-            logger.info(f"Déduplication terminée en {self.stats['processing_time']:.2f}s")
-            logger.info(f"Séquences : {self.stats['initial_sequence_count']} total, "
-                       f"{self.stats['unique_sequences_kept']} uniques, "
-                       f"{self.stats['duplicates_marked']} doublons marqués")
+            logger.info(f"Deduplication finished in {self.stats['processing_time']:.2f}s")
+            logger.info(f"Sequences: {self.stats['initial_sequence_count']} total, "
+                       f"{self.stats['unique_sequences_kept']} unique, "
+                       f"{self.stats['duplicates_marked']} marked as duplicates")
 
 def write_report(stats: dict, summary: dict, path: str, db_path: str):
     """
-    Écrit un rapport JSON récapitulant la déduplication des séquences.
+    Write a JSON report summarizing the sequence deduplication.
 
     Parameters
     ----------
     stats : dict
-        Les statistiques retournées par SequenceDeduplicator.
+        Statistics returned by SequenceDeduplicator.
     summary : dict
-        Résumé détaillé de la déduplication.
+        Detailed deduplication summary.
     path : str
-        Chemin du fichier de sortie.
+        Output path for the JSON report.
     db_path : str
-        Chemin de la base de données traitée (pour le contexte).
+        Database path (for context).
     """
     report = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -387,16 +387,16 @@ def write_report(stats: dict, summary: dict, path: str, db_path: str):
         "detailed_summary": summary
     }
 
-    # On crée le dossier parent si nécessaire
+    # Ensure parent directory exists
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=2, ensure_ascii=False)
 
-    logger.info(f"Rapport de déduplication écrit dans: {path}")
+    logger.info(f"Deduplication report written to: {path}")
 
 def main():
-    """Point d'entrée principal."""
+    """Entry point (Snakemake or standalone)."""
     try:
         if 'snakemake' in globals():
             db_path = snakemake.params.db
@@ -407,12 +407,12 @@ def main():
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             logger.addHandler(file_handler)
         else:
-            logger.warning("Mode test - utiliser avec Snakemake en production")
+            logger.warning("Test mode - use Snakemake for production runs")
             db_path = "test_database.sqlite"
             output_report = "sequence_deduplication_report.json"
             config = {'database': {'path': db_path}}
 
-        # Import et initialisation du database manager
+        # Initialize database manager
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
@@ -421,35 +421,35 @@ def main():
         deduplicator = SequenceDeduplicator(db_manager)
         deduplicator.deduplicate_sequences()
 
-        # Générer le résumé détaillé
+        # Generate detailed summary
         summary = deduplicator.get_deduplication_summary()
 
         print(f"\n{'='*60}")
-        print("RÉSUMÉ DE LA DÉDUPLICATION DES SÉQUENCES")
+        print("SEQUENCE DEDUPLICATION SUMMARY")
         print(f"{'='*60}")
-        print(f"Séquences initiales:     {deduplicator.stats['initial_sequence_count']}")
-        print(f"Séquences finales:       {deduplicator.stats['final_sequence_count']}")
-        print(f"Séquences uniques gardées: {deduplicator.stats['unique_sequences_kept']}")
-        print(f"Groupes de doublons:     {deduplicator.stats['duplicate_groups']}")
-        print(f"Doublons marqués:        {deduplicator.stats['duplicates_marked']}")
-        print(f"Temps de traitement:     {deduplicator.stats['processing_time']:.2f}s")
+        print(f"Initial sequences:       {deduplicator.stats['initial_sequence_count']}")
+        print(f"Final sequences:         {deduplicator.stats['final_sequence_count']}")
+        print(f"Unique sequences kept:   {deduplicator.stats['unique_sequences_kept']}")
+        print(f"Duplicate groups:        {deduplicator.stats['duplicate_groups']}")
+        print(f"Duplicates flagged:      {deduplicator.stats['duplicates_marked']}")
+        print(f"Processing time:         {deduplicator.stats['processing_time']:.2f}s")
         print(f"{'='*60}")
 
-        # Afficher quelques statistiques détaillées
+        # Display additional stats
         if summary.get('sequences_by_status'):
-            print("\nRépartition par statut:")
+            print("\nDistribution by barcode_status:")
             for status, count in summary['sequences_by_status'].items():
                 print(f"  {status}: {count}")
 
         if summary.get('duplicates_by_barcode'):
-            print("\nDoublons par barcode:")
+            print("\nDuplicates by barcode:")
             for barcode, count in summary['duplicates_by_barcode'].items():
                 print(f"  {barcode}: {count}")
 
         write_report(deduplicator.stats, summary, output_report, db_path)
 
     except Exception as e:
-        logger.critical(f"Erreur fatale: {e}", exc_info=True)
+        logger.critical(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":

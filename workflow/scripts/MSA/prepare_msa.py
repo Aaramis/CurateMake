@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Extraction des séquences pour MSA en SQLAlchemy (SQLite + PostgreSQL)
-Génère un CSV avec séquences + taxonomie complète, groupées par barcode.
+Extract sequences for downstream MSA using SQLAlchemy (SQLite + PostgreSQL).
+Produces a CSV with sequences plus full taxonomy grouped by barcode.
 
-Ce script utilise DatabaseManager (db_manager.py).
+Relies on DatabaseManager (db_manager.py).
 """
 
 import json
@@ -27,13 +27,13 @@ logger = logging.getLogger(__name__)
 
 
 class MSASequenceExtractor:
-    """Extracteur SQLAlchemy pour MSA."""
+    """SQLAlchemy-powered extractor for the MSA step."""
 
     def __init__(self, db_manager, db_label: str):
         """
         Args:
-            db_manager: instance DatabaseManager
-            db_label: juste pour affichage et rapport
+            db_manager: DatabaseManager instance
+            db_label: identifier shown in logs/reports only
         """
         self.db_manager = db_manager
         self.db_label = str(db_label)
@@ -47,11 +47,11 @@ class MSASequenceExtractor:
         return table_name
 
     # =====================================================================
-    # INDEXATION OPTIMISÉE (PG + SQLite)
+    # INDEX CREATION (PG + SQLite)
     # =====================================================================
     def ensure_indexes(self):
-        """Créé les index nécessaires pour accélérer les jointures MSA."""
-        logger.info("Vérification des index…")
+        """Create indexes required to speed up downstream joins."""
+        logger.info("Checking/creating MSA indexes...")
 
         seq_tax_table = self._get_table('seq_tax')
         sequences_table = self._get_table('sequences')
@@ -59,7 +59,7 @@ class MSASequenceExtractor:
 
         index_statements = []
 
-        # Index utilisés par les requêtes MSA — compatibles SQLite + PostgreSQL
+        # Index used by MSA queries (compatible with SQLite + PostgreSQL)
         index_statements.append(f"""
             CREATE INDEX IF NOT EXISTS idx_seq_tax_backbone_status
             ON {seq_tax_table}(backbone, status)
@@ -90,15 +90,15 @@ class MSASequenceExtractor:
                 try:
                     session.execute(text(sql))
                 except Exception as e:
-                    # On ne bloque jamais --- index manquant ou droits ≠ fatal
-                    logger.warning(f"Impossible de créer l’index : {e}")
+                    # Index creation failure should not stop the pipeline (maybe already exists / permission issue)
+                    logger.warning(f"Could not create index: {e}")
             session.commit()
 
     # =====================================================================
-    # ESTIMATION DU VOLUME
+    # ESTIMATE DATASET SIZE
     # =====================================================================
     def estimate_sequence_count(self) -> int:
-        """Compte les séquences CoL non dupliquées pour estimation."""
+        """Count non-duplicate CoL sequences for estimation purposes."""
         sequences_table = self._get_table('sequences')
         seq_tax_table = self._get_table('seq_tax')
 
@@ -113,17 +113,17 @@ class MSASequenceExtractor:
         try:
             with self.db_manager.get_session() as session:
                 count = session.execute(query).scalar()
-                logger.info(f"Estimation : ~{count:,} séquences à traiter")
+                logger.info(f"Estimated sequences to process: ~{count:,}")
                 return count
         except Exception as e:
-            logger.warning(f"Impossible d’obtenir l’estimation : {e}")
+            logger.warning(f"Unable to compute estimate: {e}")
             return 0
 
     # =====================================================================
-    # EXTRACTION MSA
+    # MSA EXTRACTION
     # =====================================================================
     def extract_msa_sequences(self) -> List[Dict]:
-        """Extraction SQLAlchemy optimisée, par lots."""
+        """Extract sequences in batches using SQLAlchemy."""
         self.ensure_indexes()
         total_estimate = self.estimate_sequence_count()
 
@@ -131,7 +131,7 @@ class MSASequenceExtractor:
         seq_tax_table = self._get_table('seq_tax')
         taxonomy_table = self._get_table('taxonomy')
 
-        # Requête principale
+        # Main query template
         base_query = text(f"""
             SELECT
                 s.seq_id,
@@ -157,7 +157,7 @@ class MSASequenceExtractor:
         batch_size = 10000
         offset = 0
 
-        logger.info("Début extraction MSA…")
+        logger.info("Starting MSA sequence extraction...")
 
         start = time.time()
         last_log = start
@@ -187,11 +187,11 @@ class MSASequenceExtractor:
                         'species': row.species,
                     }
 
-                    # Règle 1 : Streptophyta → Tracheophyta
+                    # Rule 1: Streptophyta -> Tracheophyta
                     if item['phylum'].lower() == "streptophyta":
                         item['phylum'] = "Tracheophyta"
 
-                    # Règle 2 : incertae sedis → vide
+                    # Rule 2: replace "incertae sedis" with empty string
                     for k, v in item.items():
                         if isinstance(v, str) and "incertae sedis" in v.lower():
                             item[k] = ""
@@ -200,7 +200,7 @@ class MSASequenceExtractor:
 
                 offset += batch_size
 
-                # Logs périodiques
+                # Periodic logging
                 now = time.time()
                 if now - last_log >= 30:
                     elapsed = now - start
@@ -211,31 +211,31 @@ class MSASequenceExtractor:
                         pct = processed / total_estimate * 100
                         eta = (total_estimate - processed) / rate if rate > 0 else 0
                         logger.info(
-                            f"Progression : {processed:,}/{total_estimate:,} "
+                            f"Progress: {processed:,}/{total_estimate:,} "
                             f"({pct:.1f}%) — {rate:.0f} seq/s — ETA {eta/60:.1f} min"
                         )
                     else:
-                        logger.info(f"{processed:,} séquences — {rate:.0f} seq/s")
+                        logger.info(f"{processed:,} sequences — {rate:.0f} seq/s")
 
                     last_log = now
 
         elapsed = time.time() - start
         logger.info(
-            f"Extraction MSA terminée : {len(sequences):,} séquences "
-            f"en {elapsed:.1f}s ({len(sequences)/elapsed:.0f} seq/s)"
+            f"MSA extraction finished: {len(sequences):,} sequences "
+            f"in {elapsed:.1f}s ({len(sequences)/elapsed:.0f} seq/s)"
         )
 
         return sequences
 
     # =====================================================================
-    # ÉCRITURE CSV
+    # CSV WRITING
     # =====================================================================
     @staticmethod
     def write_csv(sequences: List[Dict], out_csv: str) -> str:
         out = Path(out_csv)
         out.parent.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Écriture CSV : {len(sequences):,} séquences → {out_csv}")
+        logger.info(f"Writing {len(sequences):,} sequences to CSV → {out_csv}")
 
         fields = [
             'seq_id', 'sequence', 'kingdom', 'phylum', 'class', 'order',
@@ -250,12 +250,12 @@ class MSASequenceExtractor:
             for i in range(0, len(sequences), batch):
                 writer.writerows(sequences[i:i+batch])
                 if len(sequences) > 20000 and i % 10000 == 0:
-                    logger.info(f"  Progression CSV : {i:,}/{len(sequences):,}")
+                    logger.info(f"  CSV progress: {i:,}/{len(sequences):,}")
 
         return str(out)
 
     # =====================================================================
-    # STATISTIQUES
+# STATISTICS
     # =====================================================================
     @staticmethod
     def generate_stats(sequences: List[Dict]) -> Dict:
@@ -354,7 +354,7 @@ def main():
         sequences = extractor.extract_msa_sequences()
 
         if not sequences:
-            logger.warning("Aucune séquence trouvée pour MSA")
+            logger.warning("No sequences found for MSA")
             stats = {
                 "total_sequences": 0,
                 "unique_taxonomies": 0,
@@ -388,10 +388,10 @@ def main():
         with open(out_report, "w") as f:
             json.dump(report, f, indent=2)
 
-        logger.info(f"Rapport écrit : {out_report}")
+        logger.info(f"Report written to: {out_report}")
 
     except Exception as e:
-        logger.critical(f"Erreur fatale MSA : {e}", exc_info=True)
+        logger.critical(f"Fatal MSA error: {e}", exc_info=True)
         sys.exit(1)
 
 

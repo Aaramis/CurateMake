@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Dict, Any, List
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -22,14 +22,14 @@ def add_reassignment_section_to_report(report_path: str, stats: dict):
         return
 
     with open(report_path, 'a') as f:
-        f.write("\n\n## Statistiques de réaffectation inter-barcodes\n\n")
-        f.write("Cette section montre comment les séquences initialement ")
-        f.write("associées à un barcode ont été réassignées après classification.\n\n")
+        f.write("\n\n## Cross-barcode reassignment statistics\n\n")
+        f.write("This section highlights how sequences originally associated with one barcode ")
+        f.write("were reclassified by the downstream steps.\n\n")
 
         for source in ['ITS', 'ITS1', 'ITS2']:
-            f.write(f"\n### Séquences source : {source}\n\n")
-            f.write("| Barcode cible | Nombre | Pourcentage |\n")
-            f.write("|--------------|---------|-------------|\n")
+            f.write(f"\n### Source barcode: {source}\n\n")
+            f.write("| Target barcode | Count | Percentage |\n")
+            f.write("|---------------|-------|------------|\n")
 
             for target in ['ITS', 'ITS1', 'ITS2']:
                 key = f'{source}_to_{target}'
@@ -41,29 +41,29 @@ def add_reassignment_section_to_report(report_path: str, stats: dict):
 
 def generate_markdown_report(report_data: Dict[str, Any], report_md_path: str):
     with open(report_md_path, 'w') as f:
-        f.write("# Rapport MSA - Alignements Hiérarchiques\n\n")
-        f.write(f"**Date** : {report_data['timestamp']}\n")
-        f.write(f"**Status** : {report_data['status']}\n")
-        f.write(f"**Temps de traitement** : {report_data['processing_time']}s\n\n")
+        f.write("# MSA Report - Hierarchical Alignments\n\n")
+        f.write(f"**Date**: {report_data['timestamp']}\n")
+        f.write(f"**Status**: {report_data['status']}\n")
+        f.write(f"**Processing time**: {report_data['processing_time']}s\n\n")
 
-        f.write("## Paramètres\n\n")
+        f.write("## Parameters\n\n")
         for key, value in report_data['parameters'].items():
-            f.write(f"- **{key}** : {value}\n")
+            f.write(f"- **{key}**: {value}\n")
 
-        f.write("\n## Résultats par barcode\n\n")
+        f.write("\n## Results per barcode\n\n")
         results = report_data.get('results', {})
         barcode_results = results.get('barcode_results', {})
 
         for barcode, data in barcode_results.items():
             f.write(f"\n### {barcode}\n\n")
             for key, value in data.items():
-                f.write(f"- **{key}** : {value}\n")
+                f.write(f"- **{key}**: {value}\n")
 
-        f.write(f"\n## Résumé global\n\n")
-        f.write(f"- **Barcodes traités** : {results.get('total_barcodes_processed', 0)}\n")
-        f.write(f"- **Phases complétées** : {results.get('phases_completed', 0)}\n")
+        f.write(f"\n## Global summary\n\n")
+        f.write(f"- **Barcodes processed**: {results.get('total_barcodes_processed', 0)}\n")
+        f.write(f"- **Pipeline phases completed**: {results.get('phases_completed', 0)}\n")
 
-    logger.info(f"Rapport markdown sauvegardé: {report_md_path}")
+    logger.info(f"Markdown report saved to: {report_md_path}")
 
 
 def load_json(path: str) -> Dict[str, Any]:
@@ -248,7 +248,7 @@ def main():
         Path(output_report).parent.mkdir(parents=True, exist_ok=True)
         with open(output_report, "w", encoding="utf-8") as fh:
             json.dump(report_data, fh, indent=2)
-        logger.info("Rapport JSON sauvegardé: %s", output_report)
+        logger.info("JSON report written: %s", output_report)
 
         report_md_path = output_report.replace('.json', '.md')
         generate_markdown_report(report_data, report_md_path)
@@ -258,10 +258,10 @@ def main():
             report_md_path,
             global_assignments.get('reassignment_stats', {})
         )
-        logger.info("Statistiques de réaffectation ajoutées au rapport")
+        logger.info("Reassignment statistics appended to markdown report")
 
     except Exception as exc:
-        logger.critical("Erreur fatale: %s", exc, exc_info=True)
+        logger.critical("Fatal error: %s", exc, exc_info=True)
         raise
 
 

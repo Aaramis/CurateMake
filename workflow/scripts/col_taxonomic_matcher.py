@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-CoL Taxonomic Matcher - Version améliorée
+Improved CoL Taxonomic Matcher
 workflow/scripts/CoL_taxonomic_matcher.py
 
-Script pour matcher les taxonomies avec l'API Catalogue of Life (CoL).
-Utilise une approche modulaire avec séparation des responsabilités.
+Matches taxonomies against the Catalogue of Life (CoL) API using a modular,
+responsibility-separated design.
 """
 
 import sys
@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from sqlalchemy import text
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TaxonomyRecord:
-    """Structure pour les données taxonomiques."""
+    """Structured container for taxonomy data."""
     tax_id: int
     kingdom: Optional[str] = None
     phylum: Optional[str] = None
@@ -43,20 +43,20 @@ class TaxonomyRecord:
 
 @dataclass
 class MatchResult:
-    """Résultat d'un matching taxonomique."""
+    """Result of a taxonomy matching attempt."""
     original_tax_id: int
     col_taxonomy: Optional[Dict[str, str]] = None
     success: bool = False
     error_message: Optional[str] = None
 
 class CoLAPIClient:
-    """Client pour l'API Catalogue of Life avec gestion du rate limiting."""
+    """Catalogue of Life API client with simple rate limiting."""
     
     def __init__(self, max_requests_per_second: int = 100, timeout: int = 30):
         self.base_url = "https://api.checklistbank.org/dataset/3LR/match/nameusage"
         self.session = requests.Session()
         
-        # Configuration de la session
+        # Session configuration
         adapter = HTTPAdapter(
             pool_connections=20,
             pool_maxsize=20,
@@ -73,12 +73,12 @@ class CoLAPIClient:
         self.last_request_time = 0
         self.timeout = timeout
         
-        # Statistiques
+        # Metrics
         self.api_calls = 0
         self.failed_calls = 0
 
     def rate_limit(self):
-        """Implémente le rate limiting pour les appels API."""
+        """Apply a delay between API calls to respect the rate limit."""
         if self.request_interval <= 0:
             return
             
@@ -92,7 +92,7 @@ class CoLAPIClient:
         self.last_request_time = time.time()
 
     def query_taxon(self, params: Dict[str, str]) -> Optional[Dict]:
-        """Effectue une requête vers l'API CoL."""
+        """Send a request to the CoL API."""
         try:
             self.rate_limit()
             response = self.session.get(self.base_url, params=params, timeout=self.timeout)
@@ -116,18 +116,18 @@ class CoLAPIClient:
             return None
 
     def close(self):
-        """Ferme la session."""
+        """Close the HTTP session."""
         self.session.close()
 
 class TaxonomyMatcher:
-    """Logique de matching taxonomique."""
+    """Encapsulates taxonomy matching logic."""
     
     def __init__(self, api_client: CoLAPIClient):
         self.api_client = api_client
         self.taxonomy_levels = ["species", "genus", "family", "order_", "class_", "phylum", "kingdom"]
 
     def clean_taxonomy(self, taxonomy: TaxonomyRecord) -> Dict[str, Optional[str]]:
-        """Nettoie et prétraite les données taxonomiques."""
+        """Clean and normalize taxonomy data before querying the API."""
         cleaned = {}
         
         for level in self.taxonomy_levels:
@@ -147,7 +147,7 @@ class TaxonomyMatcher:
         return cleaned
 
     def match_taxonomy(self, taxonomy: TaxonomyRecord) -> MatchResult:
-        """Effectue le matching pour une taxonomie donnée."""
+        """Match a single taxonomy against CoL."""
         try:
             cleaned_tax = self.clean_taxonomy(taxonomy)
             col_taxonomy = self._hierarchical_match(cleaned_tax)
@@ -167,7 +167,7 @@ class TaxonomyMatcher:
             )
 
     def _hierarchical_match(self, cleaned_tax: Dict[str, Optional[str]]) -> Optional[Dict[str, str]]:
-        """Effectue le matching hiérarchique."""
+        """Perform hierarchical matching starting from the most specific rank."""
         for i, level in enumerate(self.taxonomy_levels):
             if not cleaned_tax.get(level):
                 continue
@@ -175,7 +175,7 @@ class TaxonomyMatcher:
             q_name = cleaned_tax[level]
             params = {"q": q_name, "fuzzy": "true"}
             
-            # Ajouter le contexte taxonomique
+            # Add surrounding taxonomic context
             for context_level in self.taxonomy_levels[i+1:]:
                 if cleaned_tax.get(context_level):
                     api_param = context_level.replace('_', '')
@@ -185,14 +185,14 @@ class TaxonomyMatcher:
             if usage:
                 classification = self._extract_classification(usage)
                 if classification:
-                    # Compléter avec les niveaux plus spécifiques
+                    # Fill in more specific ranks with original data
                     self._fill_missing_levels(classification, cleaned_tax, i)
                     return classification
         
         return None
 
     def _extract_classification(self, usage: Dict) -> Dict[str, str]:
-        """Extrait la classification du résultat API."""
+        """Extract the classification dictionary from an API response."""
         classification = {}
         
         # Extraire de la classification
@@ -202,7 +202,7 @@ class TaxonomyMatcher:
                     rank = taxon['rank'].lower().replace('class', 'class_').replace('order', 'order_')
                     classification[rank] = taxon['name']
 
-        # Ajouter le taxon principal
+        # Add the primary taxon
         if usage.get("rank") and usage.get("name"):
             rank = usage["rank"].lower().replace('class', 'class_').replace('order', 'order_')
             classification[rank] = usage["name"]
@@ -210,20 +210,20 @@ class TaxonomyMatcher:
         return classification
 
     def _fill_missing_levels(self, classification: Dict[str, str], original_tax: Dict[str, Optional[str]], found_index: int):
-        """Complète les niveaux manquants avec les données originales."""
+        """Fill missing levels using the original taxonomy data."""
         for idx in range(found_index):
             specific_level = self.taxonomy_levels[idx]
             if original_tax.get(specific_level) and specific_level not in classification:
                 classification[specific_level] = original_tax[specific_level]
 
 class CoLProcessor:
-    """Processeur principal pour le matching CoL."""
+    """High-level processor for CoL matching."""
 
     def __init__(self, db_manager, config: Dict):
         self.db_manager = db_manager
         self.config = config
 
-        # Configuration API
+        # API configuration
         api_config = config.get('CoL_api', {})
         max_requests = api_config.get('max_requests_per_second', 1000)
         max_workers=min(20, os.cpu_count() * 5)
@@ -232,7 +232,7 @@ class CoLProcessor:
         self.matcher = TaxonomyMatcher(self.api_client)
         self.max_workers = max_workers
 
-        # Rapport
+        # Report metadata
         self.report = {
             "run_summary": {},
             "parameters": {
@@ -257,7 +257,7 @@ class CoLProcessor:
         return table_name
 
     def get_pending_taxonomies(self, backbone: str = 'Raw', status: str = 'Pending') -> List[TaxonomyRecord]:
-        """Récupère les taxonomies à traiter."""
+        """Retrieve pending taxonomies that must be processed."""
         taxonomy_table = self._get_table('taxonomy')
         seq_tax_table = self._get_table('seq_tax')
 
@@ -292,7 +292,7 @@ class CoLProcessor:
         return taxonomies
 
     def process_batch(self, taxonomies: List[TaxonomyRecord]) -> List[MatchResult]:
-        """Traite un lot de taxonomies avec threading."""
+        """Process a batch of taxonomies using a thread pool."""
         if not taxonomies:
             return []
         
@@ -319,7 +319,7 @@ class CoLProcessor:
         return results
 
     def update_database(self, results: List[MatchResult]):
-        """Met à jour la base de données avec les résultats."""
+        """Persist successful matches to the database."""
         successful_matches = [r for r in results if r.success and r.col_taxonomy]
 
         if not successful_matches:
@@ -341,14 +341,14 @@ class CoLProcessor:
                         'species': col_taxonomy.get('species')
                     }
 
-                    # Utiliser la méthode helper du db_manager
+                    # Use the helper from db_manager
                     new_tax_id = self.db_manager.get_or_create_taxonomy(tax_values, result.original_tax_id)
                     tax_id_map[result.original_tax_id] = new_tax_id
 
-                # Mise à jour des relations
+                # Update existing relations
                 original_ids = list(tax_id_map.keys())
 
-                # Préparer les mises à jour
+                # Prepare updates
                 seq_tax_table = self._get_table('seq_tax')
 
                 if self.db_manager.db_type == "postgresql":
@@ -364,7 +364,7 @@ class CoLProcessor:
                         WHERE tax_id IN ({placeholders}) AND backbone = 'Raw'
                     """), params)
 
-                # Préparer les insertions
+                # Prepare CoL backbone insertions
                 col_inserts = []
                 for seq_id, original_tax_id in result:
                     new_tax_id = tax_id_map.get(original_tax_id)
@@ -380,7 +380,7 @@ class CoLProcessor:
                 if col_inserts:
                     self.db_manager.bulk_insert_seq_tax(col_inserts)
 
-                # Marquer comme correct
+                # Mark legacy relations as correct
                 seq_tax_table = self._get_table('seq_tax')
                 for tid in original_ids:
                     session.execute(text(f"""
@@ -396,7 +396,7 @@ class CoLProcessor:
             raise
 
     def mark_failed_taxonomies(self):
-        """Marque les taxonomies non matchées comme Failed."""
+        """Mark taxonomies that never matched as Failed."""
         seq_tax_table = self._get_table('seq_tax')
         with self.db_manager.get_session() as session:
             result = session.execute(text(f"""
@@ -410,11 +410,11 @@ class CoLProcessor:
             return failed_count
 
     def remove_duplicate_taxonomies(self):
-        """Supprime les doublons dans la table taxonomy."""
+        """Remove duplicate taxonomies from the taxonomy table."""
         taxonomy_table = self._get_table('taxonomy')
         seq_tax_table = self._get_table('seq_tax')
 
-        # Adapter la requête selon le type de base de données
+        # Adjust expressions per database type
         if self.db_manager.db_type == "postgresql":
             group_concat_expr = "STRING_AGG(CAST(tax_id AS TEXT), ',')"
         else:
@@ -445,7 +445,7 @@ class CoLProcessor:
                 remove_ids = [x for x in all_ids if x != keep_id]
 
                 if remove_ids:
-                    # Mise à jour seq_tax
+                    # Update seq_tax entries
                     if self.db_manager.db_type == "postgresql":
                         session.execute(text(f"""
                             UPDATE {seq_tax_table} SET tax_id = :keep_id
@@ -476,14 +476,14 @@ class CoLProcessor:
             return removed_count
 
     def run(self, batch_size: int = 100):
-        """Lance le traitement principal."""
+        """Execute the main processing loop."""
         start_time = time.time()
         self.report["run_summary"]["start_time"] = datetime.now().isoformat()
         
         logger.info("Starting CoL taxonomic matching...")
         
         try:
-            # Récupérer les taxonomies
+            # Retrieve taxonomies
             taxonomies = self.get_pending_taxonomies()
             total_taxonomies = len(taxonomies)
             
@@ -492,7 +492,7 @@ class CoLProcessor:
                 self._finalize_report(start_time, 0, 0, 0)
                 return
             
-            # Traitement par lots
+            # Batch processing
             total_matched = 0
             for i in range(0, len(taxonomies), batch_size):
                 batch = taxonomies[i:i + batch_size]
@@ -503,7 +503,7 @@ class CoLProcessor:
                 progress = (i + len(batch)) / len(taxonomies) * 100
                 logger.info(f"Progress: {progress:.1f}% - Batch matched: {matched_in_batch}/{len(batch)}")
             
-            # Nettoyage final
+            # Final cleanup
             duplicates_removed = self.remove_duplicate_taxonomies()
             failed_marked = self.mark_failed_taxonomies()
             
@@ -519,7 +519,7 @@ class CoLProcessor:
             raise
 
     def _finalize_report(self, start_time: float, total: int, matched: int, failed: int):
-        """Finalise le rapport."""
+        """Finalize and persist statistics in the in-memory report."""
         end_time = time.time()
         processing_time = end_time - start_time
         
@@ -540,7 +540,7 @@ class CoLProcessor:
         })
 
     def write_report(self, output_path: str):
-        """Écrit le rapport JSON."""
+        """Write the JSON report to disk."""
         logger.info(f"Writing report to: {output_path}")
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -549,9 +549,9 @@ class CoLProcessor:
             json.dump(self.report, f, indent=2, ensure_ascii=False)
 
 def main():
-    """Point d'entrée principal."""
+    """Script entry point."""
     try:
-        # Configuration Snakemake ou standalone
+        # Snakemake or standalone configuration
         if 'snakemake' in globals():
             db_path = snakemake.params.db
             batch_size = snakemake.params.batch_size
@@ -559,7 +559,7 @@ def main():
             output_report = snakemake.output[0]
             log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
 
-            # Configuration du logging
+            # Logging configuration for Snakemake
             file_handler = logging.FileHandler(log_file, mode="w")
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             logger.addHandler(file_handler)
@@ -576,18 +576,18 @@ def main():
             batch_size=100
             output_report = "CoL_matching_report.json"
 
-        # Import et initialisation du database manager
+        # Import and initialize the database manager
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
         db_manager = get_database_manager(config)
 
-        # Traitement principal
+        # Main processing
         with CoLProcessor(db_manager, config) as processor:
             processor.run(batch_size=batch_size)
             processor.write_report(output_report)
 
-            # Affichage des résultats
+            # Display aggregated statistics
             stats = processor.report["statistics"]
             logger.info("\n" + "="*50)
             logger.info("CoL MATCHING SUMMARY")

@@ -703,8 +703,7 @@ class DatabaseManager:
 
     def get_or_create_taxonomy(self, taxonomy_dict: Dict[str, Any], original_tax_id: str = None) -> str:
         """
-        Retourne tax_id si la taxonomie existe déjà,
-        sinon crée un nouveau taxon.
+        Return tax_id if the taxonomy already exists, otherwise create a new one.
 
         Args:
             taxonomy_dict: Dictionary with taxonomic ranks
@@ -727,7 +726,7 @@ class DatabaseManager:
         with self.get_session() as session:
             query = session.query(Taxonomy)
 
-            # Construire correctement le WHERE :
+            # Build the WHERE clause properly
             for field, value in cleaned.items():
                 col = getattr(Taxonomy, field)
 
@@ -741,7 +740,7 @@ class DatabaseManager:
             if existing:
                 return existing.tax_id
 
-            # Créer un nouveau taxon
+            # Create a brand-new taxonomy entry
             new_tax = Taxonomy(**cleaned)
 
             session.add(new_tax)

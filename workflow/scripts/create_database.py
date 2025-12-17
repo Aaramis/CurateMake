@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Script pour créer et initialiser la base de données bioinformatique
+Script to create and initialize the bioinformatics database
 workflow/scripts/create_database.py
 
-Initialise la base SQLite avec le schéma complet et les configurations.
+Initializes the SQLite database with the full schema and configuration.
 """
 
 import json
@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 
-# Import du gestionnaire de base
+# Import database utilities
 sys.path.append(str(Path(__file__).parent / "utils"))
 from db_manager import initialize_database
 
@@ -22,10 +22,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def main():
-    """Point d'entrée principal."""
+    """Script entry point."""
     
     try:
-        # Récupération des paramètres Snakemake
+        # Read Snakemake parameters
         output_db = snakemake.output.db
         output_report = snakemake.output.report
         config = snakemake.config
@@ -37,24 +37,24 @@ def main():
         start_time = time.time()
         logger.info(f"Creating database: {output_db}")
 
-        # Créer le dossier si nécessaire
+        # Create the parent folder when needed
         Path(output_db).parent.mkdir(parents=True, exist_ok=True)
 
-        # Initialiser la base de données
+        # Initialize the database
         db_manager = initialize_database(config)
 
-        # Déterminer le type de base de données
+        # Determine the database type
         db_type = config.get("database", {}).get("type", "sqlite")
 
-        # Pour PostgreSQL, créer le fichier sentinel
+        # For PostgreSQL, create the sentinel file
         if db_type == "postgresql":
             Path(output_db).touch()
             logger.info(f"Created PostgreSQL sentinel file: {output_db}")
 
-        # Vérifier l'intégrité après création
+        # Validate integrity right after creation
         integrity_report = db_manager.validate_integrity()
 
-        # Ajouter des métadonnées initiales si spécifiées dans la config
+        # Insert initial metadata if provided in the config
         metadata_inserted = 0
         if 'initial_sources' in config:
             for source_config in config['initial_sources']:
@@ -65,20 +65,20 @@ def main():
                 except Exception as e:
                     logger.warning(f"Failed to add source {source_config['name']}: {e}")
 
-        # Optimiser la base après création
+        # Optimize the database right after creation
         db_manager.vacuum_database()
 
         end_time = time.time()
         creation_time = end_time - start_time
 
-        # Calculer la taille de la base de données
+        # Compute database size
         if db_type == "sqlite":
             db_size_mb = os.path.getsize(output_db) / (1024 * 1024)
         else:
-            # Pour PostgreSQL, on pourrait interroger pg_database_size
-            db_size_mb = 0  # Placeholder, ou interroger la base pour la vraie taille
+            # For PostgreSQL we could query pg_database_size
+            db_size_mb = 0  # Placeholder, or query the database for the real size
 
-        # Générer le rapport
+        # Build the report
         report_data = {
             "timestamp": datetime.now().isoformat(),
             "database": {
@@ -86,13 +86,13 @@ def main():
                 "type": db_type,
                 "size_mb": db_size_mb,
                 "tables_created": db_manager.list_tables(),
-                "schema_version": "1.0"  # Versionnez votre schéma
+                "schema_version": "1.0"  # Keep your schema versioned
             },
             "execution": {
                 "duration_seconds": round(time.time() - start_time, 2),
                 "sources_added": metadata_inserted
             },
-            "validation": integrity_report  # Rapport d'intégrité existant
+            "validation": integrity_report  # Integrity report details
         }
         
         # Sauvegarder le rapport
@@ -107,7 +107,7 @@ def main():
     except Exception as e:
         logger.error(f"Database creation failed: {e}")
         
-        # Créer un rapport d'erreur
+        # Create an error report
         error_report = {
             'database_path': str(snakemake.output.db),
             'creation_timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CALeDNA Parser
-Parser pour les fichiers CALeDNA (.zip contenant .fasta et .txt de taxonomie)
+Parses CALeDNA archives (.zip containing .fasta and taxonomy .txt files).
 """
 
 import os
@@ -22,11 +22,11 @@ from dataclasses import dataclass
 import tempfile
 import shutil
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Constantes
+# Constants
 FASTA_CHUNK_SIZE = 10000
 BATCH_SIZE = 10000
 QUEUE_SIZE = 20
@@ -34,7 +34,7 @@ MIN_SEQUENCE_LENGTH = 50
 
 @dataclass
 class SequenceRecord:
-    """Structure de données pour les séquences."""
+    """Data structure representing a normalized sequence entry."""
     original_id: str
     sequence: str
     length: int
@@ -48,24 +48,24 @@ class SequenceRecord:
     species: Optional[str] = None
 
 class CALeDNAParser:
-    """Parser CALeDNA."""
+    """CALeDNA parser and ingestion pipeline."""
     
     def __init__(self, db_manager, config_validation: Dict):
         self.db_manager = db_manager
         self.config_validation = config_validation
         self.batch_size = BATCH_SIZE
         
-        # Patterns regex compilés
+        # Pre-compiled regex patterns
         self.version_pattern = re.compile(r'(\d{1,2}\.\d{1,2}|\d{4})')
         
-        # Précompilation des caractères valides
+        # Pre-compute allowed characters
         self.valid_chars = set(self.config_validation.get('valid_chars', 'ATCGN'))
         self.min_length = self.config_validation.get('min_length', MIN_SEQUENCE_LENGTH)
         self.max_n_fraction = self.config_validation.get('max_n_fraction', 0.1)
 
     def _reset_for_new_file(self):
-        """Réinitialise le parser pour un nouveau fichier."""
-        # Statistiques thread-safe pour ce fichier
+        """Reset parser state before processing a new file."""
+        # Thread-safe statistics for this file
         self.stats = mp.Manager().dict({
             'total_sequences': 0,
             'processed_sequences': 0,
@@ -75,20 +75,20 @@ class CALeDNAParser:
             'processing_time': 0.0
         })
         
-        # Nouveau dictionnaire pour mapping taxonomie (thread-safe)
+        # Fresh taxonomy mapping dictionary (thread-safe)
         self.taxonomy_map = {}
         
-        # Vider le cache LRU
+        # Clear the LRU cache
         self._parse_caledna_taxonomy.cache_clear()
 
     def extract_zip_files(self, zip_path: str) -> Tuple[str, str]:
         """
-        Extrait les fichiers .fasta et .txt du .zip
-        Retourne les chemins vers le fichier FASTA et le fichier taxonomie
+        Extract FASTA and taxonomy .txt files from the zip archive
+        and return their paths.
         """
         logger.info(f"Extracting files from {zip_path}")
         
-        # Créer un dossier temporaire
+        # Create a temporary folder
         temp_dir = tempfile.mkdtemp(prefix="caledna_extract_")
         
         fasta_file = None
@@ -96,14 +96,14 @@ class CALeDNAParser:
         
         try:
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                # Lister tous les fichiers dans l'archive
+                # List every file in the archive
                 file_list = zip_ref.namelist()
                 logger.info(f"Files in archive: {file_list}")
                 
-                # Extraire tous les fichiers
+                # Extract all files
                 zip_ref.extractall(temp_dir)
                 
-                # Trouver les fichiers .fasta et .txt
+                # Locate .fasta and .txt files
                 for root, dirs, files in os.walk(temp_dir):
                     for file in files:
                         file_path = os.path.join(root, file)
@@ -114,7 +114,7 @@ class CALeDNAParser:
                             taxonomy_file = file_path
                             logger.info(f"Found taxonomy file: {taxonomy_file}")
                         elif file.lower().endswith('.txt') and not taxonomy_file:
-                            # Si aucun fichier avec 'tax' dans le nom, prendre le premier .txt
+                            # If no file contains 'tax', grab the first .txt file
                             taxonomy_file = file_path
                             logger.info(f"Found potential taxonomy file: {taxonomy_file}")
                 
@@ -124,7 +124,7 @@ class CALeDNAParser:
                     raise FileNotFoundError("No taxonomy file found in the archive")
                 
         except Exception as e:
-            # Nettoyer en cas d'erreur
+            # Clean up on error
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
             raise e
@@ -133,8 +133,8 @@ class CALeDNAParser:
 
     def load_taxonomy_mapping(self, taxonomy_file: str):
         """
-        Charge le mapping taxonomique depuis le fichier .txt
-        Format attendu: ID\tTaxonomie;séparée;par;points-virgules
+        Load the taxonomy mapping from the .txt file.
+        Expected format: ID\tTaxonomy;separated;by;semicolons
         """
         logger.info(f"Loading taxonomy mapping from {taxonomy_file}")
         
@@ -148,7 +148,7 @@ class CALeDNAParser:
                         continue
                     
                     try:
-                        # Séparer ID et taxonomie (par tabulation ou espace)
+                        # Split ID and taxonomy (tab or space separated)
                         if '\t' in line:
                             seq_id, taxonomy_str = line.split('\t', 1)
                         elif ' ' in line:
@@ -163,7 +163,7 @@ class CALeDNAParser:
                         seq_id = seq_id.strip()
                         taxonomy_str = taxonomy_str.strip()
                         
-                        # Parser la taxonomie
+                        # Parse taxonomy string
                         taxonomy = self._parse_caledna_taxonomy(taxonomy_str)
                         self.taxonomy_map[seq_id] = taxonomy
                         taxonomy_count += 1
@@ -185,8 +185,8 @@ class CALeDNAParser:
     @lru_cache(maxsize=50000)
     def _parse_caledna_taxonomy(self, taxonomy_str: str) -> Dict[str, Optional[str]]:
         """
-        Parse la chaîne taxonomique CALeDNA
-        Format: Eukaryota;Ascomycota;Sordariomycetes;Microascales;Microascaceae;Microascus;Microascus cirrosus
+        Parse a CALeDNA taxonomy string.
+        Example format: Eukaryota;Ascomycota;Sordariomycetes;Microascales;Microascaceae;Microascus;Microascus cirrosus
         """
         try:
             ranks = ['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']
@@ -195,14 +195,14 @@ class CALeDNAParser:
             if not taxonomy_str or taxonomy_str.strip() == '':
                 return {rank: None for rank in ranks}
             
-            # Diviser par point-virgule
+            # Split on semicolons
             tax_parts = [part.strip() for part in taxonomy_str.split(';')]
             
-            # Mapper aux rangs taxonomiques
+            # Map onto taxonomy ranks
             for i, rank in enumerate(ranks):
                 if i < len(tax_parts):
                     value = tax_parts[i].strip()
-                    # Nettoyer les valeurs vides ou "NA"
+                    # Clean empty or "NA" values
                     if value and value.upper() not in ['', 'NA', 'UNKNOWN', 'UNIDENTIFIED']:
                         taxonomy[rank] = value.replace('_', ' ')
                     else:
@@ -217,7 +217,7 @@ class CALeDNAParser:
             return {rank: None for rank in ['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']}
 
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
-        """Validation de séquence avec early exit."""
+        """Early-exit sequence validation routine."""
         if not sequence:
             return False, 0, 1.0
         
@@ -225,14 +225,14 @@ class CALeDNAParser:
         if seq_len < self.min_length:
             return False, seq_len, 0.0
         
-        # Comptage des N
+        # Count Ns
         n_count = sequence.count('N') + sequence.count('n')
         n_fraction = n_count / seq_len
         
         if n_fraction > self.max_n_fraction:
             return False, seq_len, n_fraction
         
-        # Validation des caractères (plus rapide avec set)
+        # Validate characters (set membership is faster)
         if not all(c.upper() in self.valid_chars for c in sequence[:100]):
             return False, seq_len, n_fraction
         
@@ -240,9 +240,9 @@ class CALeDNAParser:
 
     def fasta_reader_mmap(self, file_path: str, queue: Queue):
         """
-        Lecteur FASTA.
-        Lit le fichier séquence par séquence et utilise _add_to_chunk pour créer
-        des "batchs" de tuples (header, sequence, len, n_frac) au format attendu.
+        FASTA reader.
+        Iterate sequence by sequence and use _add_to_chunk to create batches of
+        tuples (header, sequence, len, n_frac) with the expected format.
         """
         logger.info(f"Starting FASTA reader for {file_path}")
         
@@ -279,7 +279,7 @@ class CALeDNAParser:
             logger.info("FASTA reader finished and sent sentinel.")
 
     def _process_fasta_stream(self, stream, chunk, queue):
-        """Traitement d'un stream FASTA."""
+        """Process a FASTA stream sequentially."""
         header, sequence_parts = None, []
         
         for line in stream:
@@ -302,7 +302,7 @@ class CALeDNAParser:
             self._add_to_chunk(header, sequence, chunk, queue)
 
     def _add_to_chunk(self, header: str, sequence: str, chunk: List, queue: Queue):
-        """Ajoute une séquence au chunk avec validation précoce."""
+        """Add a sequence to the chunk after early validation."""
         is_valid, seq_len, n_frac = self.validate_sequence(sequence)
         
         if is_valid:
@@ -316,11 +316,11 @@ class CALeDNAParser:
             self.stats['filtered_sequences'] += 1
 
     def sequence_processor_worker(self, chunk: List[Tuple[str, str, int, float]]) -> List[SequenceRecord]:
-        """Worker qui traite un chunk de séquences."""
+        """Worker that processes a chunk of sequences."""
         results = []
         
         for header, sequence, seq_len, n_frac in chunk:
-            seq_id = header.lstrip('>').split()[0]  # Premier token après >
+            seq_id = header.lstrip('>').split()[0]  # First token after >
             
             taxonomy = self.taxonomy_map.get(seq_id, {})
             
@@ -328,7 +328,7 @@ class CALeDNAParser:
                 logger.debug(f"No taxonomy found for sequence ID: {seq_id}")
                 taxonomy = {rank: None for rank in ['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']}
             
-            # Création du SequenceRecord
+            # Build the SequenceRecord
             record = SequenceRecord(
                 original_id=seq_id,
                 sequence=sequence,
@@ -383,7 +383,7 @@ class CALeDNAParser:
 
     def _flush_batch_sqlalchemy(self, batch: List[SequenceRecord], source_id: str):
         """Flush batch using SQLAlchemy bulk operations (source_id is UUID string)."""
-        # 1. Préparer les données de taxonomie
+        # 1. Prepare taxonomy payload
         taxonomy_data = []
         taxonomy_map = {}
 
@@ -405,7 +405,7 @@ class CALeDNAParser:
         # 2. Bulk insert taxonomies
         tax_id_map = self.db_manager.bulk_insert_taxonomies(taxonomy_data)
 
-        # 3. Préparer les données de séquence
+        # 3. Prepare sequence rows
         sequence_data = []
         for record in batch:
             seq_dict = {
@@ -422,7 +422,7 @@ class CALeDNAParser:
         # 4. Bulk insert sequences
         seq_id_map = self.db_manager.bulk_insert_sequences(sequence_data)
 
-        # 5. Préparer les relations
+        # 5. Prepare seq_tax relations
         relation_data = []
         for record in batch:
             seq_id = seq_id_map.get(record.original_id)
@@ -442,9 +442,9 @@ class CALeDNAParser:
         self.db_manager.bulk_insert_seq_tax(relation_data)
 
     def process_caledna_database(self, zip_file: str, source_name: str = "CALeDNA") -> Dict:
-        """Pipeline de traitement principal."""
+        """Main CALeDNA processing pipeline."""
         
-        # Réinitialiser pour ce nouveau fichier
+        # Reset for this file
         self._reset_for_new_file()
 
         start_time = time.time()
@@ -453,27 +453,27 @@ class CALeDNAParser:
         temp_dir = None
         
         try:
-            # Extraction des fichiers
+            # Extract files
             fasta_file, taxonomy_file, temp_dir = self.extract_zip_files(zip_file)
             
-            # Chargement du mapping taxonomique
+            # Load taxonomy mapping
             self.load_taxonomy_mapping(taxonomy_file)
             
-            # Configuration DB pour performance maximale
+            # Configure DB for peak performance
             self.db_manager.optimize_for_bulk_insert_advanced()
             source_id = self.db_manager.add_source(name=source_name, file_path=zip_file)
             
-            # Files d'attente
+            # Queues
             fasta_queue = Queue(maxsize=QUEUE_SIZE)
             results_queue = Queue(maxsize=QUEUE_SIZE)
             
-            # Calcul optimal du nombre de workers
+            # Compute optimal worker count
             cpu_count = os.cpu_count()
             num_workers = max(2, cpu_count - 2)
             logger.info(f"Using {num_workers} worker threads on {cpu_count} CPUs")
             
             with ThreadPoolExecutor(max_workers=num_workers + 2) as executor:
-                # Lancer reader et writer
+                # Launch reader and writer
                 writer_future = executor.submit(
                     self.db_writer_consumer, source_id, results_queue
                 )
@@ -481,7 +481,7 @@ class CALeDNAParser:
                     self.fasta_reader_mmap, fasta_file, fasta_queue
                 )
                 
-                # Traitement parallèle des chunks
+                # Process chunks in parallel
                 worker_futures = []
                 processed_chunks = 0
                 
@@ -504,11 +504,11 @@ class CALeDNAParser:
                         logger.warning("Reader timeout - assuming completion")
                         break
                 
-                # Traiter les futures restants
+                # Handle remaining futures
                 for future in as_completed(worker_futures):
                     results_queue.put(future.result())
                 
-                # Signaler la fin et attendre
+                # Signal completion and wait
                 results_queue.put(None)
                 writer_future.result()
                 reader_future.result()
@@ -519,16 +519,16 @@ class CALeDNAParser:
             logger.error(f"Critical error in processing pipeline: {e}", exc_info=True)
             raise
         finally:
-            # Nettoyage
+            # Cleanup
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
                 logger.info(f"Cleaned up temporary directory: {temp_dir}")
         
-        # Finalisation
+        # Finalization
         end_time = time.time()
         self.stats['processing_time'] = end_time - start_time
         
-        # Statistiques finales
+        # Final statistics
         total_seqs = self.stats['total_sequences']
         processed_seqs = self.stats['processed_sequences']
         filtered_seqs = self.stats['filtered_sequences']
@@ -540,11 +540,11 @@ class CALeDNAParser:
         
         return dict(self.stats)
 
-# Point d'entrée
+# Entry point
 def main():
-    """Point d'entrée principal."""
+    """Main entry point."""
     try:
-        # Configuration Snakemake
+        # Snakemake configuration
         if 'snakemake' in globals():
             input_db = snakemake.input.db
             input_file = snakemake.input.file
@@ -556,7 +556,7 @@ def main():
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             logger.addHandler(file_handler)
         else:
-            # Mode test
+            # Test mode
             logger.warning("Running in standalone test mode")
             input_files = ["test_FITS.zip", "test_PITS.zip"] # Mettez vos fichiers de test ici
             input_db = "test_output.sqlite"
@@ -568,14 +568,14 @@ def main():
                 'max_n_fraction': 0.1
             }
 
-        # Import et initialisation
+        # Import and initialization
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
         
         db_manager = get_database_manager(config)
         parser = CALeDNAParser(db_manager, config_validation)
         
-        # Restaurer les paramètres sûrs avant chaque fichier
+        # Restore safe settings before processing each file
         db_manager.restore_safe_settings()
         
         
@@ -584,11 +584,11 @@ def main():
             source_name=f"CALeDNA_{Path(input_file).stem}"
         )
         
-        # Optimisation finale
+        # Final optimization
         db_manager.restore_safe_settings()
         db_manager.vacuum_database()
         
-        # Génération du rapport
+        # Report generation
         total_time = stats.get('processing_time', 1)
         total_processed = stats.get('processed_sequences', 0)
         rate = total_processed / total_time if total_time > 0 else 0
@@ -607,7 +607,7 @@ def main():
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Sauvegarde du rapport
+        # Save the report
         if 'snakemake' in globals():
             with open(output_report, 'w') as f:
                 json.dump(report_data, f, indent=2)
