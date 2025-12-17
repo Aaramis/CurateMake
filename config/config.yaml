@@ -7,7 +7,7 @@ itsx_cpu: 1200   # nombre de threads à utiliser pour ITSx
 # Configuration de la base de données
 database:
   # Type de backend: "sqlite" (dev/small datasets) ou "postgresql" (production/large datasets)
-  type: "postgresql"
+  type: "sqlite"
 
   # Configuration SQLite (développement, datasets < 1M séquences)
   sqlite:
@@ -96,7 +96,6 @@ msa:
 
   # Configuration de la classification parallèle avec hmmscan
   # hmmscan parallélise mieux avec 8-10 threads par processus
-  # Utiliser plusieurs processus en parallèle donne de meilleures performances
   # ATTENTION: Réduites pour éviter les crashes OOM (Out Of Memory)
   classification_max_workers: 20           # Nombre de processus hmmscan en parallèle (réduit de 14 à 6)
   # classification_max_workers: 24           # Nombre de processus hmmscan en parallèle (réduit de 14 à 6)
@@ -151,7 +150,8 @@ sativa:
   barcodes: ["ITS", "ITS1", "ITS2"]      # Barcodes à traiter
   tax_levels: ["family", "genus", "order", "species"]  # Niveaux taxonomiques
   retry_on_oom: false             # Relancer avec moins de threads si OOM
-  timeout_seconds: 21600          # Timeout par tâche (6 heures = 21600 secondes)
+  timeout_seconds: 60          # Timeout par tâche (6 heures = 21600 secondes)
+  # timeout_seconds: 21600          # Timeout par tâche (6 heures = 21600 secondes)
 
   # Configuration du nettoyage des fichiers temporaires
   cleanup_temp_files: true        # Activer le nettoyage automatique des fichiers temp

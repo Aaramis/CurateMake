@@ -1313,16 +1313,21 @@ def scan_sativa_output_directory(sativa_dir: Path, barcodes: List[str],
             alignment_dir = sativa_dir / barcode / f"alignments_{tax_level}"
 
             if not alignment_dir.exists():
-                logger.debug(f"Directory not found: {alignment_dir}")
+                logger.debug("Directory not found: %s", alignment_dir)
                 continue
 
             for taxon_dir in alignment_dir.iterdir():
                 if not taxon_dir.is_dir():
                     continue
 
-                mis_file = taxon_dir / f"{taxon_dir.name}.mis"
-                if mis_file.exists():
-                    mis_files.append((mis_file, barcode, tax_level))
+                # SATIVA outputs are prefixed with "{barcode}_{tax_level}_{taxon}.mis"
+                mis_candidates = sorted(taxon_dir.glob("*.mis"))
+                if not mis_candidates:
+                    logger.debug("No .mis file found in %s", taxon_dir)
+                    continue
+
+                mis_file = mis_candidates[0]
+                mis_files.append((mis_file, barcode, tax_level))
 
     return mis_files
 

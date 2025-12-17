@@ -1,231 +1,172 @@
+<div align="center">
 
-# Bio-pipeline
+# ITS Bioinformatics Pipeline
 
-Pipeline bioinformatique pour le traitement et l'analyse de séquences ADN.
+Automated Snakemake workflow for ingesting, curating, and validating ITS (Internal Transcribed Spacer) barcode sequences from heterogeneous sources.  
 
-## Structure du projet
+[Snakemake](https://snakemake.readthedocs.io) • [MkDocs Documentation](docs/) • [GPLv3](LICENSE)
 
-Cette structure suit les [meilleures pratiques recommandées par Snakemake](https://snakemake.readthedocs.io/en/stable/snakefiles/deployment.html#distribution-and-reproducibility) pour assurer la reproductibilité et la maintenabilité du workflow.
+</div>
+
+---
+
+## Overview
+
+This repository hosts a production-ready pipeline that consolidates ITS barcode data (ITS, ITS1, ITS2) into a unified relational database, applies domain-specific cleaning, and produces harmonized analytical outputs. The workflow is orchestrated with Snakemake and leverages Conda environments for full reproducibility.
+
+Core capabilities include:
+
+- **Ingestion & normalization** of public datasets (BOLD, PLANITS, CALeDNA, UNITE, etc.) using high-throughput parsing scripts.
+- **Quality control & deduplication** at both sequence and taxonomy levels before database insertion.
+- **ITSx processing** to extract marker-specific subsequences and update barcode status tracking.
+- **Multiple sequence alignment (MSA)** per taxonomic slice with MAFFT/Trimal and downstream summarization.
+- **SATIVA-based taxonomic validation** plus automated reporting and optional database integration of reassigned taxa.
+- **Rich observability**, including JSON run reports, HTML dashboards, and extensive logging.
+
+The pipeline runs end-to-end against either SQLite (local prototyping) or PostgreSQL (large-scale production) backends with transparent configuration switches.
+
+---
+
+## Repository Layout
 
 ```
 .
-├── .git/               # Dossier de versionnement Git
-├── .github/            # Fichiers de configuration GitHub
-│   └── workflows/      # GitHub Actions workflows
-│
-├── workflow/           # Code source du workflow Snakemake
-│   ├── rules/         # Règles modulaires du workflow
-│   │   ├── download.smk
-│   │   ├── itsx.smk
-│   │   ├── msa.smk
-│   │   └── sativa.smk
-│   │
-│   ├── envs/          # Environnements Conda par outil
-│   │   ├── itsx.yaml
-│   │   ├── mafft.yaml
-│   │   └── sativa.yaml
-│   │
-│   ├── scripts/       # Scripts personnalisés
-│   │   └── utils/     # Utilitaires
-│   │       └── db_schema.py
-│   │
-│   ├── notebooks/     # Notebooks Jupyter pour l'analyse exploratoire
-│   ├── report/        # Fichiers pour la génération de rapports
-│   └── Snakefile      # Point d'entrée du workflow
-│
-├── config/            # Fichiers de configuration
-│   ├── config.yaml    # Configuration principale
-│   └── .env.example  # Variables d'environnement (à copier en .env)
-│
-├── data/              # Données brutes (versionnés si petits, sinon .gitignorés)
-│   ├── raw/          # Données brutes originales
-│   └── processed/    # Données prétraitées
-│
-├── results/           # Résultats des analyses (générés par le workflow)
-│   ├── itsx/         # Résultats d'extraction ITS
-│   ├── alignments/   # Alignements multiples
-│   ├── sativa/       # Résultats de validation taxonomique
-│   └── augmented/    # Données augmentées
-│
-├── resources/         # Fichiers de référence et ressources statiques
-├── tests/             # Tests automatisés
-│   ├── unit/         # Tests unitaires
-│   └── integration/  # Tests d'intégration
-│
-├── docs/              # Documentation complète
-│   ├── overview.md
-│   ├── installation.md
-│   ├── usage.md
-│   ├── database.md
-│   ├── tools.md
-│   ├── dev.md
-│   ├── contributing.md
-│   └── changelog.md
-│
-├── .gitignore        # Fichiers ignorés par Git
-├── LICENSE           # Licence du projet
-├── README.md         # Ce fichier
-└── setup_env.sh      # Script de configuration de l'environnement
+├── config/                 # Global configuration and environment templates
+├── data/                   # Raw and processed datasets (git-ignored if large)
+├── docs/                   # MkDocs documentation portal
+├── resources/              # Reference files (e.g., taxonomy definitions)
+├── workflow/
+│   ├── Snakefile           # Primary Snakemake entry point
+│   ├── envs/               # Conda environments per tool (ITSx, MAFFT, SATIVA, etc.)
+│   ├── report/             # HTML templates and assets used in reports
+│   ├── rules/              # Snakemake rule modules (download, itsx, msa, sativa, reports)
+│   └── scripts/            # Python utilities (formatters, DB ops, report generators)
+├── results/                # Generated outputs (alignments, SATIVA runs, augmented datasets)
+├── tests/                  # Unit/integration tests (optional)
+├── mkdocs.yml              # Documentation site configuration
+└── setup_env.sh            # Helper script for local environment bootstrap
 ```
 
-### Explications de la structure
+---
 
-- **workflow/** : Contient tout le code exécutable du workflow
-  - `rules/` : Règles modulaires organisées par fonctionnalité
-  - `envs/` : Environnements Conda spécifiques à chaque outil
-  - `scripts/` : Scripts personnalisés réutilisables
-  - `notebooks/` : Analyses exploratoires et prototypes
-  - `report/` : Modèles et ressources pour les rapports
+## Requirements
 
-- **config/** : Fichiers de configuration
-  - `config.yaml` : Configuration principale du workflow
-  - `.env.example` : Modèle pour les variables d'environnement
+- Linux or macOS with Bash, GNU coreutils, and Conda (Miniconda or Mamba recommended)
+- Snakemake ≥ 7.0 (automatically installed via conda/mamba)
+- Access credentials for the selected database backend (SQLite path or PostgreSQL DSN)
+- Optional: MkDocs + `mkdocs-material` for browsing the docs locally
 
-- **data/** : Données d'entrée (versionnées si petites)
-  - `raw/` : Données brutes originales
-  - `processed/` : Données prétraitées
+---
 
-- **results/** : Résultats générés par le workflow (non versionnés)
+## Quick Start
 
-- **resources/** : Fichiers de référence et ressources statiques
-
-## Installation rapide
-
-1. **Cloner le dépôt**
+1. **Clone the repository**
    ```bash
-   git clone [URL_DU_DEPOT]
-   cd bio-pipeline
+   git clone https://github.com/<org>/ITS-pipeline.git
+   cd ITS-pipeline/6.CurateMake
    ```
 
-2. **Configurer l'environnement**
+2. **Create/update Conda environments**
    ```bash
-   # Rendre le script exécutable
    chmod +x setup_env.sh
-   
-   # Lancer la configuration
-   ./setup_env.sh
+   ./setup_env.sh          # installs Snakemake and required tool envs
    ```
 
-3. **Configurer les variables d'environnement**
+3. **Configure credentials**
    ```bash
    cp config/.env.example config/.env
-   # Éditer le fichier .env avec vos paramètres
+   # edit config/.env to define DB connection, API tokens, etc.
    ```
 
-4. **Activer l'environnement**
+4. **Review primary configuration**
+   - `config/config.yaml` centralizes dataset paths, resource usage, and tool parameters.
+   - `workflow/envs/*.yaml` pin the versions of ITSx, MAFFT, SATIVA, hmmer, etc.
+
+5. **Dry-run the workflow**
    ```bash
-   conda activate bio-pipeline
-   # ou pour le développement
-   conda activate bio-pipeline-dev
+   snakemake -np            # prints planned jobs without executing them
    ```
+
+6. **Execute the full pipeline**
+   ```bash
+   snakemake --use-conda --cores <N>
+   # or submit to a cluster with --profile
+   ```
+
+Snakemake automatically creates the per-tool Conda environments declared in each rule, so no manual activation is required during workflow execution.
+
+---
+
+## Configuration Highlights
+
+| Section | Purpose |
+|--------|---------|
+| `database` | Toggle between SQLite (default) and PostgreSQL, set schema, connection string, and optional backups. |
+| `data_sources` | Define file paths for BOLD/PLANITS/CALeDNA/UNITE dumps and ingestion thresholds. |
+| `itsx` | CPU/thread allocation, runtime limits, and post-processing flags for ITSx batches. |
+| `msa` | MAFFT/Trimal parameters, batch sizing, alignment thresholds, and reporting options. |
+| `sativa` | SATIVA deployment details (tree limits, API integrations, visualization paths). |
+| `reports` | Output locations for HTML dashboards and JSON metrics. |
+
+Every parameter is documented inline within `config/config.yaml`. Override values per environment by exporting variables in `config/.env` or via `--configfile`.
+
+---
+
+## Running Specific Stages
+
+```bash
+# Format and ingest CALeDNA only
+snakemake --use-conda results/caledna_ingestion.done
+
+# Launch ITSx processing for ITS2
+snakemake --use-conda itsx/ITS2/itsx_run.done
+
+# Generate SATIVA visualization report
+snakemake --use-conda reports/html/sativa_visualization_report.html
+```
+
+Use `-n` (dry-run) and `-r` (print reason) to inspect dependencies before executing resource-intensive jobs.
+
+---
+
+## Reporting & Monitoring
+
+- **JSON run reports** (`data/processed/*_run_report.json`) capture per-stage metrics, throughput, and warnings.
+- **HTML dashboards** in `reports/html/` summarize ITSx/MSA/SATIVA runs for stakeholder review.
+- **Logs** are stored in `logs/<module>/` with human-readable English messaging for quicker troubleshooting.
+- **Database utilities** under `workflow/scripts/utils/` (e.g., `restore_db_backup.py`) validate and restore curated DB snapshots.
+
+---
+
+## Development Workflow
+
+1. Create a feature branch from `CurateMake` (or `main`, depending on your release strategy).
+2. Apply linting/formatting to scripts as needed (black/isort/mypy optional).
+3. Run targeted Snakemake jobs to validate changes before committing.
+4. Submit pull requests with links to relevant run reports or logs.
+
+The repository includes `.gitignore` entries for large datasets, secrets, editor files, and Conda artifacts to keep commits clean.
+
+---
 
 ## Documentation
 
-La documentation complète est disponible dans le dossier `docs/`. Pour la consulter en local :
-
-```bash
-# Installer les dépendances de documentation
-pip install mkdocs mkdocs-material
-
-# Lancer le serveur de documentation
-mkdocs serve
-```
-
-Puis ouvrez http://127.0.0.1:8000 dans votre navigateur.
-
-## Développement avec Git
-
-### Workflow de développement standard
-
-1. **Mettre à jour votre branche locale**
-   ```bash
-   git pull origin main
-   ```
-
-2. **Créer une nouvelle branche pour votre fonctionnalité**
-   ```bash
-   git checkout -b feature/nom-de-la-fonctionnalite
-   ```
-
-3. **Faire vos modifications et les valider**
-
-```bash
-# Voir les fichiers modifiés
-git status
-
-# Ajouter les fichiers au staging
-git add .  # Tous les fichiers
-# ou
-git add chemin/vers/fichier  # Fichier spécifique
-
-# Valider les changements avec un message clair
-git commit -m "Description claire des modifications"
-```
-
-4. **Pousser vos changements**
-
-```bash
-# Premier push d'une nouvelle branche
-git push -u origin feature/nom-de-la-fonctionnalite
-
-# Pour les pushes suivants sur la même branche
-git push
-```
-
-### Gestion des branches
-
-- `main` : Branche principale, toujours stable
-- `develop` : Branche d'intégration pour les fonctionnalités
-- `feature/*` : Nouvelles fonctionnalités
-- `bugfix/*` : Corrections de bugs
-- `hotfix/*` : Corrections critiques pour la production
-
-### .gitignore
-
-Le fichier `.gitignore` est déjà configuré pour ignorer :
-- Fichiers sensibles (.env, mots de passe, clés API)
-- Fichiers temporaires et de cache
-- Fichiers de données volumineux
-- Fichiers spécifiques aux éditeurs de code
-
-## Documentation **MkDocs** :
+The MkDocs site compiles the architecture overview, database schema notes, and troubleshooting guides located in `docs/`. Serve it locally with:
 
 ```bash
 pip install mkdocs mkdocs-material
-mkdocs new .
 mkdocs serve
-```
-Optionnal
-
-```bash
-mkdocs gh-deploy
+# open http://127.0.0.1:8000
 ```
 
-### Run
+---
 
-```bash
-snakemake --cores 4 --use-conda
-```
+## Support & Contributions
 
-## Licence
+- File issues or feature requests via GitHub Issues (include Snakemake logs and relevant config snippets).
+- Contributions are welcome through standard fork/PR workflows. Please keep README and docs synchronized with code changes.
+- For security-sensitive topics (credentials, datasets under embargo), coordinate via the appropriate private channels instead of public trackers.
 
-Ce pipeline est distribué sous licence GPLv3 (voir fichier LICENSE).
+---
 
-### Logiciels tiers
-Ce pipeline inclut [SATIVA](https://github.com/amkozlov/sativa), distribué sous licence GNU GPL v3.  
-Toutes les conditions de cette licence s’appliquent également à ce pipeline.
-
-
-
-Modification:
-* Prepare_MSA :   1. Converti Streptophyta -> tracheophyta
-                  2. incercae sedis -> ""
-* MSA : reduit max sequence
-      minimum MSA -> species
-
-* Redifinit la strategie de création des taches.
- when reach min_domain (species level) with more sequences than large_task_threshold, we're creating a single massive MSA that causes problems downstream.
- -> solution : split these into multiple sub-MSAs 
-
-* Mise à jour de la documentation de la database
--> identification d'un problème de logique dans la règle CoL
+**License:** GPLv3. This pipeline bundles third-party tools (ITSx, MAFFT, SATIVA, hmmer, etc.); ensure compliance with their respective licenses when redistributing artifacts.
