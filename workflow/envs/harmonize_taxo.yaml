@@ -1,0 +1,13 @@
+name: harmonize_taxo
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - requests=2.31.0
+  - pandas=2.0.3
+  - sqlalchemy=2.0
+  - psycopg2=2.9
+  - python-dotenv=1.0
+  - pip

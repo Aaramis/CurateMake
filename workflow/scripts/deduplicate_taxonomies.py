@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""
+Script de déduplication des taxonomies
+Détecte et supprime les doublons taxonomiques, met à jour les relations seq_tax.
+"""
+
+import os
+import sys
+import time
+import logging
+import json
+from datetime import datetime
+from typing import List, Tuple, Dict, Any
+from pathlib import Path
+from sqlalchemy import func, text, Index
+
+# Import ORM models
+sys.path.append(str(Path(__file__).parent / "utils"))
+from db_models import Taxonomy, SeqTax
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class TaxonomyDeduplicator:
+    """Gestionnaire de déduplication des taxonomies."""
+
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
+        self.stats = {
+            'initial_taxonomy_count': 0,
+            'final_taxonomy_count': 0,
+            'duplicate_groups': 0,
+            'duplicates_removed': 0,
+            'sequences_updated': 0,
+            'processing_time': 0.0
+        }
+
+    def setup_database(self):
+        """Crée les index nécessaires pour la performance si ils n'existent pas."""
+        logger.info("Vérification et création des index pour l'optimisation...")
+        # Note: Indexes are already defined in ORM models via __table_args__
+        # This function is kept for compatibility but indexes are created at schema init
+        logger.info("Index prêts (gérés par ORM).")
+
+    def find_duplicate_taxonomies(self) -> List[Tuple[int, List[int]]]:
+        """
+        Trouve tous les doublons taxonomiques en utilisant une seule requête SQL.
+        Retourne une liste de tuples: (tax_id_a_garder, [liste_des_ids_a_supprimer])
+        """
+        logger.info("Recherche des doublons taxonomiques via SQL...")
+
+        duplicate_groups = []
+
+        # PostgreSQL utilise STRING_AGG au lieu de GROUP_CONCAT
+        if self.db_manager.db_type == "postgresql":
+            group_concat_expr = "STRING_AGG(CAST(tax_id AS TEXT), ',')"
+        else:
+            group_concat_expr = "GROUP_CONCAT(tax_id)"
+
+        query = f"""
+            SELECT
+                MIN(tax_id) as keeper_id,
+                {group_concat_expr} as all_ids,
+                COUNT(*) as count
+            FROM {self.db_manager.taxonomy_table}
+            GROUP BY kingdom, phylum, class_, order_, family, genus, species
+            HAVING COUNT(*) > 1
+        """
+
+        with self.db_manager.get_session() as session:
+            result = session.execute(text(query))
+
+            for row in result:
+                keeper_id = row[0]
+                # Convertir la chaîne "uuid1,uuid2,uuid3" en une liste d'UUIDs (strings)
+                all_ids = [id_str.strip() for id_str in row[1].split(',')]
+                # Les ID à supprimer sont tous les ID du groupe sauf celui qu'on garde
+                ids_to_remove = [id_val for id_val in all_ids if id_val != keeper_id]
+
+                if ids_to_remove:
+                    duplicate_groups.append((keeper_id, ids_to_remove))
+
+        self.stats['duplicate_groups'] = len(duplicate_groups)
+        self.stats['duplicates_removed'] = sum(len(ids) for _, ids in duplicate_groups)
+
+        logger.info(f"Trouvé {self.stats['duplicate_groups']} groupes de doublons "
+                   f"({self.stats['duplicates_removed']} enregistrements à supprimer)")
+
+        return duplicate_groups
+
+
+    def merge_duplicate_taxonomies(self, duplicate_groups: List[Tuple[str, List[str]]]):
+        """
+        Fusionne les taxonomies dupliquées en mettant à jour les références dans seq_tax
+        sans violer la contrainte d'unicité (seq_id, tax_id, backbone).
+        """
+
+        logger.info("Fusion des taxonomies dupliquées...")
+
+        if not duplicate_groups:
+            return
+
+        seq_tax_table = self.db_manager.seq_tax_table
+
+        # 1. Build the global remapping dict old -> new
+        id_remap = {
+            old_id: keep_id
+            for keep_id, ids_to_remove in duplicate_groups
+            for old_id in ids_to_remove
+        }
+
+        all_ids_to_remove = list(id_remap.keys())
+        total_sequences_updated = 0
+
+        with self.db_manager.get_session() as session:
+            try:
+                logger.info(f"Mise à jour des références seq_tax pour {len(id_remap)} taxonomies...")
+
+                # 2. UPDATE each old tax_id -> new tax_id safely
+                for old_tax_id, new_tax_id in id_remap.items():
+
+                    # ⚠ Count affected rows before updating
+                    count = session.query(func.count(SeqTax.seq_id)).filter(
+                        SeqTax.tax_id == old_tax_id
+                    ).scalar()
+                    total_sequences_updated += count
+
+                    # ⚠ SAFE UPDATE that avoids PK collisions via NOT EXISTS
+                    safe_update_sql = text(f"""
+                        UPDATE {seq_tax_table} AS st
+                        SET tax_id = :new_tax_id
+                        WHERE st.tax_id = :old_tax_id
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM {seq_tax_table} AS st2
+                            WHERE st2.seq_id   = st.seq_id
+                            AND st2.backbone = st.backbone
+                            AND st2.tax_id   = :new_tax_id
+                        )
+                    """)
+
+                    session.execute(
+                        safe_update_sql,
+                        {"new_tax_id": new_tax_id, "old_tax_id": old_tax_id}
+                    )
+
+                    # ⚠ Delete leftover rows that could not be updated because of conflicts
+                    delete_remaining_sql = text(f"""
+                        DELETE FROM {seq_tax_table}
+                        WHERE tax_id = :old_tax_id
+                    """)
+
+                    session.execute(delete_remaining_sql, {"old_tax_id": old_tax_id})
+
+                logger.info("Toutes les références seq_tax ont été mises à jour en toute sécurité.")
+
+                # 3. Delete duplicate taxonomy rows
+                logger.info(f"Suppression de {len(all_ids_to_remove)} taxonomies obsolètes...")
+
+                delete_batch = 10000
+                for i in range(0, len(all_ids_to_remove), delete_batch):
+                    batch_ids = all_ids_to_remove[i:i + delete_batch]
+
+                    session.query(Taxonomy).filter(
+                        Taxonomy.tax_id.in_(batch_ids)
+                    ).delete(synchronize_session=False)
+
+                logger.info("Taxonomies dupliquées supprimées.")
+
+                session.commit()
+                logger.info("Fusion des taxonomies terminée avec succès.")
+
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Erreur lors de la fusion : {e}", exc_info=True)
+                raise
+
+        self.stats['sequences_updated'] = total_sequences_updated
+
+    
+    def verify_integrity(self) -> bool:
+        """Vérifie l'intégrité après la déduplication."""
+        logger.info("Vérification de l'intégrité finale...")
+
+        with self.db_manager.get_session() as session:
+            # Vérifier qu'il n'y a plus de doublons
+            result = session.execute(text(f"""
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM {self.db_manager.taxonomy_table}
+                    GROUP BY kingdom, phylum, class_, order_, family, genus, species
+                    HAVING COUNT(*) > 1
+                ) AS subquery
+            """))
+            remaining_duplicates = result.scalar()
+
+            # Vérifier les relations orphelines
+            result = session.execute(text(f"""
+                SELECT COUNT(*) FROM {self.db_manager.seq_tax_table} st
+                LEFT JOIN {self.db_manager.taxonomy_table} t ON st.tax_id = t.tax_id
+                WHERE t.tax_id IS NULL
+            """))
+            orphaned_relations = result.scalar()
+
+            if remaining_duplicates == 0 and orphaned_relations == 0:
+                logger.info("✓ Intégrité vérifiée avec succès.")
+                return True
+            else:
+                logger.warning(f"⚠ Problèmes d'intégrité détectés: "
+                               f"{remaining_duplicates} doublons restants, "
+                               f"{orphaned_relations} relations orphelines.")
+                return False
+
+    def optimize_database(self):
+        """Optimise la base de données après la déduplication."""
+        logger.info("Optimisation de la base de données (VACUUM)...")
+        # Utiliser la méthode vacuum du db_manager qui gère SQLite et PostgreSQL
+        self.db_manager.vacuum_database()
+        logger.info("Optimisation terminée.")
+    
+    def deduplicate_taxonomies(self):
+        """Processus complet de déduplication."""
+        start_time = time.time()
+        logger.info("Démarrage de la déduplication taxonomique")
+        self.stats['final_unique_tax_in_seq'] = 0
+
+        try:
+            with self.db_manager.get_session() as session:
+                # Use ORM query instead of raw SQL
+                self.stats['initial_taxonomy_count'] = session.query(func.count(Taxonomy.tax_id)).scalar()
+            logger.info(f"Nombre initial de taxonomies : {self.stats['initial_taxonomy_count']}")
+
+            # 0. Préparation : création des index
+            self.setup_database()
+
+            # 1. Trouver les doublons (version SQL rapide)
+            duplicate_groups = self.find_duplicate_taxonomies()
+
+            if not duplicate_groups:
+                logger.info("Aucun doublon trouvé.")
+                self.stats['processing_time'] = time.time() - start_time
+                return
+
+            # 2. Fusionner les doublons (version en masse)
+            self.merge_duplicate_taxonomies(duplicate_groups)
+
+            # 3. Vérifier l'intégrité
+            integrity_ok = self.verify_integrity()
+
+            # 4. Mettre à jour les stats finales
+            with self.db_manager.get_session() as session:
+                # Use ORM queries instead of raw SQL
+                self.stats['final_taxonomy_count'] = session.query(func.count(Taxonomy.tax_id)).scalar()
+                self.stats['final_unique_tax_in_seq'] = session.query(
+                    func.count(func.distinct(SeqTax.tax_id))
+                ).scalar()
+                logger.info(f"Nombre final de tax_id uniques dans seq_tax : {self.stats['final_unique_tax_in_seq']}")
+
+            # 5. Optimiser l'espace disque
+            self.optimize_database()
+
+        except Exception as e:
+            logger.error(f"Erreur durant la déduplication: {e}", exc_info=True)
+            raise
+        finally:
+            self.stats['processing_time'] = time.time() - start_time
+            logger.info(f"Déduplication terminée en {self.stats['processing_time']:.2f}s")
+            logger.info(f"Taxonomies : {self.stats['initial_taxonomy_count']} -> {self.stats['final_taxonomy_count']}")
+            logger.info(f"Supprimé {self.stats['duplicates_removed']} doublons, "
+                       f"mis à jour {self.stats['sequences_updated']} relations.")
+
+def write_report(stats: dict, path: str, db_path: str):
+    """
+    Écrit un rapport JSON récapitulant la déduplication.
+
+    Parameters
+    ----------
+    stats : dict
+        Les statistiques retournées par TaxonomyDeduplicator.
+    path : str
+        Chemin du fichier de sortie.
+    db_path : str
+        Chemin de la base de données traitée (pour le contexte).
+    """
+    report = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "database": os.path.abspath(db_path),
+        "summary": {
+            "initial_taxonomy_count": stats.get("initial_taxonomy_count"),
+            "final_taxonomy_count":   stats.get("final_taxonomy_count"),
+            "final_unique_tax_id_in_seq_tax":   stats.get("final_unique_tax_in_seq"),
+            "duplicate_groups":       stats.get("duplicate_groups"),
+            "duplicates_removed":     stats.get("duplicates_removed"),
+            "sequences_updated":      stats.get("sequences_updated"),
+            "processing_time_sec":    round(stats.get("processing_time", 0), 3),
+        }
+    }
+
+    # On crée le dossier parent si nécessaire
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2, ensure_ascii=False)
+
+    logger.info(f"Rapport de déduplication écrit dans: {path}")
+
+def main():
+    """Point d'entrée principal."""
+    try:
+        if 'snakemake' in globals():
+            db_path = snakemake.params.db
+            output_report = snakemake.output.report
+            config = snakemake.config
+            log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+            file_handler = logging.FileHandler(log_file, mode="w")
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(file_handler)
+        else:
+            logger.warning("Mode test - utiliser avec Snakemake en production")
+            db_path = "test_database.sqlite"
+            output_report = "taxonomy_deduplication_report.json"
+            config = {'database': {'path': db_path}}
+
+        # Import et initialisation du database manager
+        sys.path.append(str(Path(__file__).parent / "utils"))
+        from db_manager import get_database_manager
+
+        db_manager = get_database_manager(config)
+
+        deduplicator = TaxonomyDeduplicator(db_manager)
+        deduplicator.deduplicate_taxonomies()
+
+        print(f"\n{'='*60}")
+        print("RÉSUMÉ DE LA DÉDUPLICATION TAXONOMIQUE")
+        print(f"{'='*60}")
+        print(f"Taxonomies initiales: {deduplicator.stats['initial_taxonomy_count']}")
+        print(f"Taxonomies finales:   {deduplicator.stats['final_taxonomy_count']}")
+        print(f"Taxonomies uniques dans seq_tax: {deduplicator.stats['final_unique_tax_in_seq']}")
+        print(f"Groupes de doublons:  {deduplicator.stats['duplicate_groups']}")
+        print(f"Doublons supprimés:   {deduplicator.stats['duplicates_removed']}")
+        print(f"Relations mises à jour: {deduplicator.stats['sequences_updated']}")
+        print(f"Temps de traitement:  {deduplicator.stats['processing_time']:.2f}s")
+        print(f"{'='*60}")
+
+        write_report(deduplicator.stats, output_report, db_path)
+
+    except Exception as e:
+        logger.critical(f"Erreur fatale: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

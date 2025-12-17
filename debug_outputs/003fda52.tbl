@@ -1,0 +1,30 @@
+#                                                                                                                                             --- full sequence ---- --- best 1 domain ---- --- domain number estimation ----
+# target name               accession  query name                                                                                  accession    E-value  score  bias   E-value  score  bias   exp reg clu  ov env dom rep inc description of target
+#       ------------------- ----------                                                                        -------------------- ---------- --------- ------ ----- --------- ------ -----   --- --- --- --- --- --- --- --- ---------------------
+ITS_Volvocaceae.trimmed     -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -           2.7e-164  539.9   0.0    3e-164  539.7   0.0   1.0   1   0   0   1   1   1   1 -
+ITS_Scenedesmaceae.trimmed  -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            3.7e-85  278.2   0.0   4.1e-85  278.0   0.0   1.1   1   0   0   1   1   1   1 -
+ITS_Trebouxiaceae.trimmed   -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            6.4e-66  214.6   0.0   7.5e-66  214.4   0.0   1.1   1   0   0   1   1   1   1 -
+ITS2_Volvocaceae.trimmed    -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            6.3e-60  194.6   0.0   2.8e-57  185.9   0.0   2.8   2   1   0   2   2   2   2 -
+ITS_Pleosporaceae.trimmed   -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            3.8e-53  172.6   0.0   4.4e-53  172.4   0.0   1.2   1   0   0   1   1   1   1 -
+ITS_Primulaceae.trimmed     -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            1.3e-47  153.8   0.0     2e-47  153.3   0.0   1.1   1   0   0   1   1   1   1 -
+ITS_Aspergillaceae.trimmed  -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            3.3e-47  152.4   0.0   4.6e-47  152.0   0.0   1.1   1   0   0   1   1   1   1 -
+ITS1_Volvocaceae.trimmed    -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            6.4e-47  152.1   0.0   1.6e-46  150.8   0.0   1.7   1   0   0   1   1   1   1 -
+ITS_Asteraceae.trimmed      -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            2.9e-45  146.4   0.0     4e-45  146.0   0.0   1.1   1   0   0   1   1   1   1 -
+ITS_Actinidiaceae.trimmed   -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            1.1e-43  141.0   0.0   1.4e-43  140.6   0.0   1.1   1   0   0   1   1   1   1 -
+ITS_Poaceae.trimmed         -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            2.3e-43  139.7   0.0   3.1e-43  139.3   0.0   1.1   1   0   0   1   1   1   1 -
+ITS_Nymphaeaceae.trimmed    -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            1.1e-42  137.6   0.0   1.5e-42  137.2   0.0   1.2   1   0   0   1   1   1   1 -
+ITS_Fabaceae.trimmed        -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            1.9e-42  137.1   0.0   2.7e-42  136.6   0.0   1.1   1   0   0   1   1   1   1 -
+ITS_Ahnfeltiaceae.trimmed   -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -              6e-40  128.5   0.0   7.3e-40  128.3   0.0   1.1   1   0   0   1   1   1   1 -
+ITS2_Koliellaceae.trimmed   -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            8.9e-40  128.6   0.0   1.5e-39  127.9   0.0   1.3   1   0   0   1   1   1   1 -
+ITS_Aquifoliaceae.trimmed   -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            7.1e-36  114.6   0.0     1e-35  114.1   0.0   1.1   1   0   0   1   1   1   1 -
+ITS2_Scenedesmaceae.trimmed -          00b5aee1-63ce-4e6f-a792-d3a14fe23032|kingdom=Plantae|phylum=Chlorophyta|class=Chlorophyceae -            6.9e-10   30.5   0.0   1.6e-09   29.4   0.0   1.6   1   0   0   1   1   1   1 -
+#
+# Program:         hmmscan
+# Version:         3.4 (Aug 2023)
+# Pipeline mode:   SCAN
+# Query file:      /tmp/tmpcj8qg7s_.fasta
+# Target file:     data/MSA/combined/all_profiles_combined.hmm
+# Option settings: hmmscan --tblout debug_outputs/003fda52.tbl --domtblout debug_outputs/003fda52.domtbl --noali --cpu 4 data/MSA/combined/all_profiles_combined.hmm /tmp/tmpcj8qg7s_.fasta 
+# Current dir:     /pools/apollon/ummisco/home/agardette/augmentation_taxonomie/6.CurateMake
+# Date:            Tue Dec 16 10:26:24 2025
+# [ok]

@@ -1,0 +1,110 @@
+{
+  "source": "Snakemake_MSA_scatter",
+  "input_csv": "data/full.csv",
+  "output_folder": "data/MSA",
+  "parameters": {
+    "min_seq_threshold": 20,
+    "trimal_seq_overlap": 75,
+    "trimal_res_overlap": 0.5,
+    "domain": "family",
+    "barcodes": [
+      "ITS",
+      "ITS1",
+      "ITS2"
+    ],
+    "hierarchy_levels": [
+      "genus",
+      "family",
+      "order",
+      "class",
+      "phylum"
+    ],
+    "tax_columns": [
+      "kingdom",
+      "phylum",
+      "class",
+      "order",
+      "family",
+      "genus",
+      "species"
+    ],
+    "id_col": "seq_id",
+    "seq_col": "sequence",
+    "barcode_col": "barcode",
+    "classification_batch_size": 5000
+  },
+  "results": {
+    "barcode_results": {
+      "ITS": {
+        "tasks_processed": 13,
+        "sequences_processed": 2831,
+        "sequences_unprocessed": 418,
+        "classification_sequences": 418
+      },
+      "ITS1": {
+        "tasks_processed": 12,
+        "sequences_processed": 2142,
+        "sequences_unprocessed": 529,
+        "classification_sequences": 529
+      },
+      "ITS2": {
+        "tasks_processed": 17,
+        "sequences_processed": 3420,
+        "sequences_unprocessed": 690,
+        "classification_sequences": 690
+      }
+    },
+    "global_assignments": {
+      "total_assignments": 1502,
+      "reassignment_stats": {
+        "ITS_to_ITS": {
+          "count": 417,
+          "percentage": 99.76076555023924
+        },
+        "ITS_to_ITS1": {
+          "count": 0,
+          "percentage": 0.0
+        },
+        "ITS_to_ITS2": {
+          "count": 1,
+          "percentage": 0.23923444976076555
+        },
+        "ITS1_to_ITS": {
+          "count": 151,
+          "percentage": 31.92389006342495
+        },
+        "ITS1_to_ITS1": {
+          "count": 137,
+          "percentage": 28.964059196617338
+        },
+        "ITS1_to_ITS2": {
+          "count": 185,
+          "percentage": 39.112050739957716
+        },
+        "ITS2_to_ITS": {
+          "count": 170,
+          "percentage": 27.823240589198033
+        },
+        "ITS2_to_ITS1": {
+          "count": 3,
+          "percentage": 0.4909983633387889
+        },
+        "ITS2_to_ITS2": {
+          "count": 438,
+          "percentage": 71.68576104746317
+        }
+      }
+    },
+    "total_barcodes_processed": 3,
+    "phases_completed": 2,
+    "final_msa_sequences": {
+      "ITS": 3508,
+      "ITS1": 2253,
+      "ITS2": 3901
+    },
+    "total_final_sequences": 9662
+  },
+  "processing_time": 0.0,
+  "timestamp": "2025-12-17 11:51:59",
+  "status": "success"
+}

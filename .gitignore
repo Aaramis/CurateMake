@@ -1,0 +1,130 @@
+# Environnements
+.env
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Fichiers Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Fichiers de données
+data/
+!data/raw/
+!data/processed/
+!resources/
+*.fasta
+*.fastq
+*.fna
+*.faa
+*.gff
+*.gtf
+*.bam
+*.bai
+*.sam
+*.vcf
+*.bed
+*.bigwig
+*.bw
+*.bai
+*.tbi
+*.csi
+*.h5
+*.hdf5
+*.hdf
+*.sqlite
+*.db
+*.sql
+*.sqlite3
+
+# Fichiers temporaires
+.tmp/
+.temp/
+tmp/
+temp/
+*~
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Fichiers de configuration locaux
+config/.env
+
+# Fichiers de logs
+logs/
+*.log
+
+# Fichiers de cache
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+# Environnements virtuels
+.conda/
+.conda_env/
+
+# Fichiers IDE
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+
+# Fichiers Jupyter Notebook
+.ipynb_checkpoints
+
+# Fichiers MkDocs
+site/
+
+# Fichiers de données volumineux
+*.bam
+*.bai
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+
+# Fichiers de résultats
+results/
+!results/itsx/
+!results/alignments/
+!results/sativa/
+!results/augmented/
+
+# Fichiers de verrouillage
+.lock
+*.lock
+
+# snakemake
+.snakemake
+
+# tmp
+db_schema*
+ITSx*
+*_old*
+audit*
+claude*
+PLAN*
+benchmarks*
+workflow/scripts/Sativa/sativa/tmp/
+reports
+cache

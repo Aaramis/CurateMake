@@ -1,0 +1,226 @@
+# Configuration des paramètres du pipeline
+
+# Ressources de calcul
+itsx_cpu: 1200   # nombre de threads à utiliser pour ITSx
+
+
+# Configuration de la base de données
+database:
+  # Type de backend: "sqlite" (dev/small datasets) ou "postgresql" (production/large datasets)
+  type: "postgresql"
+
+  # Configuration SQLite (développement, datasets < 1M séquences)
+  sqlite:
+    path: "data/db"
+    name: "its.db"
+
+  # Configuratdion PostgreSQL (production, datasets > 1M séquences)
+  # Décommentez et configurez pour utiliser PostgreSQL
+  postgresql:
+    host: "{{ env.POSTGRES_HOST }}"
+    port: "{{ env.POSTGRES_PORT }}"
+    user: "{{ env.POSTGRES_USER }}"
+    password: "{{ env.POSTGRES_PASSWORD }}"
+    database: "{{ env.POSTGRES_DB }}"
+    schema: "its_curate"              # Schéma PostgreSQL autorisé
+    pool_size: 10
+    max_overflow: 20
+    echo: false
+
+
+  # Paramètres communs
+  backup_retention_days: 30
+  vacuum_threshold_mb: 100
+
+
+# Chemins des bases de données (à remplir manuellement)
+databases:
+  unite:
+    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/UNITE/mini_UNITE_public.fasta.gz"
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/UNITE/UNITE_large_test.fasta.gz"
+    
+  bold:
+    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/BOLD/mini_BOLD_Public.tar.gz"
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/BOLD/BOLD_small.tar.gz"
+  
+  planits:
+    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/PLANITS/mini_PLANiTS.zip"
+    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANITS_small.zip"
+  
+  caledna:
+    files:
+      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/CALeDNA/mini_PITS_fasta_and_taxonomy.zip"
+      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/CALeDNA/mini_FITS_fasta_and_taxonomy.zip"
+      # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/FITS_fasta_and_taxonomy_small.zip"
+      # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/PITS_fasta_and_taxonomy_small.zip"
+
+
+# Configuration logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_retention_days: 7
+
+# Configuration benchmarking
+benchmarking:
+  enabled: true                      # Activer la collecte de benchmarks
+  output_dir: "benchmarks"           # Dossier de sortie des benchmarks
+  generate_report: true              # Générer automatiquement le rapport HTML
+
+sequence_validation:
+  min_length: 50          # Longueur minimale après nettoyage
+  max_n_fraction: 0.5     # Fraction maximale de N autorisée
+  valid_chars: "ACGTURYSWKMBDHVN-"  # Caractères valides
+
+CoL_api:
+  max_requests_per_second: 1000
+  max_workers: 32
+  batch_size: 1000
+
+msa:
+  min_seq_threshold: 20
+  max_seq_threshold: 1000          # Nombre maximum de séquences par MSA
+  large_task_threshold: 2000       # Seuil pour grandes tâches MSA (nécessitant traitement spécial)
+  min_domain: "species"            # Niveau taxonomique minimum pour la descente hiérarchique
+  trimal_seq_overlap: 75    # Pourcentage minimum d'overlap pour conserver une séquence
+  trimal_res_overlap: 0.5   # Pourcentage de sequence avec un résidu à cet endroit
+  domain: "family" # Descente de order à family car MSA pas terrible à order
+  barcodes: ["ITS" ,"ITS1", "ITS2"]
+  hierarchy_levels: ["genus", "family", "order", "class", "phylum"]
+  tax_columns: ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
+  id_col: "seq_id"
+  seq_col: "sequence"
+  barcode_col: "barcode"
+  # max_thread_workers: 180 # * Nombre de threads a utiliser par Barcode
+  max_thread_workers: 50 # * Nombre de threads a utiliser par Barcode
+
+  # Configuration de la classification parallèle avec hmmscan
+  # hmmscan parallélise mieux avec 8-10 threads par processus
+  # Utiliser plusieurs processus en parallèle donne de meilleures performances
+  # ATTENTION: Réduites pour éviter les crashes OOM (Out Of Memory)
+  classification_max_workers: 20           # Nombre de processus hmmscan en parallèle (réduit de 14 à 6)
+  # classification_max_workers: 24           # Nombre de processus hmmscan en parallèle (réduit de 14 à 6)
+  classification_threads_per_worker: 4   # Threads par processus hmmscan
+  classification_batch_size: 5000        # Séquences par batch (réduit de 10000 à 5000)
+  classification_evalue_threshold: 1e-3  # E-value max to accept hmmscan assignment
+
+  csv_path: "data/full.csv"
+  msa_dir: "data/MSA"
+  output_report: "reports/html/msa_analysis_report.html"
+  task_manifest: "data/processed/msa_task_manifest.json"
+  stage_markers:
+    alignments: "data/processed/msa_alignments_complete.flag"
+    trimming: "data/processed/msa_trimming_complete.flag"
+    hmm_profiles: "data/processed/msa_hmm_complete.flag"
+    combined_hmm: "data/processed/msa_combined_hmm_complete.flag"
+    classification: "data/processed/msa_classification_complete.flag"
+  classification_manifest: "data/MSA/classification/msa_classification_manifest.json"
+  unprocessed_sequences_csv: "data/MSA/classification/msa_unprocessed_sequences.csv"
+  global_hmm_raw: "data/MSA/combined/all_profiles_combined_raw.hmm"
+  global_hmm: "data/MSA/combined/all_profiles_combined.hmm"
+  hmm_filter:
+    min_relent: 0.2
+    min_prele: 0.2
+    report_json: "data/MSA/combined/hmmstat_filter_report.json"
+  classification_batches_dir: "data/MSA/classification/batches"
+  classification_batches_json_dir: "data/MSA/classification/batches_json"
+  classification_results_csv: "data/MSA/classification/msa_classification_assignments.csv"
+  classification_stats_json: "data/MSA/classification/msa_classification_stats.json"
+  assignment_integration_summary: "data/MSA/classification/msa_assignment_integration.json"
+
+# Configuration SATIVA (taxonomic misidentification detection)
+sativa:
+  enabled: true
+  input_msa_dir: "data/MSA"
+  output_dir: "data/SATIVA"
+  logs_dir: "logs/sativa"
+  threads: 1                     # Nombre de threads par job SATIVA
+  # threads: 16                     # Nombre de threads par job SATIVA
+  # max_parallel_jobs: 98            # Nombre maximum de jobs SATIVA en parallèle (4-5 recommandé)
+  max_parallel_jobs: 120            # Nombre maximum de jobs SATIVA en parallèle (4-5 recommandé)
+  # max_parallel_jobs: 55            # Nombre maximum de jobs SATIVA en parallèle (4-5 recommandé)
+  mem_mb: 8000                    # Mémoire allouée par job (MB)
+  max_seq_count: 20000            # Nombre maximum de séquences à traiter
+  max_alignment_length: 30000      # Longueur maximum d'alignement (bp)
+  sativa_mode: "ultrafast"        # Mode SATIVA (ultrafast, fast, etc.)
+  visualization_report: "reports/html/sativa_visualization_report.html"  # Rapport HTML de visualisation
+  confidence_threshold: 0.4       # Seuil de confiance (-C)
+  taxonomy_code: "BOT"            # Code taxonomique (-x BOT pour botanique)
+  sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"
+  extra_args: ""                  # Options additionnelles pour SATIVA
+  barcodes: ["ITS", "ITS1", "ITS2"]      # Barcodes à traiter
+  tax_levels: ["family", "genus", "order", "species"]  # Niveaux taxonomiques
+  retry_on_oom: false             # Relancer avec moins de threads si OOM
+  timeout_seconds: 21600          # Timeout par tâche (6 heures = 21600 secondes)
+
+  # Configuration du nettoyage des fichiers temporaires
+  cleanup_temp_files: true        # Activer le nettoyage automatique des fichiers temp
+  temp_retention_hours: 24        # Durée de rétention des fichiers temp (heures)
+
+  # Configuration de l'intégration des résultats SATIVA dans la base de données
+  integration:
+    enabled: true                       # Activer l'intégration automatique dans la DB
+    create_backup: true                 # Créer un backup avant intégration (recommandé)
+    backup_dir: "data/db/backups"       # Dossier pour stocker les backups
+    skip_verification: false            # Vérifier l'intégrité du backup créé
+    only_successful: true               # Ne traiter que les runs avec status='success'
+    min_confidence: 0.0                 # Seuil de confiance minimum (0.0 = tout prendre)
+
+# Configuration de l'intégration SATIVA
+sativa_integration:
+  # CoL API configuration
+  col_api:
+    max_requests_per_second: 100        # Rate limiting pour l'API CoL
+    timeout_per_request: 30             # Timeout en secondes par requête
+    max_retries: 3                      # Nombre de tentatives en cas d'échec
+
+  # Cache configuration
+  cache:
+    enabled: true                       # Activer le cache CoL
+    max_memory_entries: 100000          # Nombre max d'entrées en RAM
+    file_cache_path: "cache/col_validation_cache.pkl"  # Fichier de cache persistant
+    save_interval_seconds: 300          # Sauvegarder le cache toutes les 5 min
+
+  # Performance tuning
+  performance:
+    max_workers_files: 10               # Parallélisation des fichiers .mis
+    max_workers_col_api: 10             # Parallélisation des appels CoL
+    chunk_size: 10000                   # Taille des chunks pour traitement mémoire
+    bulk_insert_size: 5000              # Taille des bulk inserts DB
+
+  # Processing rules
+  rules:
+    process_validated: true             # Intégrer les séquences validées (dans .tax, pas dans .mis)
+    process_deletion_simple: false      # Ne pas créer seq_tax pour délétions simples (warnings only)
+    process_deletion_multiple: true     # Intégrer délétions multiples (≥2 niveaux)
+    process_substitution: true          # Intégrer substitutions
+    process_completion: true            # Intégrer complétions
+    deletion_multiple_threshold: 2      # Nombre de niveaux pour "multiple"
+
+  # Reporting
+  reporting:
+    export_json: true                   # Exporter rapport JSON
+    export_csv_detailed: true           # Exporter CSV détaillé des modifications
+    export_csv_warnings: true           # Exporter CSV des warnings
+    max_sample_modifications: 1000      # Nombre d'exemples dans le JSON
+    output_dir: "data/processed"
+
+  # Database
+  database:
+    create_warnings_table: true         # Créer la table sativa_warnings si nécessaire
+    backup_before_integration: false    # Pas de backup (utilise backbone='Sativa' pour traçabilité)
+
+# Configuration du rapport de distribution taxonomique (sunburst)
+taxonomy_sunburst:
+  threshold: 50                         # Nombre max de valeurs uniques avant arrêt de la descente
+  min_sequences: 1                      # Nombre minimum de séquences pour afficher un taxon
+  output: "reports/html/sativa_taxonomy_report.html"
+  kingdom_colors:
+    Fungi: "#7570b3"
+    Plantae: "#1b9e77"
+    Animalia: "#d95f02"
+    Chromista: "#e7298a"
+    Bacteria: "#66a61e"
+    Protozoa: "#e6ab02"
+  unknown_color: "#CCCCCC"              # Couleur pour les taxons "Unknown"
+  gradient_intensity: 0.1                # Facteur d'éclaircissement par niveau (0-1)                                                                                                                                                                                                                       

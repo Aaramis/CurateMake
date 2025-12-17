@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""
+UNITE Parser
+"""
+
+import os
+import sys
+import gzip
+import re
+import time
+import logging
+import json
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+from queue import Queue, Empty
+import multiprocessing as mp
+from dataclasses import dataclass
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Constantes
+FASTA_CHUNK_SIZE = 10000  # Augmenté pour réduire l'overhead
+BATCH_SIZE = 10000       # Plus gros batches pour moins d'I/O DB
+QUEUE_SIZE = 20         # Plus de buffer pour éviter les blocages
+MIN_SEQUENCE_LENGTH = 50  # Filtrage précoce
+
+@dataclass
+class SequenceRecord:
+    """Structure de données pour les séquences."""
+    original_id: str
+    sequence: str
+    length: int
+    n_frac: float
+    kingdom: Optional[str] = None
+    phylum: Optional[str] = None
+    class_: Optional[str] = None
+    order_: Optional[str] = None
+    family: Optional[str] = None
+    genus: Optional[str] = None
+    species: Optional[str] = None
+
+class UNITEParser:
+    """Parser UNITE."""
+    
+    def __init__(self, db_manager, config_validation: Dict):
+        self.db_manager = db_manager
+        self.config_validation = config_validation
+        self.batch_size = BATCH_SIZE
+        
+        # Statistiques thread-safe
+        self.stats = mp.Manager().dict({
+            'total_sequences': 0,
+            'processed_sequences': 0,
+            'filtered_sequences': 0,
+            'parsing_errors': 0,
+            'processing_time': 0.0
+        })
+        
+        # Patterns regex compilés
+        self.version_pattern = re.compile(r'(\d{1,2}\.\d{1,2}\.\d{4})')
+        
+        # Précompilation des caractères valides
+        self.valid_chars = set(self.config_validation.get('valid_chars', 'ATCGN'))
+        self.min_length = self.config_validation.get('min_length', MIN_SEQUENCE_LENGTH)
+        self.max_n_fraction = self.config_validation.get('max_n_fraction', 0.1)
+
+    @lru_cache(maxsize=50000)  # Cache plus grand
+    def _parse_taxonomy(self, header: str) -> Tuple[str, Tuple]:
+        """Parse avec split au lieu de regex."""
+        try:
+            header = header.lstrip('>')
+            parts = header.split('|', 2)
+            seq_id = parts[0].strip()
+
+            if len(parts) < 2:
+                return seq_id, ()
+
+            taxo_string = parts[1]
+            ranks = {}
+            for entry in taxo_string.split(';'):
+                if '__' in entry:
+                    rank, value = entry.split('__', 1)
+                    rank = {
+                        "k": "kingdom",
+                        "p": "phylum",
+                        "c": "class_",
+                        "o": "order_",
+                        "f": "family",
+                        "g": "genus",
+                        "s": "species",
+                    }.get(rank[0], rank)  # map court → long
+
+                    clean_val = value.replace('_', ' ').strip()
+                    ranks[rank] = clean_val if clean_val and clean_val != "unidentified" else None
+
+            return seq_id, tuple(sorted(ranks.items()))
+
+        except Exception:
+            self.stats['parsing_errors'] += 1
+            return header.lstrip('>'), ()
+
+    def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
+        """Validation de séquence avec early exit."""
+        if not sequence:
+            return False, 0, 1.0
+        
+        seq_len = len(sequence)
+        if seq_len < self.min_length:
+            return False, seq_len, 0.0
+        
+        # Comptage des N
+        n_count = sequence.count('N') + sequence.count('n')
+        n_fraction = n_count / seq_len
+        
+        if n_fraction > self.max_n_fraction:
+            return False, seq_len, n_fraction
+        
+        # Validation des caractères (plus rapide avec set)
+        if not all(c.upper() in self.valid_chars for c in sequence[:100]):  # Check sur 100 premiers chars seulement
+            return False, seq_len, n_fraction
+        
+        return True, seq_len, n_fraction
+
+    def fasta_reader_mmap(self, file_path: str, queue: Queue):
+        """Lecteur FASTA avec memory mapping pour les gros fichiers."""
+        logger.info(f"Starting reader for {file_path}")
+        chunk = []
+        
+        try:
+            with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+                self._process_fasta_stream(f, chunk, queue)
+        except Exception as e:
+            logger.error(f"Error in FASTA reader: {e}", exc_info=True)
+        finally:
+            if chunk:
+                queue.put(chunk)
+            queue.put(None)  # Signal de fin
+            logger.info("Reader finished")
+
+    def _process_fasta_stream(self, stream, chunk, queue):
+        """Traitement d'un stream FASTA."""
+        header, sequence_parts = None, []
+        
+        for line in stream:
+            line = line.strip()
+            if not line:
+                continue
+                
+            if line.startswith('>'):
+                if header and sequence_parts:
+                    sequence = ''.join(sequence_parts).replace('-', '') # Enlever les alignements
+                    self._add_to_chunk(header, sequence, chunk, queue)
+                
+                header = line
+                sequence_parts = []
+            else:
+                sequence_parts.append(line)
+        
+        # Dernier enregistrement
+        if header and sequence_parts:
+            sequence = ''.join(sequence_parts).replace('-', '') # Enlever les alignements
+            self._add_to_chunk(header, sequence, chunk, queue)
+
+    def _add_to_chunk(self, header: str, sequence: str, chunk: List, queue: Queue):
+        """Ajoute une séquence au chunk avec validation précoce."""
+        # Validation précoce pour éviter le traitement inutile
+        is_valid, seq_len, n_frac = self.validate_sequence(sequence)
+        
+        if is_valid:
+            chunk.append((header, sequence, seq_len, n_frac))
+            self.stats['total_sequences'] += 1
+            
+            if len(chunk) >= FASTA_CHUNK_SIZE:
+                queue.put(chunk[:])  # Copie du chunk
+                chunk.clear()
+        else:
+            self.stats['filtered_sequences'] += 1
+
+    def sequence_processor_worker(self, chunk: List[Tuple[str, str, int, float]]) -> List[SequenceRecord]:
+        """Worker avec structures de données plus efficaces."""
+        results = []
+        
+        for header, sequence, seq_len, n_frac in chunk:
+            seq_id, taxonomy_tuple = self._parse_taxonomy(header)
+            tax_dict = dict(taxonomy_tuple) if taxonomy_tuple else {}
+            
+            # Création directe du SequenceRecord
+            record = SequenceRecord(
+                original_id=seq_id,
+                sequence=sequence,
+                length=seq_len,
+                n_frac=n_frac,
+                **{k: tax_dict.get(k) for k in ['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']}
+            )
+            
+            results.append(record)
+        
+        return results
+
+    def db_writer_consumer(self, source_id: str, results_queue: Queue):
+        """Writer avec SQLAlchemy bulk inserts (source_id is UUID string)."""
+        logger.info("Starting DB writer")
+        batch = []
+
+        try:
+            while True:
+                try:
+                    result_chunk = results_queue.get(timeout=6000)
+                    if result_chunk is None:
+                        break
+
+                    batch.extend(result_chunk)
+
+                    if len(batch) >= self.batch_size:
+                        self._flush_batch_sqlalchemy(batch, source_id)
+                        self.stats['processed_sequences'] += len(batch)
+                        logger.info(f"Processed {self.stats['processed_sequences']} sequences")
+                        batch.clear()
+
+                except Empty:
+                    logger.warning("DB writer timeout")
+                    break
+
+            # Traiter le dernier batch
+            if batch:
+                self._flush_batch_sqlalchemy(batch, source_id)
+                self.stats['processed_sequences'] += len(batch)
+
+            logger.info("DB writer finished successfully")
+
+        except Exception as e:
+            logger.error(f"DB writer error: {e}", exc_info=True)
+            raise
+
+    def _flush_batch_sqlalchemy(self, batch: List[SequenceRecord], source_id: str):
+        """Flush batch using SQLAlchemy bulk operations (source_id is UUID string)."""
+        # 1. Préparer les données de taxonomie
+        taxonomy_data = []
+        taxonomy_map = {}  # record -> tax_tuple
+
+        for record in batch:
+            tax_dict = {
+                'kingdom': record.kingdom,
+                'phylum': record.phylum,
+                'class_': record.class_,
+                'order_': record.order_,
+                'family': record.family,
+                'genus': record.genus,
+                'species': record.species
+            }
+            taxonomy_data.append(tax_dict)
+            tax_tuple = (record.kingdom, record.phylum, record.class_,
+                        record.order_, record.family, record.genus, record.species)
+            taxonomy_map[record.original_id] = tax_tuple
+
+        # 2. Bulk insert taxonomies et récupérer les tax_ids
+        tax_id_map = self.db_manager.bulk_insert_taxonomies(taxonomy_data)
+
+        # 3. Préparer les données de séquence
+        sequence_data = []
+        for record in batch:
+            seq_dict = {
+                'source_id': source_id,
+                'original_id': record.original_id,
+                'sequence': record.sequence,
+                'length': record.length,
+                'percentage_n': record.n_frac,
+                'barcode': 'ITS',
+                'barcode_status': 'Pending'
+            }
+            sequence_data.append(seq_dict)
+
+        # 4. Bulk insert sequences et récupérer les seq_ids
+        seq_id_map = self.db_manager.bulk_insert_sequences(sequence_data)
+
+        # 5. Préparer les relations seq_tax
+        relation_data = []
+        for record in batch:
+            seq_id = seq_id_map.get(record.original_id)
+            tax_tuple = taxonomy_map.get(record.original_id)
+            tax_id = tax_id_map.get(tax_tuple)
+
+            if seq_id and tax_id:
+                relation_dict = {
+                    'seq_id': seq_id,
+                    'tax_id': tax_id,
+                    'backbone': 'Raw',
+                    'status': 'Pending'
+                }
+                relation_data.append(relation_dict)
+
+        # 6. Bulk insert relations
+        self.db_manager.bulk_insert_seq_tax(relation_data)
+
+    def process_unite_database(self, input_file: str, source_name: str = "UNITE", 
+                                       source_version: str = "unknown") -> Dict:
+        """Pipeline de traitement."""
+        start_time = time.time()
+        logger.info(f"Starting UNITE processing: {input_file}")
+        
+        # Configuration DB pour performance maximale
+        self.db_manager.optimize_for_bulk_insert_advanced()
+        source_id = self.db_manager.add_source(name=source_name, file_path=input_file)
+        
+        # Files d'attente
+        fasta_queue = Queue(maxsize=QUEUE_SIZE)
+        results_queue = Queue(maxsize=QUEUE_SIZE)
+        
+        # Calcul optimal du nombre de workers
+        cpu_count = os.cpu_count()
+        num_workers = max(2, cpu_count - 2)  # Garder 2 CPUs pour reader/writer
+        logger.info(f"Using {num_workers} worker threads on {cpu_count} CPUs")
+        
+        try:
+            with ThreadPoolExecutor(max_workers=num_workers + 2) as executor:
+                # Lancer reader et writer
+                writer_future = executor.submit(
+                    self.db_writer_consumer, source_id, results_queue
+                )
+                reader_future = executor.submit(
+                    self.fasta_reader_mmap, input_file, fasta_queue
+                )
+                
+                # Traitement parallèle des chunks
+                worker_futures = []
+                processed_chunks = 0
+                
+                while True:
+                    try:
+                        chunk = fasta_queue.get(timeout=120)  # Timeout plus long
+                        if chunk is None:
+                            break
+                        
+                        # Soumettre le traitement
+                        future = executor.submit(self.sequence_processor_worker, chunk)
+                        worker_futures.append(future)
+                        processed_chunks += 1
+                        
+                        # Traitement en streaming pour éviter la surcharge mémoire
+                        if len(worker_futures) >= num_workers * 2:
+                            completed_future = next(as_completed(worker_futures))
+                            worker_futures.remove(completed_future)
+                            results_queue.put(completed_future.result())
+                            
+                    except Empty:
+                        logger.warning("Reader timeout - assuming completion")
+                        break
+                
+                # Traiter les futures restants
+                for future in as_completed(worker_futures):
+                    results_queue.put(future.result())
+                
+                # Signaler la fin et attendre
+                results_queue.put(None)
+                writer_future.result()
+                reader_future.result()
+                
+                logger.info(f"Processed {processed_chunks} chunks total")
+                
+        except Exception as e:
+            logger.error(f"Critical error in processing pipeline: {e}", exc_info=True)
+            raise
+        finally:
+            # Restaurer les paramètres normaux
+            self.db_manager.restore_safe_settings()
+        
+        # Finalisation
+        end_time = time.time()
+        self.stats['processing_time'] = end_time - start_time
+        
+        # Statistiques finales
+        total_seqs = self.stats['total_sequences']
+        processed_seqs = self.stats['processed_sequences']
+        filtered_seqs = self.stats['filtered_sequences']
+        processing_time = self.stats['processing_time']
+        
+        logger.info(f"Processing completed in {processing_time:.2f}s")
+        logger.info(f"Total: {total_seqs}, Processed: {processed_seqs}, "
+                   f"Filtered: {filtered_seqs}, Rate: {processed_seqs/processing_time:.0f} seqs/sec")
+        
+        return dict(self.stats)
+
+# Point d'entrée
+def main():
+    """Point d'entrée principal."""
+    try:
+        # Configuration Snakemake
+        if 'snakemake' in globals():
+            input_db = snakemake.input.db
+            input_file = snakemake.input[1]
+            output_report = snakemake.output[0]
+            config_validation = snakemake.params.sequence_validation
+            config = snakemake.config
+            log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
+            file_handler = logging.FileHandler(log_file, mode="w")
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(file_handler)
+        else:
+            # Mode test
+            logger.warning("Running in standalone test mode")
+            input_file = "test_unite.fasta.gz"
+            input_db = "test_output.sqlite"
+            log_file = "test_format_unite.log"
+            config = {'database': {'path': input_db}}
+            config_validation = {
+                'min_length': 50, 
+                'valid_chars': 'ATCGN', 
+                'max_n_fraction': 0.1
+            }
+
+        # Import et initialisation
+        sys.path.append(str(Path(__file__).parent / "utils"))
+        from db_manager import get_database_manager
+        
+        db_manager = get_database_manager(config)
+        
+        # Parser
+        parser = UNITEParser(db_manager, config_validation)
+        
+        # Détection de version
+        version_match = parser.version_pattern.search(Path(input_file).name)
+        version = version_match.group(1) if version_match else "unknown"
+        
+        # Traitement
+        stats = parser.process_unite_database(
+            input_file=input_file, 
+            source_version=version
+        )
+        
+        # Optimisation finale
+        db_manager.vacuum_database()
+        
+        # Génération du rapport
+        processing_time = stats.get('processing_time', 1)
+        processed_seqs = stats.get('processed_sequences', 0)
+        rate = processed_seqs / processing_time if processing_time > 0 else 0
+        
+        report_data = {
+            'source': 'UNITE',
+            'version': version,
+            'input_file': input_file,
+            'stats': dict(stats),
+            'processing_rate_per_second': rate,
+            'performance_metrics': {
+                'cpu_cores_used': os.cpu_count(),
+                'memory_optimizations': True,
+                'batch_size': BATCH_SIZE,
+                'chunk_size': FASTA_CHUNK_SIZE
+            },
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Sauvegarde du rapport
+        if 'snakemake' in globals():
+            with open(output_report, 'w') as f:
+                json.dump(report_data, f, indent=2)
+            logger.info(f"Optimization report saved to: {output_report}")
+        
+        logger.info(f"Final processing rate: {rate:.0f} sequences/second")
+        
+    except Exception as e:
+        logger.critical(f"Fatal error in UNITE processing: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

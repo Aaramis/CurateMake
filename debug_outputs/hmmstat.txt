@@ -1,0 +1,52 @@
+# hmmstat :: display summary statistics for a profile file
+# HMMER 3.4 (Aug 2023); http://hmmer.org/
+# Copyright (C) 2023 Howard Hughes Medical Institute.
+# Freely distributed under the BSD open source license.
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#
+# idx  name                 accession        nseq eff_nseq      M relent   info p relE compKL
+# ---- -------------------- ------------ -------- -------- ------ ------ ------ ------ ------
+1      ITS_Trebouxiaceae.trimmed -                  32     2.58    582   0.62   0.62   0.47   0.00
+2      ITS_Poaceae.trimmed  -                 107     2.30    596   0.62   0.62   0.47   0.00
+3      ITS_Aquifoliaceae.trimmed -                 563     4.64    868   0.62   0.62   0.44   0.01
+4      ITS_Ahnfeltiaceae.trimmed -                  39     1.79    765   0.62   0.62   0.45   0.00
+5      ITS_Volvocaceae.trimmed -                  58     3.97    667   0.62   0.62   0.46   0.00
+6      ITS_Pleosporaceae.trimmed -                 195     2.04    530   0.62   0.62   0.45   0.00
+7      ITS_Nymphaeaceae.trimmed -                  70     5.62    691   0.62   0.62   0.49   0.00
+8      ITS_Primulaceae.trimmed -                 545     2.86    636   0.62   0.62   0.47   0.00
+9      ITS_Asteraceae.trimmed -                 124     2.83    634   0.62   0.62   0.48   0.00
+10     ITS_Actinidiaceae.trimmed -                  55     2.02    626   0.62   0.62   0.46   0.00
+11     ITS_Fabaceae.trimmed -                  75     2.92    651   0.62   0.62   0.47   0.00
+12     ITS_Aspergillaceae.trimmed -                 874     2.34    624   0.62   0.62   0.45   0.01
+13     ITS_Scenedesmaceae.trimmed -                  32     3.65    672   0.62   0.62   0.48   0.00
+14     ITS1_Trebouxiaceae.trimmed -                  35     3.10    187   0.62   0.62   0.48   0.01
+15     ITS1_Poaceae.trimmed -                 228     3.16    224   0.62   0.62   0.49   0.00
+16     ITS1_Aquifoliaceae.trimmed -                 364     2.76    255   0.62   0.62   0.46   0.01
+17     ITS1_Volvocaceae.trimmed -                  55     9.90    239   0.62   0.62   0.47   0.01
+18     ITS1_Pleosporaceae.trimmed -                 106     4.84    182   0.62   0.62   0.47   0.01
+19     ITS1_Nymphaeaceae.trimmed -                 162     7.06    281   0.62   0.62   0.49   0.00
+20     ITS1_Primulaceae.trimmed -                 461     3.97    252   0.62   0.62   0.48   0.00
+21     ITS1_Asteraceae.trimmed -                  89     3.26    256   0.62   0.62   0.49   0.00
+22     ITS1_Actinidiaceae.trimmed -                 111     2.24    247   0.62   0.62   0.47   0.00
+23     ITS1_Fabaceae.trimmed -                  99     4.60    250   0.62   0.62   0.47   0.01
+24     ITS1_Aspergillaceae.trimmed -                 375     2.69    193   0.62   0.62   0.45   0.03
+25     ITS1_Scenedesmaceae.trimmed -                  22     4.79    205   0.62   0.62   0.48   0.00
+26     ITS2_Trebouxiaceae.trimmed -                  45     3.28    236   0.62   0.62   0.47   0.01
+27     ITS2_Poaceae.trimmed -                  95     3.77    213   0.62   0.62   0.49   0.00
+28     ITS2_Koliellaceae.trimmed -                  78     7.10    313   0.62   0.62   0.47   0.01
+29     ITS2_Aquifoliaceae.trimmed -                 373     2.63    233   0.62   0.62   0.46   0.01
+30     ITS2_Ahnfeltiaceae.trimmed -                  25     1.77    294   0.62   0.62   0.44   0.01
+31     ITS2_Volvocaceae.trimmed -                 352     7.83    314   0.62   0.62   0.40   0.00
+32     ITS2_Caryophyllaceae.trimmed -                 168     2.48    236   0.62   0.62   0.47   0.02
+33     ITS2_Pleosporaceae.trimmed -                 101     3.50    169   0.62   0.62   0.46   0.01
+34     ITS2_Nymphaeaceae.trimmed -                  61     4.67    237   0.62   0.62   0.47   0.02
+35     ITS2_Sapindaceae.trimmed -                  34     1.77    233   0.62   0.62   0.45   0.02
+36     ITS2_Primulaceae.trimmed -                 839     3.76    231   0.62   0.62   0.48   0.01
+37     ITS2_Symbiodiniaceae.trimmed -                 150     3.66    215   0.62   0.62   0.46   0.01
+38     ITS2_Asteraceae.trimmed -                 115     5.41    219   0.62   0.62   0.51   0.02
+39     ITS2_Actinidiaceae.trimmed -                  42     2.17    219   0.62   0.62   0.47   0.01
+40     ITS2_Fabaceae.trimmed -                  41     4.36    206   0.62   0.62   0.48   0.01
+41     ITS2_Aspergillaceae.trimmed -                 396     2.08    176   0.62   0.62   0.44   0.03
+42     ITS2_Scenedesmaceae.trimmed -                 352    14.30    293   0.62   0.62   0.40   0.00
+
+STDERR:

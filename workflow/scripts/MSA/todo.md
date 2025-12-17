@@ -1,0 +1,1 @@
+* Transformer ce code en un mini-pipeline snakemake

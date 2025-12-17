@@ -1,0 +1,44 @@
+site_name: Pipeline Bioinformatique - Documentation
+site_description: Documentation du pipeline bioinformatique basé sur Snakemake
+site_author: Auguste Gardette
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Accueil: index.md
+  - Vue d'ensemble: overview.md
+  - Installation: installation.md
+  - Utilisation: usage.md
+  - Base de données: database.md
+  - Outils: tools.md
+  - Développement: dev.md
+  - Contribution: contributing.md
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.emoji
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.tabbed
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.arithmatex

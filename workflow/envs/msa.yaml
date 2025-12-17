@@ -1,0 +1,17 @@
+name: msa
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - pandas=2.0.3
+  - mafft
+  - hmmer
+  - trimal
+  - sqlalchemy=2.0
+  - psycopg2=2.9
+  - matplotlib
+  - seaborn
+  - biopython
+  - tqdm
