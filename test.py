@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 
-msa_root = Path("data/MSA")
+msa_root = Path("data/MSA/ITS2")
 records = []
 total = 0
 

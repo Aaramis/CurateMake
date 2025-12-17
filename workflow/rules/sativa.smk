@@ -49,7 +49,8 @@ rule sativa_visualization:
     Génère un rapport HTML interactif avec visualisations Plotly des résultats SATIVA.
     """
     input:
-        report="data/processed/sativa_analysis_report.json"
+        report="data/processed/sativa_analysis_report.json",
+        integration_report=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json"
     output:
         report=config["sativa"]["visualization_report"]
     params:

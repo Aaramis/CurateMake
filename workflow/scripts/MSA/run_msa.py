@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # Configuration du logging
 logging.basicConfig(
@@ -94,6 +94,44 @@ def summarize_barcodes(task_manifest: Dict[str, Any], classification_manifest: D
     return barcode_summary
 
 
+def count_fasta_sequences(fasta_path: Path) -> int:
+    """Count sequences in a FASTA without loading it entirely into memory."""
+    count = 0
+    with open(fasta_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith(">"):
+                count += 1
+    return count
+
+
+def compute_final_msa_totals(msa_root: str, barcodes: List[str]) -> Dict[str, int]:
+    """
+    Aggregate the number of sequences present in trimmed MSA files for each barcode.
+    Only *_msa.trimmed.fasta files are considered to reflect the actual alignments used downstream.
+    """
+    totals: Dict[str, int] = {}
+    base_path = Path(msa_root)
+
+    for barcode in barcodes:
+        barcode_dir = base_path / barcode
+        if not barcode_dir.exists():
+            logger.warning(f"MSA directory not found for barcode {barcode}: {barcode_dir}")
+            totals[barcode] = 0
+            continue
+
+        final_count = 0
+        for alignment_dir in barcode_dir.glob("alignments_*"):
+            if not alignment_dir.is_dir():
+                continue
+            for trimmed_file in alignment_dir.glob("*_msa.trimmed.fasta"):
+                final_count += count_fasta_sequences(trimmed_file)
+
+        totals[barcode] = final_count
+        logger.info(f"Final trimmed sequences for {barcode}: {final_count}")
+
+    return totals
+
+
 def build_report_data(params: Dict[str, Any], manifest_path: str, classification_manifest_path: str,
                       classification_stats_path: str) -> Dict[str, Any]:
     task_manifest = load_json(manifest_path)
@@ -101,6 +139,17 @@ def build_report_data(params: Dict[str, Any], manifest_path: str, classification
     classification_stats = load_json(classification_stats_path)
 
     barcode_summary = summarize_barcodes(task_manifest, classification_manifest)
+    final_counts = compute_final_msa_totals(params["output_folder"], params["parameters"].get("barcodes", []))
+    for barcode, final_count in final_counts.items():
+        if barcode in barcode_summary:
+            barcode_summary[barcode]["sequences_processed"] = final_count
+        else:
+            barcode_summary[barcode] = {
+                "tasks_processed": 0,
+                "sequences_processed": final_count,
+                "sequences_unprocessed": 0,
+                "classification_sequences": 0
+            }
     results = {
         "barcode_results": barcode_summary,
         "global_assignments": classification_stats,
