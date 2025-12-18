@@ -2,171 +2,127 @@
 
 # ITS Bioinformatics Pipeline
 
-Automated Snakemake workflow for ingesting, curating, and validating ITS (Internal Transcribed Spacer) barcode sequences from heterogeneous sources.  
+Snakemake workflow for curating ITS/ITS1/ITS2 barcodes, aligning them, validating taxonomy with SATIVA, and emitting reproducible reports backed by SQLite or PostgreSQL.
 
-[Snakemake](https://snakemake.readthedocs.io) • [MkDocs Documentation](docs/) • [GPLv3](LICENSE)
+[Snakemake](https://snakemake.readthedocs.io) • [MkDocs Docs](docs/index.md) • [GPLv3](LICENSE)
 
 </div>
 
 ---
 
-## Overview
+## What the Pipeline Does
 
-This repository hosts a production-ready pipeline that consolidates ITS barcode data (ITS, ITS1, ITS2) into a unified relational database, applies domain-specific cleaning, and produces harmonized analytical outputs. The workflow is orchestrated with Snakemake and leverages Conda environments for full reproducibility.
+1. **Database bootstrap & ingestion** – loads UNITE, BOLD, PLANiTS, CALeDNA, etc. into a normalized schema with sequence/taxonomy QC (`workflow/rules/database.smk`, `format_databases.smk`).
+2. **ITSx extraction** – prepares filtered FASTA files, runs ITSx per barcode, and updates barcode status tracking (`workflow/rules/itsx.smk`).
+3. **MSA production** – generates per-clade MSAs, trims with Trimal, builds HMMs, and classifies remaining sequences (`workflow/rules/msa.smk`).
+4. **SATIVA validation** – creates SATIVA tasks from the MSA manifest, runs the classifier, and optionally writes the results back to the DB (`workflow/rules/sativa.smk`).
+5. **Reporting** – compiles JSON run summaries plus HTML dashboards (sequence flow, MSA analytics, SATIVA taxonomy) (`workflow/rules/reports.smk`, `rules/benchmarking.smk`).
 
-Core capabilities include:
-
-- **Ingestion & normalization** of public datasets (BOLD, PLANITS, CALeDNA, UNITE, etc.) using high-throughput parsing scripts.
-- **Quality control & deduplication** at both sequence and taxonomy levels before database insertion.
-- **ITSx processing** to extract marker-specific subsequences and update barcode status tracking.
-- **Multiple sequence alignment (MSA)** per taxonomic slice with MAFFT/Trimal and downstream summarization.
-- **SATIVA-based taxonomic validation** plus automated reporting and optional database integration of reassigned taxa.
-- **Rich observability**, including JSON run reports, HTML dashboards, and extensive logging.
-
-The pipeline runs end-to-end against either SQLite (local prototyping) or PostgreSQL (large-scale production) backends with transparent configuration switches.
-
----
-
-## Repository Layout
-
-```
-.
-├── config/                 # Global configuration and environment templates
-├── data/                   # Raw and processed datasets (git-ignored if large)
-├── docs/                   # MkDocs documentation portal
-├── resources/              # Reference files (e.g., taxonomy definitions)
-├── workflow/
-│   ├── Snakefile           # Primary Snakemake entry point
-│   ├── envs/               # Conda environments per tool (ITSx, MAFFT, SATIVA, etc.)
-│   ├── report/             # HTML templates and assets used in reports
-│   ├── rules/              # Snakemake rule modules (download, itsx, msa, sativa, reports)
-│   └── scripts/            # Python utilities (formatters, DB ops, report generators)
-├── results/                # Generated outputs (alignments, SATIVA runs, augmented datasets)
-├── tests/                  # Unit/integration tests (optional)
-├── mkdocs.yml              # Documentation site configuration
-└── setup_env.sh            # Helper script for local environment bootstrap
-```
+All steps are orchestrated by Snakemake with per-rule Conda environments under `workflow/envs/`.
 
 ---
 
 ## Requirements
 
-- Linux or macOS with Bash, GNU coreutils, and Conda (Miniconda or Mamba recommended)
-- Snakemake ≥ 7.0 (automatically installed via conda/mamba)
-- Access credentials for the selected database backend (SQLite path or PostgreSQL DSN)
-- Optional: MkDocs + `mkdocs-material` for browsing the docs locally
+- Linux/macOS shell with Bash, GNU coreutils, and either Conda or Mamba
+- Snakemake ≥7 (installed automatically by `setup_env.sh`)
+- Database credentials (SQLite path or PostgreSQL DSN defined in `config/.env`)
+- Optional: MkDocs + `mkdocs-material` to browse `docs/`
 
 ---
 
 ## Quick Start
 
-1. **Clone the repository**
+1. **Clone & bootstrap**
    ```bash
    git clone https://github.com/<org>/ITS-pipeline.git
    cd ITS-pipeline/6.CurateMake
+   ./setup_env.sh            # installs snakemake + rule envs
    ```
-
-2. **Create/update Conda environments**
+2. **Configure credentials & paths**
    ```bash
-   chmod +x setup_env.sh
-   ./setup_env.sh          # installs Snakemake and required tool envs
+   cp config/.env.example config/.env   # edit DB + API secrets
+   cp config/config.yaml config/local.yaml  # optional custom config
    ```
-
-3. **Configure credentials**
+3. **Dry-run then execute**
    ```bash
-   cp config/.env.example config/.env
-   # edit config/.env to define DB connection, API tokens, etc.
+   snakemake -np                                  # plan
+   snakemake --use-conda --cores <N>              # run locally
+   # or snakemake --profile <cluster_profile>
    ```
 
-4. **Review primary configuration**
-   - `config/config.yaml` centralizes dataset paths, resource usage, and tool parameters.
-   - `workflow/envs/*.yaml` pin the versions of ITSx, MAFFT, SATIVA, hmmer, etc.
-
-5. **Dry-run the workflow**
-   ```bash
-   snakemake -np            # prints planned jobs without executing them
-   ```
-
-6. **Execute the full pipeline**
-   ```bash
-   snakemake --use-conda --cores <N>
-   # or submit to a cluster with --profile
-   ```
-
-Snakemake automatically creates the per-tool Conda environments declared in each rule, so no manual activation is required during workflow execution.
+Snakemake creates rule-specific Conda envs on demand; no manual activation is necessary.
 
 ---
 
-## Configuration Highlights
+## Configuration Cheatsheet
 
-| Section | Purpose |
-|--------|---------|
-| `database` | Toggle between SQLite (default) and PostgreSQL, set schema, connection string, and optional backups. |
-| `data_sources` | Define file paths for BOLD/PLANITS/CALeDNA/UNITE dumps and ingestion thresholds. |
-| `itsx` | CPU/thread allocation, runtime limits, and post-processing flags for ITSx batches. |
-| `msa` | MAFFT/Trimal parameters, batch sizing, alignment thresholds, and reporting options. |
-| `sativa` | SATIVA deployment details (tree limits, API integrations, visualization paths). |
-| `reports` | Output locations for HTML dashboards and JSON metrics. |
+| Section (config/config.yaml) | Key knobs |
+| --- | --- |
+| `database` | Backend selection, schema, backup policy |
+| `databases.*` | Paths to UNITE/BOLD/PLANiTS/CALeDNA dumps |
+| `itsx_*` / `itsx` | Thread counts, temp directories, CPU limits |
+| `msa` | Thresholds for manifest generation, MAFFT/Trimal params, classification batching |
+| `sativa` | Input MSA dir, timeout, max sequences, SATIVA script path, visualization outputs |
+| `sativa_integration` | CoL API tuning, cache, reporting, DB write-back |
 
-Every parameter is documented inline within `config/config.yaml`. Override values per environment by exporting variables in `config/.env` or via `--configfile`.
+Override any parameter via `snakemake --config key=value` or by pointing to an alternate `--configfile`.
 
 ---
 
-## Running Specific Stages
+## Running Targeted Stages
 
 ```bash
-# Format and ingest CALeDNA only
-snakemake --use-conda results/caledna_ingestion.done
+# Only run ITSx for ITS2
+snakemake --use-conda data/processed/itsx_run_ITS2.done
 
-# Launch ITSx processing for ITS2
-snakemake --use-conda itsx/ITS2/itsx_run.done
+# Rebuild the global MSA report
+snakemake --use-conda reports/html/msa_analysis_report.html
 
-# Generate SATIVA visualization report
-snakemake --use-conda reports/html/sativa_visualization_report.html
+# Recompute SATIVA taxonomy report
+snakemake --use-conda reports/html/sativa_taxonomy_report.html
 ```
 
-Use `-n` (dry-run) and `-r` (print reason) to inspect dependencies before executing resource-intensive jobs.
+Use `-n` (dry-run), `-r` (reasons), and `--summary` to inspect dependency graphs before launching long jobs.
 
 ---
 
-## Reporting & Monitoring
+## Outputs & Observability
 
-- **JSON run reports** (`data/processed/*_run_report.json`) capture per-stage metrics, throughput, and warnings.
-- **HTML dashboards** in `reports/html/` summarize ITSx/MSA/SATIVA runs for stakeholder review.
-- **Logs** are stored in `logs/<module>/` with human-readable English messaging for quicker troubleshooting.
-- **Database utilities** under `workflow/scripts/utils/` (e.g., `restore_db_backup.py`) validate and restore curated DB snapshots.
-
----
-
-## Development Workflow
-
-1. Create a feature branch from `CurateMake` (or `main`, depending on your release strategy).
-2. Apply linting/formatting to scripts as needed (black/isort/mypy optional).
-3. Run targeted Snakemake jobs to validate changes before committing.
-4. Submit pull requests with links to relevant run reports or logs.
-
-The repository includes `.gitignore` entries for large datasets, secrets, editor files, and Conda artifacts to keep commits clean.
+- **Processed artifacts** live under `data/processed/` (JSON summaries, manifests, CSV exports).
+- **MSA and SATIVA deliverables** are emitted to `data/MSA` and `data/SATIVA`.
+- **Reports** render to `reports/html/`:
+  - `msa_analysis_report.html`
+  - `sequence_flow_report.html`
+  - `sativa_visualization_report.html`
+  - `sativa_taxonomy_report.html`
+  - `benchmark_report.html` and `index.html`
+- **Logs** sit in `logs/<module>/`, with English log text suitable for monitoring systems.
+- **Benchmarks** are written to `benchmarks/<rule>/` when `config["benchmarking"]["enabled"]` is true.
 
 ---
 
-## Documentation
+## Repository Map (abridged)
 
-The MkDocs site compiles the architecture overview, database schema notes, and troubleshooting guides located in `docs/`. Serve it locally with:
-
-```bash
-pip install mkdocs mkdocs-material
-mkdocs serve
-# open http://127.0.0.1:8000
+```
+config/          # YAML + .env configuration
+data/            # Raw inputs, processed tables, ITSx/MSA/SATIVA outputs
+docs/            # MkDocs pages (see docs/index.md)
+workflow/
+  Snakefile      # Root workflow
+  rules/         # Modular Snakemake rule files
+  scripts/       # Python helpers (formatting, reports, DB ops)
+  envs/          # Conda env specifications
+logs/, benchmarks/, reports/  # Runtime artifacts
+setup_env.sh     # Helper to install Snakemake + env deps
 ```
 
 ---
 
-## Support & Contributions
+## Documentation & Support
 
-- File issues or feature requests via GitHub Issues (include Snakemake logs and relevant config snippets).
-- Contributions are welcome through standard fork/PR workflows. Please keep README and docs synchronized with code changes.
-- For security-sensitive topics (credentials, datasets under embargo), coordinate via the appropriate private channels instead of public trackers.
+- Read the MkDocs portal starting at [`docs/index.md`](docs/index.md) for deeper architecture notes, database specs, and troubleshooting.
+- File issues/feature requests with sample configs + logs.
+- Contributions follow the typical fork/PR workflow; keep README/docs aligned with code changes.
 
----
-
-**License:** GPLv3. This pipeline bundles third-party tools (ITSx, MAFFT, SATIVA, hmmer, etc.); ensure compliance with their respective licenses when redistributing artifacts.
+**License:** GPLv3 (external tools such as ITSx, MAFFT, HMMER, SATIVA retain their original licenses—respect redistribution terms).

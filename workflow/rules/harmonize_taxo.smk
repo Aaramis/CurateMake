@@ -1,6 +1,6 @@
 # workflow/rules/harmonize_taxo.smk
 """
-Règles Snakemake pour le matching taxonomique avec Catalogue of Life (COL).
+Rules Snakemake pour le matching taxonomique avec Catalogue of Life (COL).
 """
 
 import os

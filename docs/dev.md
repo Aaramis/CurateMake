@@ -1,270 +1,82 @@
-# Guide du développeur
+# Developer Notes
 
-Ce document fournit des informations pour les développeurs souhaitant contribuer au pipeline ou l'étendre avec de nouvelles fonctionnalités.
-
-## Table des matières
-
-- [Architecture du code](#architecture-du-code)
-- [Ajout d'une nouvelle règle](#ajout-dune-nouvelle-règle)
-- [Tests](#tests)
-- [Bonnes pratiques](#bonnes-pratiques)
-- [Workflow de développement](#workflow-de-développement)
-- [Dépannage](#dépannage)
-
-## Architecture du code
-
-### Structure des dossiers
+## Repository structure
 
 ```
-.
-├── Snakefile           # Point d'entrée principal
-├── config/             # Fichiers de configuration
-│   └── config.yaml     # Configuration principale
-├── rules/              # Règles SnakeMake
-│   ├── download.smk    # Téléchargement des données
-│   ├── taxonomy.smk    # Traitement taxonomique
-│   ├── itsx.smk        # Extraction ITS
-│   ├── msa.smk         # Alignement multiple
-│   ├── sativa.smk      # Validation taxonomique
-│   ├── triche.smk      # Augmentation de données
-│   ├── report.smk      # Génération de rapports
-│   └── datasets.smk    # Création des jeux de données
-├── scripts/            # Scripts personnalisés
-│   ├── utils/          # Utilitaires partagés
-│   └── analysis/       # Scripts d'analyse
-├── envs/               # Environnements Conda
-│   ├── base.yaml       # Environnement de base
-│   └── tools/          # Environnements par outil
-├── tests/              # Tests automatisés
-│   ├── unit/           # Tests unitaires
-│   └── integration/    # Tests d'intégration
-└── docs/               # Documentation
+workflow/
+  Snakefile            # root DAG
+  rules/               # modular rule files
+  envs/                # per-rule Conda specs
+  scripts/             # Python entry points used by rules
+    MSА/, ITSx/, Sativa/, utils/
+config/
+  config.yaml          # main settings (paths, thresholds)
+  .env                 # secrets/interpolation values
+data/
+  raw/, processed/, ITSx/, MSА/, SATIVA/
+logs/, benchmarks/, reports/
+docs/
+  *.md (MkDocs source)
 ```
 
-### Workflow principal
+Rules are grouped by function (database, ITSx, MSA, SATIVA, benchmarking, reports). Keep new logic inside `workflow/scripts/` and call it via `script:` or `shell:` blocks to preserve reproducibility.
 
-1. **Téléchargement des données** : Récupération des données sources
-2. **Prétraitement** : Nettoyage et préparation des données
-3. **Analyse** : Traitement principal (ITSx, alignement, etc.)
-4. **Validation** : Contrôle qualité et validation
-5. **Post-traitement** : Génération des rapports et jeux de données finaux
+## Adding a new rule
 
-## Ajout d'une nouvelle règle
+1. Create `workflow/rules/<feature>.smk` or extend an existing file.
+2. Implement the heavy lifting in `workflow/scripts/<feature>/...py`.
+3. Declare inputs/outputs/logs/benchmarks/conda env in the Snakemake rule.
+4. Reference configuration values via `config[...]` to avoid hard-coding paths.
+5. Add targets to `rule all` if the output should be part of the default DAG.
 
-### 1. Créer un nouveau fichier de règles
-
-Créez un nouveau fichier dans le dossier `rules/`, par exemple `rules/nouvelle_regle.smk` :
+Example snippet:
 
 ```python
-# rules/nouvelle_regle.smk
-
-rule nouvelle_regle:
+rule example_task:
     input:
-        "{sample}.fasta"
+        "data/processed/itsx_process.json"
     output:
-        "results/nouveau/{sample}.out"
+        "data/processed/example.json"
     params:
-        param1=config["nouvelle_regle"]["param1"],
-        param2=config["nouvelle_regle"]["param2"]
+        option=config["example"]["option"]
+    log:
+        "logs/example/task.log"
     conda:
-        "envs/tools/nouvel_outil.yaml"
-    shell:
-        "nouvel_outil --input {input} --output {output} --param1 {params.param1}"
+        "../envs/example.yaml"
+    script:
+        "../scripts/example/run_example.py"
 ```
 
-### 2. Mettre à jour la configuration
+## Configuration best practices
 
-Ajoutez les paramètres par défaut dans `config/config.default.yaml` :
+- Introduce new parameters under `config/config.yaml` with sensible defaults.
+- Access secrets via environment variables (referenced as `{{ env.VAR }}`).
+- Document new keys in the README or relevant doc page.
 
-```yaml
-# Configuration pour la nouvelle règle
-nouvelle_regle:
-  param1: valeur1
-  param2: valeur2
-```
+## Testing & validation
 
-### 3. Mettre à jour l'environnement Conda
+- Use `snakemake -np` to verify the DAG after modifying rules.
+- For scripts, add lightweight unit tests under `tests/` or embed assertions in the script until a proper test harness exists.
+- During development, run specific targets (e.g., a single alignment) to iterate quickly.
 
-Créez un fichier `envs/tools/nouvel_outil.yaml` :
+## Logging
 
-```yaml
-channels:
-  - conda-forge
-  - bioconda
-  - defaults
+- Always specify a `log:` file so troubleshooting is straightforward.
+- Prefer structured logging inside Python scripts (`logging` module with clear INFO/WARNING/ERROR messages).
 
-dependencies:
-  - nouvel_outil=1.0.0
-  - python=3.8
-```
+## Development workflow
 
-### 4. Mettre à jour le Snakefile principal
+1. Branch from `CurateMake`.
+2. Make focused changes (rules + scripts + docs).
+3. Run targeted Snakemake dry-runs or unit tests.
+4. Commit using Conventional Commits.
+5. Open a PR with reproduction instructions and relevant logs/reports.
 
-Ajoutez l'import du nouveau fichier de règles dans `Snakefile` :
+## Contributions
 
-```python
-# Inclure les règles
-include: "rules/nouvelle_regle.smk"
-```
+- Branch from `CurateMake`, keep commits focused, and open PRs with:
+  - Summary of rule/script changes
+  - Instructions to reproduce the run (targets + config overrides)
+  - Relevant log excerpts or report screenshots if behavior changed
 
-### 5. Tester la nouvelle règle
-
-```bash
-# Tester la règle en mode sec
-snakemake --use-conda -n nouvelle_regle
-
-# Exécuter la règle
-snakemake --use-conda --cores 1 nouvelle_regle
-```
-
-## Tests
-
-### Tests unitaires
-
-Les tests unitaires vérifient le bon fonctionnement des fonctions individuelles :
-
-```bash
-# Exécuter tous les tests unitaires
-pytest tests/unit/
-
-# Exécuter un test spécifique
-pytest tests/unit/test_utils.py -v
-```
-
-### Tests d'intégration
-
-Les tests d'intégration vérifient le bon fonctionnement des règles SnakeMake :
-
-```bash
-# Exécuter les tests d'intégration
-pytest tests/integration/ -v
-
-# Exécuter avec Snakemake
-snakemake --use-conda -j 1 --use-singularity --configfile tests/integration/config.yaml
-```
-
-### Couverture de code
-
-Pour générer un rapport de couverture :
-
-```bash
-pytest --cov=scripts tests/
-coverage html
-```
-
-## Bonnes pratiques
-
-### Style de code
-
-- Suivez le [PEP 8](https://www.python.org/dev/peps/pep-0008/) pour le code Python
-- Utilisez des noms de variables explicites
-- Documentez les fonctions avec des docstrings
-- Commentez les parties complexes du code
-
-### Gestion des dépendances
-
-- Utilisez toujours des versions spécifiques dans les fichiers YAML des environnements
-- Mettez à jour régulièrement les dépendances pour corriger les failles de sécurité
-- Testez toujours après une mise à jour de dépendances
-
-### Documentation
-
-- Mettez à jour la documentation quand vous modifiez le code
-- Ajoutez des exemples d'utilisation
-- Documentez les paramètres des fonctions et des règles
-
-## Workflow de développement
-
-### 1. Créer une branche
-
-```bash
-git checkout -b feature/nouvelle-fonctionnalite
-```
-
-### 2. Développer et tester
-
-- Écrivez le code
-- Ajoutez des tests
-- Vérifiez que les tests passent
-- Mettez à jour la documentation
-
-### 3. Soumettre une demande de fusion
-
-1. Poussez vos modifications :
-   ```bash
-   git push origin feature/nouvelle-fonctionnalite
-   ```
-2. Créez une Pull Request sur GitHub
-3. Attendez la revue de code
-4. Effectuez les modifications demandées si nécessaire
-5. Une fois approuvé, fusionnez la branche
-
-## Dépannage
-
-### Problèmes courants
-
-#### 1. Échec de création d'environnement Conda
-
-```bash
-# Nettoyer les caches Conda
-conda clean --all
-
-# Réessayer avec Mamba
-mamba env update -f envs/base.yaml
-```
-
-#### 2. Règles qui échouent silencieusement
-
-Activez le mode debug :
-
-```bash
-snakemake --use-conda --cores 1 --verbose --printshellcmds --debug-dag
-```
-
-#### 3. Problèmes de verrouillage
-
-Si Snakemake se bloque, supprimez les verrous :
-
-```bash
-rm -f .snakemake/locks/*
-```
-
-### Débogage avec PDB
-
-Pour déboguer un script Python :
-
-```python
-import pdb; pdb.set_trace()
-```
-
-## Performance
-
-### Profilage
-
-Pour profiler une règle :
-
-```bash
-# Activer le profilage
-export SNAKEMAKE_PROFILE=profiles/performance/
-
-# Exécuter avec profilage
-snakemake --profile profiles/performance/
-```
-
-### Optimisation
-
-- Utilisez des conteneurs pour les outils lourds
-- Limitez l'utilisation de la mémoire avec `resources.mem_mb`
-- Utilisez des fichiers temporaires pour les données volumineuses
-
-## Contribution
-
-Vos contributions sont les bienvenues ! Voici comment contribuer :
-
-1. Forkez le dépôt
-2. Créez une branche pour votre fonctionnalité
-3. Committez vos modifications
-4. Poussez vers votre fork
-5. Créez une Pull Request
-
-Consultez le fichier `CONTRIBUTING.md` pour plus de détails.
+Keeping these conventions consistent makes the pipeline easier to maintain across the different stages (database ingestion → ITSx → MSA → SATIVA → reporting).

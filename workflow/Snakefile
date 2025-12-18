@@ -1,12 +1,11 @@
 # workflow/Snakefile
 """
-Pipeline bioinformatique professionnel avec gestion SQLite intégrée.
-Traitement de bases de données de séquences (UNITE, BOLD, PLANiTS, etc.)
-avec traçabilité complète et validation des données.
+Production-grade ITS pipeline with optional SQLite/PostgreSQL backends.
+Processes heterogeneous sequence datasets (UNITE, BOLD, PLANiTS, etc.)
+with full traceability and validation.
 """
 
 import os
-import yaml
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -26,12 +25,12 @@ if "VIRTUAL_ENV" in os.environ:
     path_entries = [p for p in os.environ.get("PATH", "").split(":") if p and p != venv_bin]
     os.environ["PATH"] = ":".join(path_entries)
 
-# Charger le fichier .env (situé à la racine du projet)
+# Load .env (project root)
 load_dotenv(".env")
 
-# Fonction pour substituer les variables d'environnement dans le config
+# Expand environment variables inside the config dict
 def expand_env_vars(config_dict, parent_key=None):
-    """Remplace récursivement les variables d'environnement dans le config."""
+    """Recursively replace environment variable placeholders."""
     import re
 
     if isinstance(config_dict, dict):
@@ -64,9 +63,8 @@ def expand_env_vars(config_dict, parent_key=None):
             return value
     return config_dict
 
-# Charger et configurer manuellement le fichier YAML
-with open("config/config.yaml") as f:
-    config = yaml.safe_load(f)
+# Charger et configurer le fichier YAML via Snakemake (supporte --config/--configfile)
+configfile: "config/config.yaml"
 
 # Substituer les variables d'environnement
 config = expand_env_vars(config)
@@ -75,6 +73,7 @@ config = expand_env_vars(config)
 DATABASES = list(config["databases"].keys())
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+MAX_SATIVA_JOBS = max(1, int(config.get("sativa", {}).get("max_parallel_jobs", 1)))
 
 # Validation de la configuration
 if not DATABASES:
@@ -92,7 +91,6 @@ include: "rules/msa.smk"
 include: "rules/sativa.smk"
 include: "rules/benchmarking.smk"
 include: "rules/reports.smk"
-include: "rules/msa.smk"
 
 # Règle par défaut
 rule all:
@@ -108,44 +106,49 @@ rule all:
         "reports/html/index.html"                    # Index des rapports (runs last)
 
 
-# Règle pour exécuter seulement le matching taxonomique
-rule harmonize_only:
-    """Exécute seulement l'harmonisation taxonomique si le formatage est déjà fait."""
-    input:
-        "data/processed/col_matching_report.json"
-
 # Règle de nettoyage
 rule clean:
-    """Supprime les fichiers temporaires et optionnellement les résultats"""
-    shell:
-        """
-        rm -rf data/processed/
-        echo "Nettoyage terminé"
-        """
-        # rm -rf .snakemake/
-        # rm -rf temp/
+    """Supprime les fichiers temporaires générés dans data/processed (non interactif)."""
+    params:
+        paths=["data/processed"]
+    run:
+        import shutil
+        from pathlib import Path
+
+        for raw_path in params.paths:
+            path = Path(raw_path)
+            if not path.exists():
+                continue
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        Path("data/processed").mkdir(parents=True, exist_ok=True)
+
 
 rule clean_all:
-    """Supprime tout incluant la base de données (ATTENTION!)."""
-    shell:
-        """
-        echo "ATTENTION: Suppression complète incluant la base de données"
-        read -p "Êtes-vous sûr? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            rm -rf data/processed/
-            rm -rf data/db/
-            rm -rf data/validation/
-            rm -rf data/*.fasta
-            rm -rf data/ITSx
-            rm -rf results/
-            rm -rf logs/
-            echo "Nettoyage complet terminé"
-        else
-            echo "Nettoyage annulé"
-        fi
-        """
-            # rm -rf .snakemake/ 
+    """Supprime les artéfacts principaux du pipeline de manière contrôlée."""
+    params:
+        paths=[
+            "data/processed",
+            "data/db",
+            "data/validation",
+            "data/ITSx",
+            "results",
+            "logs",
+        ]
+    run:
+        import shutil
+        from pathlib import Path
+
+        for raw_path in params.paths:
+            path = Path(raw_path)
+            if not path.exists():
+                continue
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
 
 # Règle de validation
 rule validate:
@@ -154,9 +157,3 @@ rule validate:
         "logs/validation.log"
     script:
         "scripts/validate_setup.py"
-
-# Pipeline minimal - Base de données seulement
-rule database_only:
-    """Initialise seulement la base de données."""
-    input:
-        "data/pipeline.db",

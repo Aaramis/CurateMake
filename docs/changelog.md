@@ -1,32 +1,32 @@
-# Journal des modifications
+# Changelog
 
-Ce document répertorie les modifications notables apportées au projet. Il suit les principes de [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/).
+This document lists notable changes to the project following the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
 
 ## [0.1.0] - 2025-08-18
-### Ajouté
-- Documentation complète du projet avec MkDocs
-- Structure de dossiers réorganisée pour une meilleure maintenabilité
-- Configuration Git avec .gitignore complet
-- Fichiers d'environnement Conda (its-pipeline, its-pipeline-dev)
-- Script de configuration automatique (setup_env.sh)
-- Documentation sur l'utilisation de Git et les bonnes pratiques
-- Configuration initiale du dépôt GitHub
+### Added
+- Complete MkDocs site for the project
+- Restructured directory layout for maintainability
+- Git configuration with comprehensive `.gitignore`
+- Conda environment files (`its-pipeline`, `its-pipeline-dev`)
+- Bootstrap script (`setup_env.sh`)
+- Git usage documentation and best practices
+- Initial GitHub repository configuration
 
-## Format du journal
+## Changelog format
 
-Chaque version devrait inclure les sections suivantes :
+Each release should specify sections when relevant:
 
-- **Ajouté** pour les nouvelles fonctionnalités.
-- **Modifié** pour les changements dans les fonctionnalités existantes.
-- **Déprécié** pour les fonctionnalités qui seront bientôt supprimées.
-- **Supprimé** pour les fonctionnalités supprimées.
-- **Corrigé** pour toute correction de bug.
-- **Sécurité** en cas de vulnérabilités corrigées.
+- **Added** for new features
+- **Changed** for updates to existing behavior
+- **Deprecated** for soon-to-be removed features
+- **Removed** for actual removals
+- **Fixed** for bug fixes
+- **Security** for vulnerabilities addressed
 
-## Principes de versionnement
+## Versioning principles
 
-Le projet suit le [Semantic Versioning](https://semver.org/spec/v2.0.0.html) :
+The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
-- **MAJOR** : Changements incompatibles avec les versions antérieures
-- **MINOR** : Ajout de fonctionnalités rétrocompatibles
-- **PATCH** : Corrections de bugs rétrocompatibles
+- **MAJOR**: incompatible API changes
+- **MINOR**: backward-compatible new functionality
+- **PATCH**: backward-compatible bug fixes

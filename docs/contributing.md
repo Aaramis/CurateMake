@@ -1,186 +1,181 @@
-# Guide de contribution
+# Contribution Guide
 
-Merci de votre intérêt pour ce projet ! Nous apprécions toutes les contributions, qu'il s'agisse de signaler des bogues, de proposer des fonctionnalités ou de soumettre des corrections de code.
+Thank you for your interest in the project! We welcome bug reports, feature ideas, and code/documentation improvements.
 
-## Table des matières
+## Table of contents
 
-- [Comment contribuer](#comment-contribuer)
-- [Signalement de bogues](#signalement-de-bogues)
-- [Propositions de fonctionnalités](#propositions-de-fonctionnalités)
-- [Soumission de modifications](#soumission-de-modifications)
-- [Conventions de code](#conventions-de-code)
+- [How to contribute](#how-to-contribute)
+- [Bug reports](#bug-reports)
+- [Feature proposals](#feature-proposals)
+- [Submitting changes](#submitting-changes)
+- [Code style](#code-style)
 - [Tests](#tests)
-- [Revue de code](#revue-de-code)
-- [Questions et support](#questions-et-support)
+- [Code review](#code-review)
+- [Questions & support](#questions-support)
 
-## Comment contribuer
+## How to contribute
 
-1. **Signaler un problème**
-   - Vérifiez d'abord si le problème n'a pas déjà été signalé
-   - Ouvrez une issue avec un titre clair et descriptif
-   - Suivez le modèle d'issue fourni
+1. **Report a problem**
+   - Check existing issues first
+   - Open a new issue with a clear, descriptive title
+   - Use the provided issue template
 
-2. **Proposer une amélioration**
-   - Décrivez clairement la fonctionnalité ou l'amélioration
-   - Expliquez pourquoi elle serait utile
-   - Donnez un exemple d'utilisation si possible
+2. **Propose an improvement**
+   - Describe the feature or enhancement in detail
+   - Explain why it matters and include example use cases
 
-3. **Soumettre des modifications**
-   - Suivez le [workflow de développement](dev.md#workflow-de-développement)
-   - Assurez-vous que les tests passent
-   - Mettez à jour la documentation si nécessaire
+3. **Submit a change**
+   - Follow the [development workflow](dev.md#development-workflow)
+   - Ensure tests (or Snakemake dry-runs) pass
+   - Update documentation when behavior changes
 
-## Signalement de bogues
+## Bug reports
 
-Pour signaler un bug, ouvrez une issue en suivant ces étapes :
+To report a bug:
 
-1. Utilisez le modèle "Bug Report"
-2. Donnez un titre clair et descriptif
-3. Décrivez le problème de manière détaillée
-4. Indiquez les étapes pour reproduire le bug
-5. Précisez le comportement attendu
-6. Ajoutez des captures d'écran si nécessaire
-7. Indiquez votre configuration (OS, version de Python, etc.)
+1. Use the “Bug Report” template
+2. Provide a clear, descriptive title
+3. Describe the problem in detail
+4. List the steps required to reproduce it
+5. Specify the expected behavior
+6. Attach logs or screenshots when helpful
+7. Include environment details (OS, Python version, Snakemake version, etc.)
 
-## Propositions de fonctionnalités
+## Feature proposals
 
-Pour proposer une nouvelle fonctionnalité :
+To propose a new feature:
 
-1. Vérifiez d'abord si une demande similaire existe déjà
-2. Utilisez le modèle "Feature Request"
-3. Expliquez clairement la fonctionnalité souhaitée
-4. Décrivez les cas d'utilisation
-5. Proposez une ébauche d'implémentation si possible
+1. Check whether a similar request already exists
+2. Use the “Feature Request” template
+3. Describe the desired feature clearly
+4. Outline the use cases and expected benefits
+5. Suggest an implementation approach if you have one
 
-## Soumission de modifications
+## Submitting changes
 
-### Prérequis
+### Requirements
 
 - Python 3.8+
 - Git
-- Un compte GitHub
-- Connaissance de base de Snakemake
+- GitHub account
+- Basic familiarity with Snakemake
 
-### Processus de contribution
+### Workflow
 
-1. **Fork** le dépôt
-2. Clonez votre fork localement :
+1. **Fork** the repository
+2. Clone your fork locally:
    ```bash
-   git clone https://github.com/votre-utilisateur/bio-pipeline.git
-   cd bio-pipeline
+   git clone https://github.com/<your-user>/ITS-pipeline.git
+   cd ITS-pipeline/6.CurateMake
    ```
-3. Créez une branche pour votre fonctionnalité :
+3. Create a feature branch:
    ```bash
-   git checkout -b feature/nom-de-la-fonctionnalite
+   git checkout -b feature/<feature-name>
    ```
-4. Installez les dépendances de développement :
+4. Install development dependencies (optional):
    ```bash
    pip install -e ".[dev]"
    ```
-5. Effectuez vos modifications
-6. Vérifiez le style de code :
+5. Implement your changes
+6. Check formatting/linting:
    ```bash
    black .
    flake8
    ```
-7. Exécutez les tests :
+7. Run tests (or targeted Snakemake runs):
    ```bash
    pytest
    ```
-8. Committez vos modifications avec un message clair :
+8. Commit with a clear message:
    ```bash
-   git commit -m "Ajout: Nouvelle fonctionnalité pour résoudre #123"
+   git commit -m "feat: add new SATIVA metrics (#123)"
    ```
-9. Poussez vers votre fork :
+9. Push to your fork:
    ```bash
-   git push origin feature/nom-de-la-fonctionnalite
+   git push origin feature/<feature-name>
    ```
-10. Créez une Pull Request (PR) vers la branche `main`
+10. Open a Pull Request targeting the `CurateMake` branch (or whichever branch you’re asked to use)
 
-## Conventions de code
+## Code style
 
-### Style de code
+### Style
 
-- Suivez [PEP 8](https://www.python.org/dev/peps/pep-0008/)
-- Utilisez [Black](https://black.readthedocs.io/) pour le formatage
-- Vérifiez avec [Flake8](https://flake8.pycqa.org/)
-- Documentez les fonctions avec des docstrings (format Google)
+- Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/)
+- Format with [Black](https://black.readthedocs.io/)
+- Lint with [Flake8](https://flake8.pycqa.org/)
+- Document functions with docstrings (Google-style or similar)
 
-### Structure des commits
+### Commits
 
-- Utilisez des messages de commit clairs et descriptifs
-- Suivez le format [Conventional Commits](https://www.conventionalcommits.org/)
-- Faites référence aux numéros d'issue quand c'est pertinent
+- Use clear, descriptive commit messages
+- Follow [Conventional Commits](https://www.conventionalcommits.org/)
+- Reference issue numbers when relevant
 
-Exemple :
+Example:
 ```
-feat: ajouter la fonctionnalité X
+feat: add SATIVA manifest diff view
 
-Ajoute une nouvelle fonctionnalité qui permet de faire X.
-Résout le problème #123
+Adds a new dashboard comparing SATIVA runs and closes #123.
 ```
 
-Types de commits :
-- `feat`: Nouvelle fonctionnalité
-- `fix`: Correction de bug
-- `docs`: Modification de la documentation
-- `style`: Formatage, point-virgule manquant, etc.
-- `refactor`: Modification du code qui ne corrige pas un bug ni n'ajoute de fonctionnalité
-- `perf`: Modification du code qui améliore les performances
-- `test`: Ajout ou modification de tests
-- `chore`: Mise à jour de tâches de construction, configuration, etc.
+Suggested prefixes:
+- `feat`: new feature
+- `fix`: bug fix
+- `docs`: documentation updates
+- `style`: formatting-only changes
+- `refactor`: code restructuring
+- `perf`: performance improvements
+- `test`: add/modify tests
+- `chore`: build/CI/config updates
 
 ## Tests
 
-### Exécution des tests
+### Run tests
 
 ```bash
-# Tous les tests
+# Run the entire test suite
 pytest
 
-# Tests avec couverture
+# With coverage
 pytest --cov=.
 
-# Un fichier de test spécifique
+# Single test file
 pytest tests/test_utils.py
 
-# Un test spécifique
-pytest tests/test_utils.py::test_ma_fonction
+# Specific test case
+pytest tests/test_utils.py::test_my_function
 ```
 
-### Écriture de tests
+### Writing tests
 
-- Un fichier de test par module : `test_<nom_du_module>.py`
-- Une fonction de test par fonctionnalité
-- Utilisez des fixtures pour les données de test courantes
-- Testez les cas limites et les erreurs
+- One test module per feature (e.g., `test_utils.py`)
+- One test function per behavior
+- Use fixtures for repeated setups
+- Cover error paths and edge cases
 
-## Revue de code
+## Code review
 
 Toutes les contributions passent par un processus de revue de code. Voici comment cela fonctionne :
 
-1. Créez une Pull Request (PR)
-2. Assurez-vous que tous les tests passent
-3. Un mainteneur examinera votre code
-4. Des modifications peuvent être demandées
-5. Une fois approuvée, votre PR sera fusionnée
+1. Open a Pull Request
+2. Ensure tests/dry-runs pass and CI is green
+3. A maintainer reviews the code and may request changes
+4. Once approved, the PR is merged
 
-### Critères d'acceptation
+Acceptance checklist:
+- Code is tested or accompanied by a reproducible Snakemake command
+- Documentation and changelog entries are updated when needed
+- Style and conventions match the rest of the repo
+- The change benefits other users or is clearly scoped
 
-- Le code est bien testé
-- La documentation est à jour
-- Les tests passent
-- Le code suit les conventions du projet
-- La fonctionnalité est utile pour d'autres utilisateurs
+## Questions & support
 
-## Questions et support
+If you have questions or run into issues:
 
-Pour toute question ou problème, vous pouvez :
-
-1. Consulter la [documentation](index.md)
-2. Ouvrir une issue sur GitHub
-3. Contacter les mainteneurs via email (voir le fichier AUTHORS.md)
+1. Consult the [documentation](index.md)
+2. Open a GitHub issue
+3. Contact the maintainers (see AUTHORS.md) for sensitive topics
 
 ## Reconnaissance
 
-Tous les contributeurs sont remerciés pour leur temps et leurs efforts. Votre nom sera ajouté à la liste des contributeurs dans le fichier CONTRIBUTORS.md.
+Thanks to everyone who contributes time and ideas—your name is added to CONTRIBUTORS.md once your first PR lands.

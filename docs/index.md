@@ -1,47 +1,46 @@
-# Pipeline Bioinformatique - Documentation
+# ITS Pipeline Documentation
 
-Bienvenue dans la documentation du pipeline bioinformatique basé sur Snakemake. Ce pipeline est conçu pour le prétraitement, le nettoyage et l'augmentation des données pour la constitution de jeux d'entraînement/test destinés à l'apprentissage automatique.
+This site describes the Snakemake workflow that ingests heterogeneous ITS barcode datasets, harmonizes them inside a relational database, and delivers curated MSAs plus SATIVA validation artifacts.
 
-## Fonctionnalités principales
+## Highlights
 
-- **Reproductibilité** : Chaque étape est versionnée et paramétrable
-- **Traçabilité** : Historique complet des transformations dans une base de données PostgreSQL
-- **Efficacité** : Optimisé pour les performances avec gestion intelligente de la mémoire et du CPU
-- **Interopérabilité** : Formats standardisés (CSV/FASTA/JSON) pour une intégration aisée
+- **Full reproducibility** – Every rule pins its own Conda environment (`workflow/envs/`), so jobs can be replayed on HPC or cloud schedulers.
+- **Traceable data model** – The pipeline writes to either SQLite (local) or PostgreSQL (production). Database schema diagrams live in `docs/database.md`.
+- **Modular stages** – Ingestion/formatting, ITSx processing, MSA generation, SATIVA validation, and reporting can be run independently.
+- **Observability** – JSON run reports, benchmark files, and HTML dashboards cover each major stage.
 
-## Structure du projet
+## Project Layout
 
 ```
-Source/
-│── Snakefile
-│── config/
-│   └── config.yaml
-│── rules/
-│   ├── download.smk
-│   ├── taxonomy.smk
-│   ├── itsx.smk
-│   ├── msa.smk
-│   ├── sativa.smk
-│   ├── triche.smk
-│   ├── report.smk
-│   └── datasets.smk
-│── scripts/   # Scripts Python/R
-│── envs/      # Fichiers .yaml pour conda
-│── logs/      # Journaux d'exécution
-│── db/        # Schéma et scripts de base de données
-│── docs/      # Documentation
-└── examples/  # Exemples de jeux de données
+workflow/Snakefile        # root workflow
+workflow/rules/*.smk      # modular rule sets (database, ITSx, MSA, SATIVA, reports)
+workflow/scripts/         # Python helpers for ingestion, QC, reporting
+config/config.yaml        # master configuration (paths, resources, parameters)
+config/.env               # secrets / DB credentials (not tracked)
+data/                     # raw inputs + processed outputs
+logs/ + benchmarks/       # runtime diagnostics
+docs/                     # this documentation set
 ```
 
-## Premiers pas
+## Getting Started
 
-1. [Installation](installation.md)
-2. [Guide d'utilisation rapide](usage.md)
-3. [Configuration de la base de données](database.md)
+1. **Install prerequisites** – Conda/Mamba plus Snakemake (`setup_env.sh` automates this).
+2. **Configure** – Edit `config/.env` (DB credentials) and `config/config.yaml` (paths, thresholds).
+3. **Dry-run** – `snakemake -np --use-conda` to inspect upcoming work.
+4. **Run** – `snakemake --use-conda --cores <N>` or dispatch via a Snakemake profile.
 
-<!-- ## Ressources
+Detailed instructions:
 
-- [Documentation complète](overview.md)
-- [Guide du développeur](dev.md)
-- [Comment contribuer](contributing.md)
-- [Journal des modifications](changelog.md) -->
+- [Installation](installation.md)
+- [Usage](usage.md)
+- [Database configuration](database.md)
+- [ITSx stage](ITSx.md) and [MSA stage](MSA.md)
+
+## Additional Resources
+
+- [Developer guide](dev.md)
+- [Contribution guidelines](contributing.md)
+- [Change log](changelog.md)
+- [Tooling notes](tools.md)
+
+Happy curation!

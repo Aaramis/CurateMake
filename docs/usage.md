@@ -1,262 +1,94 @@
-# Guide d'utilisation du pipeline
+# Usage Guide
 
-Ce document explique comment exécuter le pipeline bioinformatique, configurer les paramètres et interpréter les résultats.
+This guide summarizes the most common workflows once the installation steps are complete.
 
-## Table des matières
-
-- [Démarrage rapide](#démarrage-rapide)
-- [Téléchargement des bases de données](#téléchargement-des-bases-de-données)
-- [Configuration](#configuration)
-- [Exécution du pipeline](#exécution-du-pipeline)
-- [Résultats](#résultats)
-- [Surveillance et débogage](#surveillance-et-débogage)
-- [Exemples de cas d'utilisation](#exemples-de-cas-dutilisation)
-
-## Démarrage rapide
-
-### 1. Préparation
+## 1. Command templates
 
 ```bash
-# Activer l'environnement Conda
-conda activate bio-pipeline
+# inspect the DAG without executing jobs
+snakemake --use-conda -np
 
-# Se placer dans le répertoire du projet
-cd /chemin/vers/bio-pipeline
+# run with N local cores
+snakemake --use-conda --cores 32
 
-# Copier le fichier de configuration par défaut
-cp config/config.default.yaml config/config.yaml
+# run a specific target (e.g. SATIVA taxonomy report)
+snakemake --use-conda reports/html/sativa_taxonomy_report.html
+
+# rerun a rule ignoring caches
+snakemake --use-conda -R sativa_task
 ```
 
-## Téléchargement des bases de données
+Useful global flags:
 
-### Bases de données disponibles
+| Flag | Description |
+| ---- | ----------- |
+| `-n` | dry-run (plan only) |
+| `-r` | show reason for each job |
+| `-p` | print shell commands |
+| `--summary` | status of every output file |
+| `--resources sativa_jobs=10` | cap custom resources if needed |
 
-Le pipeline utilise plusieurs bases de données qui doivent être téléchargées avant la première exécution :
+## 2. Primary targets
 
-1. **UNITE** 
-2. **BOLD**
-3. **PLANiTS** 
-4. **CALeDNA** 
+| Target | What it produces |
+| ------ | ---------------- |
+| `config["sativa"]["visualization_report"]` | SATIVA per-MSA dashboard |
+| `data/processed/itsx_process.json` | Aggregated ITSx summary |
+| `data/processed/msa_run_report.json` | Run-level metrics for MSA phase |
+| `reports/html/msa_analysis_report.html` | Interactive MSA analytics |
+| `reports/html/sequence_flow_report.html` | Pipeline-level Sankey diagram |
+| `reports/html/sativa_taxonomy_report.html` | 4-way taxonomy comparison |
+| `reports/html/index.html` | Landing page linking all reports |
 
-### Téléchargement manuel
+Invoke any of these as a Snakemake target to materialize only the necessary upstream steps.
 
-Nécessaire, vous devez télécharger manuellement les bases de données :
-Placez les fichiers téléchargés dans le répertoire approprié sous `data/raw/[nom_de_la_base_de_donnees]` et mettez à jour le fichier de configuration.
+## 3. Partial workflows
 
-1. **UNITE**
+### Database formatting only
+```bash
+snakemake --use-conda format_all_databases
+```
 
-Rendez-vous sur le site officiel de [UNITE](https://unite.ut.ee/repository.php) et téléchargez la base de données la plus récente.
-Vous devriez obtenir un fichier .fasta.gz
+### ITSx extraction per barcode
+```bash
+snakemake --use-conda data/processed/itsx_run_ITS1.done
+```
 
+### MSA generation only
+```bash
+snakemake --use-conda data/processed/msa_run_report.json
+```
 
-2. **BOLD**
- 
-Rendez-vous sur le site officiel de [BOLD](https://bench.boldsystems.org/index.php/datapackages/Latest) et téléchargez la base de données la plus récente.
-Vous devriez obtenir un fichier .tar.gz
+### SATIVA integration without reports
+```bash
+snakemake --use-conda data/processed/sativa_analysis_report.json
+```
 
+## 4. Monitoring & troubleshooting
 
-3. **PLANiTS**
+- Logs are stored hierarchically: `logs/<module>/...` (e.g., `logs/ITSX/run_itsx_ITS2.log`).
+- Benchmarks (runtime/memory) land in `benchmarks/<rule>/` if enabled via `config["benchmarking"]["enabled"]`.
+- `data/processed/*run_report.json` and `data/processed/*_manifest.json` expose structured metrics that feed the HTML reports.
+- To inspect failed tasks: `snakemake --use-conda --cores <N> --keep-going -p` captures shell commands; cross-reference the matching log file.
 
-Rendez-vous sur le github de [PLANiTS](https://github.com/apallavicini/PLANiTS) et clonez le repository.
-Vous devriez obtenir un fichier nommé "PLANiTS_29-03-2020.zip".
+## 5. Housekeeping
 
-4. **CALeDNA**
+- Clean processed artifacts only:
+  ```bash
+  snakemake clean --cores 1
+  ```
+- Clean everything (processed data, logs, results):
+  ```bash
+  snakemake clean_all --cores 1
+  ```
+  Use with caution; these rules delete directories defined inside the Snakefile.
 
-Rendez-vous sur le site officiel de [CALeDNA](https://ucedna.com/reference-databases-for-metabarcoding) et téléchargez la base de données la plus récente de PITS et FITS
-Vous devriez obtenir 4 fichiers
+## 6. Cluster execution
 
-### 2. Exécution complète
+Prepare a Snakemake profile (e.g., SLURM) and run:
 
 ```bash
-# Lancer le pipeline complet (mode sec pour tester)
-snakemake --use-conda -n
-
-# Lancer réellement le pipeline (utilise 8 cœurs)
-snakemake --use-conda --cores 8
+snakemake --use-conda --profile profiles/slurm
 ```
 
-## Configuration
-
-### Fichier de configuration principal
-
-Le fichier `config/config.yaml` contient tous les paramètres modifiables :
-
-```yaml
-# Paramètres généraux
-project_name: "bio-pipeline"
-output_dir: "results"
-
-# Base de données
-database:
-  host: "localhost"
-  port: 5432
-  name: "bio_pipeline"
-  user: "pipeline_user"
-  password: "votre_mot_de_passe"
-
-# Paramètres des règles spécifiques
-itsx:
-  cpu: 4
-  minlen: 50
-
-mafft:
-  algorithm: "--auto"
-  threads: 8
-
-sativa:
-  min_support: 0.8
-  min_identity: 0.98
-
-triche:
-  mode: "standard"
-  num_augment: 5
-```
-
-### Fichier des échantillons
-
-Créez un fichier `samples.tsv` dans le dossier `config/` :
-
-```tsv
-sample_id	path
-sample1	data/raw/sample1.fastq
-sample2	data/raw/sample2.fastq
-```
-
-## Exécution du pipeline
-
-### Exécution complète
-
-```bash
-# Exécuter tout le pipeline
-snakemake --use-conda --cores 8
-```
-
-### Exécution partielle
-
-```bash
-# N'exécuter que jusqu'à l'extraction ITS
-snakemake --use-conda --cores 8 itsx
-
-# N'exécuter que la validation taxonomique
-snakemake --use-conda --cores 8 sativa
-```
-
-### Options d'exécution courantes
-
-```bash
-# Exécuter en mode sec (affiche ce qui serait fait)
-snakemake -n
-
-# Forcer la réexécution de certaines règles
-snakemake --forceall --touch
-
-# Nettoyer les fichiers temporaires
-snakemake --delete-all-output
-
-# Exécuter sur un cluster SLURM
-snakemake --cluster "sbatch -t {resources.time_min} --mem={resources.mem_mb}" -j 10
-```
-
-## Résultats
-
-### Structure des répertoires
-
-```
-results/
-├── raw/               # Données brutes
-├── processed/         # Données prétraitées
-│   ├── trimmed/       # Données nettoyées
-│   └── normalized/    # Données normalisées
-├── itsx/              # Résultats d'extraction ITS
-│   ├── its1/          # Régions ITS1
-│   ├── 5_8s/          # Régions 5.8S
-│   └── its2/          # Régions ITS2
-├── taxonomy/          # Résultats taxonomiques
-│   ├── assigned/      # Assignations taxonomiques
-│   └── validated/     # Résultats de validation
-├── augmented/         # Données augmentées
-│   ├── train/         # Ensemble d'entraînement
-│   └── test/          # Ensemble de test
-└── reports/           # Rapports et visualisations
-    ├── stats/         # Statistiques
-    └── plots/         # Graphiques
-```
-
-### Fichiers de sortie principaux
-
-1. **ITSx**
-   - `results/itsx/itsx_summary.txt` : Résumé des régions ITS extraites
-   - `results/itsx/its1.fasta` : Séquences ITS1 extraites
-
-2. **MAFFT**
-   - `results/alignments/aligned.fasta` : Alignement multiple
-   - `results/alignments/alignment.log` : Fichier de log
-
-3. **SATIVA**
-   - `results/sativa/misclassified.txt` : Séquences potentiellement mal classées
-   - `results/sativa/summary.pdf` : Rapport de validation
-
-4. **TRICHE**
-   - `results/augmented/train/augmented.fasta` : Données d'entraînement augmentées
-   - `results/augmented/test/test.fasta` : Données de test
-
-## Surveillance et débogage
-
-### Journaux d'exécution
-
-Les journaux sont stockés dans le répertoire `.snakemake/log/` :
-
-```bash
-# Suivre les journaux en temps réel
-tail -f .snakemake/log/*.snakemake.log
-```
-
-### Règles en échec
-
-En cas d'échec, utilisez `--reason` pour plus d'informations :
-
-```bash
-snakemake --use-conda --cores 8 --reason
-```
-
-### Nettoyage
-
-```bash
-# Supprimer tous les fichiers générés
-snakemake --delete-all-output
-
-# Nettoyer uniquement les fichiers temporaires
-snakemake cleanup
-```
-
-## Exemples de cas d'utilisation
-
-### 1. Traitement d'un nouvel échantillon
-
-1. Ajoutez les chemins des nouveaux fichiers FASTQ dans `config/samples.tsv`
-2. Exécutez le pipeline complet :
-   ```bash
-   snakemake --use-conda --cores 8
-   ```
-
-### 2. Régénération des données augmentées
-
-```bash
-# Supprimer les anciennes données augmentées
-rm -rf results/augmented/*
-
-# Régénérer uniquement les données augmentées
-snakemake --use-conda --cores 8 augmented
-```
-
-### 3. Exécution sur un cluster
-
-Créez un profil de cluster dans `profiles/cluster/` et exécutez :
-
-```bash
-snakemake --profile profiles/cluster
-```
-
-## Assistance
-
-Pour toute question ou problème, consultez la [documentation complète](overview.md) ou ouvrez une issue sur le dépôt du projet.
+Adjust resource mappings in the profile to respect rule-level `threads:` and custom resources (e.g., `sativa_jobs`).

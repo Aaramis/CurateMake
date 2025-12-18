@@ -1,10 +1,10 @@
 # workflow/rules/database.smk
 """
-Règles Snakemake pour la gestion de la base de données bioinformatique
+Rules Snakemake pour la gestion de la base de données bioinformatique
 Gère l'initialisation, la maintenance et les statistiques (SQLite ou PostgreSQL).
 """
 
-# Règle pour créer/initialiser la base de données
+# Rule pour créer/initialiser la base de données
 rule create_database:
     """Initialise la base de données (SQLite ou PostgreSQL) avec le schéma complet."""
     output:

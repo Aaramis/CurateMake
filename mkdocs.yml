@@ -1,5 +1,5 @@
-site_name: Pipeline Bioinformatique - Documentation
-site_description: Documentation du pipeline bioinformatique basé sur Snakemake
+site_name: ITS Pipeline Documentation
+site_description: Snakemake-based ITS curation pipeline
 site_author: Auguste Gardette
 
 theme:
@@ -21,13 +21,14 @@ theme:
         name: Switch to light mode
 
 nav:
-  - Accueil: index.md
-  - Vue d'ensemble: overview.md
+  - Home: index.md
   - Installation: installation.md
-  - Utilisation: usage.md
-  - Base de données: database.md
-  - Outils: tools.md
-  - Développement: dev.md
+  - Usage: usage.md
+  - Database: database.md
+  - ITSx: ITSx.md
+  - MSA: MSA.md
+  - Tools: tools.md
+  - Development: dev.md
   - Contribution: contributing.md
   - Changelog: changelog.md
 

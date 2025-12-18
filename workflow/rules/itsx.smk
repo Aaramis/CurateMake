@@ -1,6 +1,6 @@
 # workflow/rules/itsx.smk
 """
-Règles Snakemake pour l'usage de l'outil ITSx
+Rules Snakemake pour l'usage de l'outil ITSx
 """
 
 import os
@@ -105,8 +105,10 @@ rule run_itsx_all:
     Attend que tous les barcodes ITSx soient traités
     """
     input:
-        expand("data/processed/itsx_run_{barcode}.done",
-               barcode=["ITS", "ITS1", "ITS2"])
+        lambda wildcards: expand(
+            "data/processed/itsx_run_{barcode}.done",
+            barcode=get_itsx_barcodes(wildcards)
+        )
     output:
         done="data/processed/itsx_run.done"
     shell:

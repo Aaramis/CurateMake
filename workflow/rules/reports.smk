@@ -1,6 +1,6 @@
 # workflow/rules/reports.smk
 """
-Règles Snakemake pour la génération de rapports HTML
+Rules Snakemake pour la génération de rapports HTML
 """
 
 import os
@@ -72,5 +72,7 @@ rule generate_reports_index:
         "logs/reports/generate_index.log"
     benchmark:
         "benchmarks/reports/generate_index.benchmark.txt"
+    conda:
+        "../envs/sativa.yaml"
     script:
         "../scripts/generate_index_report.py"

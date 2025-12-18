@@ -1,6 +1,6 @@
 # workflow/rules/msa.smk
 """
-Règles Snakemake pour la création de MSA propre
+Rules Snakemake pour la création de MSA propre
 """
 
 import os
@@ -554,7 +554,7 @@ rule run_msa:
         "../scripts/MSA/run_msa.py"
 
 
-# Règle pour l'analyse et le reporting des MSA
+# Rule pour l'analyse et le reporting des MSA
 rule analyze_msa_report:
     input:
         run_msa_report="data/processed/msa_run_report.json"

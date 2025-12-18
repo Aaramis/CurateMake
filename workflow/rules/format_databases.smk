@@ -3,13 +3,10 @@ import os
 
 def get_db_lock():
     """
-    Retourne le niveau de verrouillage de base de données selon le backend.
+    Pick an appropriate database lock level for the selected backend.
 
-    SQLite: Retourne 1 (verrouillage strict - un seul writer à la fois)
-    PostgreSQL: Retourne 999 (pas de limite - MVCC natif gère la concurrence)
-
-    Cela permet de paralléliser les règles format_*_database avec --cores > 1
-    quand PostgreSQL est utilisé, tout en gardant la compatibilité SQLite.
+    SQLite: return 1 (strict serialization—single writer)
+    PostgreSQL: return 999 (practically unlimited thanks to MVCC)
     """
     db_type = config.get("database", {}).get("type", "sqlite")
 
@@ -29,7 +26,23 @@ def get_caledna_basenames():
     files = get_caledna_files()
     return [os.path.splitext(os.path.basename(f))[0] for f in files]
 
-# Règle UNITE
+
+def formatted_database_reports():
+    """Chemins des rapports formatés (toutes bases + CALeDNA)."""
+    reports = [
+        "data/processed/unite_formatted_report.json",
+        "data/processed/planits_formatted_report.json",
+        "data/processed/bold_formatted_report.json",
+    ]
+    reports.extend(
+        expand(
+            "data/processed/caledna_{caledna_file}_formatted_report.json",
+            caledna_file=get_caledna_basenames(),
+        )
+    )
+    return reports
+
+# Rule UNITE
 rule format_unite_database:
     input:
         db = ancient(get_db_path()),
@@ -50,7 +63,7 @@ rule format_unite_database:
     script:
         "../scripts/format_unite.py"
 
-# Règle PLANITS
+# Rule PLANITS
 rule format_planits_database:
     input:
         db = ancient(get_db_path()),
@@ -71,7 +84,7 @@ rule format_planits_database:
     script:
         "../scripts/format_planits.py"
 
-# Règle Bold
+# Rule Bold
 rule format_bold_database:
     input:
         db = ancient(get_db_path()),
@@ -115,16 +128,10 @@ rule format_caledna_database:
         "../scripts/format_caledna.py"
 
 
-# Règle de déduplication des taxonomies
+# Rule de déduplication des taxonomies
 rule deduplicate_taxonomies:
     input:
-        formatted = [
-            "data/processed/unite_formatted_report.json",
-            "data/processed/planits_formatted_report.json",
-            "data/processed/bold_formatted_report.json",
-            expand("data/processed/caledna_{caledna_file}_formatted_report.json",
-                        caledna_file=get_caledna_basenames())
-        ]
+        formatted = formatted_database_reports()
 
     output:
         report = "data/processed/taxonomy_deduplication_report.json"
@@ -139,7 +146,7 @@ rule deduplicate_taxonomies:
     script:
         "../scripts/deduplicate_taxonomies.py"
 
-# Règle finale
+# Rule finale
 rule format_all_databases:
     input:
         deduplication = "data/processed/taxonomy_deduplication_report.json"
@@ -150,13 +157,7 @@ rule format_all_databases:
     benchmark:
         "benchmarks/format_databases/format_all_databases.benchmark.txt"
     params:
-        formatted = [
-            "data/processed/unite_formatted_report.json",
-            "data/processed/planits_formatted_report.json",
-            "data/processed/bold_formatted_report.json",
-            expand("data/processed/caledna_{caledna_file}_formatted_report.json",
-                        caledna_file=get_caledna_basenames())
-        ]
+        formatted = formatted_database_reports()
     conda:
         "../envs/format_databases.yaml"
     script:
