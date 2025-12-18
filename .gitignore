@@ -28,10 +28,10 @@ wheels/
 .installed.cfg
 *.egg
 
-# Fichiers de données
+# Data folders
 data/
 !data/raw/
-!data/processed/
+!data/raw/**
 !resources/
 *.fasta
 *.fastq
