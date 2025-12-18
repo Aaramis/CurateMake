@@ -38,6 +38,7 @@ from sqlalchemy import create_engine, text, insert
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 # Import ORM models
 from db_models import Base, Source, Sequence, Taxonomy, SeqTax
@@ -690,12 +691,11 @@ class DatabaseManager:
                     session.execute(stmt)
 
                 else:
-                    # SQLite fallback
-                    try:
-                        session.bulk_insert_mappings(SeqTax, batch, render_nulls=True)
-                    except IntegrityError:
-                        # duplicates: safe to ignore
-                        pass
+                    stmt = sqlite_insert(SeqTax).values(batch)
+                    stmt = stmt.on_conflict_do_nothing(
+                        index_elements=['seq_id', 'tax_id', 'backbone']
+                    )
+                    session.execute(stmt)
 
             if (i // batch_size) % 10 == 0 and i > 0:
                 logger.debug(f"bulk_insert_seq_tax: {i}/{len(relations)} rows processed")
