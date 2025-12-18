@@ -164,6 +164,16 @@ def plot_jointplot(df):
         alpha=0.5
     )
     jp.fig.suptitle("Joint distribution: alignment length vs number of sequences", y=1.02)
+    
+    # Force axes to start at zero for readability
+    if jp.ax_joint:
+        jp.ax_joint.set_xlim(left=0)
+        jp.ax_joint.set_ylim(bottom=0)
+    if hasattr(jp, "ax_marg_x") and jp.ax_marg_x:
+        jp.ax_marg_x.set_xlim(left=0)
+    if hasattr(jp, "ax_marg_y") and jp.ax_marg_y:
+        jp.ax_marg_y.set_ylim(bottom=0)
+
     return jp.fig
 
 def plot_violinplot(df):

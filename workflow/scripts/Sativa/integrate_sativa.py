@@ -41,6 +41,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DISPLAY_TAXONOMY_LEVELS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
+DB_TAXONOMY_LEVEL_KEYS = ["kingdom", "phylum", "class_", "order_", "family", "genus", "species"]
+
 
 # ============================================================================
 # Data Classes and Enums
@@ -566,12 +569,23 @@ class ModificationClassifier:
             return ModificationType.VALIDATED
 
     @staticmethod
-    def count_deleted_levels(original_path: str, proposed_path: str) -> int:
-        """Count how many levels were deleted"""
-        original_levels = [x.strip() for x in original_path.split(';') if x.strip()]
-        proposed_levels = [x.strip() for x in proposed_path.split(';') if x.strip()]
+    def count_deleted_levels(original_path: str, proposed_path: str) -> List[str]:
+        """
+        Identify taxonomy levels that were deleted between the original and proposed paths.
+        Returns the list of level names (kingdom → species) that disappeared.
+        """
+        orig = SativaMisParser.parse_taxonomy_path_to_dict(original_path)
+        prop = SativaMisParser.parse_taxonomy_path_to_dict(proposed_path)
 
-        return max(0, len(original_levels) - len(proposed_levels))
+        deleted = []
+        for display_name, key in zip(DISPLAY_TAXONOMY_LEVELS, DB_TAXONOMY_LEVEL_KEYS):
+            orig_value = orig.get(key)
+            prop_value = prop.get(key)
+
+            if orig_value and not prop_value:
+                deleted.append(display_name)
+
+        return deleted
 
 
 # ============================================================================
@@ -701,6 +715,33 @@ class DatabaseIntegrator:
             }).fetchone()
 
             return result[0] if result else None
+
+    def get_taxonomy_by_id(self, tax_id: str) -> Optional[Dict[str, str]]:
+        """Retrieve a taxonomy dict by its ID."""
+        from sqlalchemy import text
+
+        taxonomy_table = self._get_table('taxonomy')
+
+        with self.db_manager.get_session() as session:
+            row = session.execute(text(f"""
+                SELECT kingdom, phylum, class_, order_, family, genus, species
+                FROM {taxonomy_table}
+                WHERE tax_id = :tax_id
+                LIMIT 1
+            """), {"tax_id": tax_id}).fetchone()
+
+            if not row:
+                return None
+
+            return {
+                'kingdom': row[0],
+                'phylum': row[1],
+                'class_': row[2],
+                'order_': row[3],
+                'family': row[4],
+                'genus': row[5],
+                'species': row[6],
+            }
 
     def create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str]) -> str:
         """
@@ -952,13 +993,11 @@ class DatabaseIntegrator:
 
         # Add deleted levels for deletions
         if 'DELETION' in warning_type:
-            deleted_count = self.classifier.count_deleted_levels(
+            deleted_levels = self.classifier.count_deleted_levels(
                 modification.original_taxonomy,
                 modification.proposed_taxonomy
             )
-            # Infer which levels were deleted (simplified)
-            taxonomy_levels = ['species', 'genus', 'family', 'order_', 'class_', 'phylum', 'kingdom']
-            entry['deleted_levels'] = json.dumps(taxonomy_levels[:deleted_count])
+            entry['deleted_levels'] = json.dumps(deleted_levels) if deleted_levels else None
         else:
             entry['deleted_levels'] = None
 
@@ -1160,7 +1199,16 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
     modifications = parser.parse_mis_file(mis_file, barcode, tax_level)
     stats['total_modifications'] = len(modifications)
 
-    if not modifications and not (mis_file.parent / f"{mis_file.stem}.tax").exists():
+    tax_dir = mis_file.parent
+    candidate_by_stem = tax_dir / f"{mis_file.stem}.tax"
+    candidate_by_taxon = tax_dir / f"{tax_dir.name}.tax"
+    tax_file = None
+    if candidate_by_stem.exists():
+        tax_file = candidate_by_stem
+    elif candidate_by_taxon.exists():
+        tax_file = candidate_by_taxon
+
+    if not modifications and not tax_file:
         logger.warning(f"No modifications and no .tax file for {mis_file.name}")
         return dict(stats)
 
@@ -1169,23 +1217,28 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
     warnings_batch = []
 
     # Parse .tax file and identify validated sequences
-    tax_file = mis_file.parent / f"{mis_file.stem}.tax"
-    if tax_file.exists():
+    if tax_file and tax_file.exists():
         validated_seq_ids = parser.identify_validated_sequences(tax_file, modifications)
         stats['validated_sequences'] = len(validated_seq_ids)
+        stats['tax_file_sequences'] = len(parser.parse_tax_file(tax_file))
+        logger.info(
+            "[%s] %d sequences in .tax, %d modifications in .mis, %d classified as VALIDATED",
+            mis_file.name,
+            stats['tax_file_sequences'],
+            len(modifications),
+            len(validated_seq_ids)
+        )
 
         # Process validated sequences with new logic
         for seq_id in validated_seq_ids:
             try:
-                # Get existing CoL taxonomy
+                original_tax_id = integrator.get_original_tax_id_for_sequence(seq_id)
                 col_taxonomy = integrator.get_col_taxonomy_for_sequence(seq_id)
 
                 if col_taxonomy:
                     # CoL exists -> create new entry with same taxonomy + backbone=sativa
-                    original_tax_id = integrator.get_original_tax_id_for_sequence(seq_id)
                     tax_id = integrator.get_or_create_taxonomy(col_taxonomy, parent_tax_id=original_tax_id)
 
-                    # Check for duplicates
                     if not integrator.check_seq_tax_exists(seq_id, tax_id, 'Sativa'):
                         seq_tax_batch.append(integrator.prepare_seq_tax_entry(
                             seq_id, tax_id, 'Correct', 1.0
@@ -1194,8 +1247,28 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
                     else:
                         stats['duplicates_skipped'] += 1
                 else:
-                    # No CoL -> do nothing
-                    stats['validated_without_col'] += 1
+                    # Pas de CoL : réutiliser la taxonomie d'origine (Raw) pour créer un lien Sativa
+                    if not original_tax_id:
+                        logger.warning(f"No original taxonomy found for validated sequence {seq_id}")
+                        stats['validated_without_col'] += 1
+                        continue
+
+                    original_taxonomy = integrator.get_taxonomy_by_id(original_tax_id)
+                    if not original_taxonomy:
+                        logger.warning(
+                            "Unable to load original taxonomy record %s for %s",
+                            original_tax_id, seq_id
+                        )
+                        stats['validated_without_col'] += 1
+                        continue
+
+                    if not integrator.check_seq_tax_exists(seq_id, original_tax_id, 'Sativa'):
+                        seq_tax_batch.append(integrator.prepare_seq_tax_entry(
+                            seq_id, original_tax_id, 'Correct', 1.0
+                        ))
+                        stats['validated_without_col'] += 1
+                    else:
+                        stats['duplicates_skipped'] += 1
             except Exception as e:
                 logger.error(f"Error processing validated sequence {seq_id}: {e}")
                 stats['errors'] += 1
