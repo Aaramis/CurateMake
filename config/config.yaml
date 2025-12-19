@@ -53,6 +53,13 @@ databases:
       # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/FITS_fasta_and_taxonomy_small.zip"
       # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/PITS_fasta_and_taxonomy_small.zip"
 
+caledna_processing:
+  batch_size: 2000
+  writer_retry:
+    max_attempts: 3
+    initial_delay_seconds: 5
+    backoff_factor: 2.0
+
 
 # Logging
 logging:

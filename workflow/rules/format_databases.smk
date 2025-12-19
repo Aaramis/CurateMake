@@ -123,7 +123,8 @@ rule format_caledna_database:
     params:
         database_name = lambda wildcards: f"caledna_{wildcards.caledna_file}",
         database_config = config["databases"]["caledna"],
-        sequence_validation = config["sequence_validation"]
+        sequence_validation = config["sequence_validation"],
+        caledna_processing = config.get("caledna_processing", {})
     script:
         "../scripts/format_caledna.py"
 
