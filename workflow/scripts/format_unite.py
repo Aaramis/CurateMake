@@ -390,8 +390,11 @@ def main():
     try:
         # Snakemake configuration
         if 'snakemake' in globals():
-            input_db = snakemake.input.db
-            input_file = snakemake.input[1]
+            input_file = (
+                snakemake.input.source
+                if hasattr(snakemake.input, "source")
+                else snakemake.input[0]
+            )
             output_report = snakemake.output[0]
             config_validation = snakemake.params.sequence_validation
             config = snakemake.config

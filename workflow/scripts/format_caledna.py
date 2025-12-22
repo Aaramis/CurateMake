@@ -546,8 +546,11 @@ def main():
     try:
         # Snakemake configuration
         if 'snakemake' in globals():
-            input_db = snakemake.input.db
-            input_file = snakemake.input.file
+            input_file = (
+                snakemake.input.file
+                if hasattr(snakemake.input, "file")
+                else snakemake.input[0]
+            )
             output_report = snakemake.output[0]
             config_validation = snakemake.params.sequence_validation
             config = snakemake.config

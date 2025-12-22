@@ -7,7 +7,7 @@ itsx_cpu: 1200   # threads assigned to ITSx
 # Database configuration
 database:
   # Backend type: "sqlite" (dev/small datasets) or "postgresql" (production/large datasets)
-  type: "postgresql"
+  type: "sqlite"
 
   # SQLite settings (development, datasets < 1M sequences)
   sqlite:
@@ -138,6 +138,7 @@ sativa:
   max_seq_count: 20000
   max_alignment_length: 30000
   sativa_mode: "ultrafast"
+  rand_seed: 42
   visualization_report: "reports/html/sativa_visualization_report.html"
   confidence_threshold: 0.4
   taxonomy_code: "BOT"

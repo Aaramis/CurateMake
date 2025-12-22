@@ -229,7 +229,8 @@ def run_sativa(
     taxonomy_code: str = "BOT",
     threads: int = 4,
     timeout_seconds: Optional[int] = None,
-    output_name: Optional[str] = None
+    output_name: Optional[str] = None,
+    rand_seed: Optional[int] = None
 ) -> bool:
     """
     Execute SATIVA with the provided inputs.
@@ -265,6 +266,8 @@ def run_sativa(
     ]
     if output_name:
         command.extend(["-n", _sanitize_label(output_name)])
+    if rand_seed is not None:
+        command.extend(["-p", str(rand_seed)])
 
     logger.info(f"Running SATIVA: {' '.join(command)}")
     if timeout_seconds:
@@ -330,6 +333,7 @@ def main():
             sativa_mode = snakemake.params.sativa_mode
             confidence = snakemake.params.confidence
             taxonomy_code = snakemake.params.taxonomy_code
+            rand_seed = snakemake.params.rand_seed
 
             # Configure file logging
             file_handler = logging.FileHandler(log_file, mode="w")
@@ -356,6 +360,7 @@ def main():
             parser.add_argument("--sativa-mode", type=str, default="ultrafast", help="SATIVA mode")
             parser.add_argument("--confidence", type=float, default=0.6, help="Confidence threshold")
             parser.add_argument("--taxonomy-code", type=str, default="BOT", help="Taxonomy code")
+            parser.add_argument("--rand-seed", type=int, default=None, help="Random seed forwarded to SATIVA/RAxML")
 
             args = parser.parse_args()
 
@@ -372,6 +377,7 @@ def main():
             sativa_mode = args.sativa_mode
             confidence = args.confidence
             taxonomy_code = args.taxonomy_code
+            rand_seed = args.rand_seed
 
             # Configure file logging
             file_handler = logging.FileHandler(log_file, mode="w")
@@ -458,13 +464,16 @@ def main():
             taxonomy_code=taxonomy_code,
             threads=threads,
             timeout_seconds=timeout_seconds,
-            output_name=f"{barcode}_{tax_level}_{taxon}"
+            output_name=f"{barcode}_{tax_level}_{taxon}",
+            rand_seed=rand_seed
         )
 
         sativa_runtime = time.time() - sativa_start
 
         # Step 5: Create success summary
         command_str = f"sativa.py -s {fasta_path.name} -t {tax_path.name} -m {sativa_mode} -C {confidence} -x {taxonomy_code} -T {threads}"
+        if rand_seed is not None:
+            command_str += f" -p {rand_seed}"
 
         result = SativaResult(
             barcode=barcode,

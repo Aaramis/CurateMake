@@ -97,7 +97,8 @@ rule sativa_task:
         sativa_mode=config["sativa"]["sativa_mode"],
         confidence=config["sativa"]["confidence_threshold"],
         taxonomy_code=config["sativa"]["taxonomy_code"],
-        timeout_seconds=config["sativa"]["timeout_seconds"]
+        timeout_seconds=config["sativa"]["timeout_seconds"],
+        rand_seed=config["sativa"].get("rand_seed")
     threads: config["sativa"]["threads"]
     resources:
         sativa_jobs=1

@@ -45,8 +45,8 @@ def formatted_database_reports():
 # Rule UNITE
 rule format_unite_database:
     input:
-        db = ancient(get_db_path()),
-        source = config["databases"]["unite"]["path"]
+        source = config["databases"]["unite"]["path"],
+        db_ready = rules.create_database.output.report
     output:
         report = "data/processed/unite_formatted_report.json"
     log:
@@ -66,8 +66,8 @@ rule format_unite_database:
 # Rule PLANITS
 rule format_planits_database:
     input:
-        db = ancient(get_db_path()),
-        source = config["databases"]["planits"]["path"]
+        source = config["databases"]["planits"]["path"],
+        db_ready = rules.create_database.output.report
     output:
         report = "data/processed/planits_formatted_report.json"
     log:
@@ -87,8 +87,8 @@ rule format_planits_database:
 # Rule Bold
 rule format_bold_database:
     input:
-        db = ancient(get_db_path()),
-        source = config["databases"]["bold"]["path"]
+        source = config["databases"]["bold"]["path"],
+        db_ready = rules.create_database.output.report
     output:
         report = "data/processed/bold_formatted_report.json"
     log:
@@ -108,9 +108,9 @@ rule format_bold_database:
 
 rule format_caledna_database:
     input:
-        db = ancient(get_db_path()),
         file = lambda wildcards: next(f for f in get_caledna_files() 
-                                     if os.path.splitext(os.path.basename(f))[0] == wildcards.caledna_file)
+                                     if os.path.splitext(os.path.basename(f))[0] == wildcards.caledna_file),
+        db_ready = rules.create_database.output.report
     output:
         report = "data/processed/caledna_{caledna_file}_formatted_report.json"
     log:
