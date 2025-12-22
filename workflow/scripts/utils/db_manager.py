@@ -29,10 +29,11 @@ Usage:
 """
 
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from contextlib import contextmanager
 import logging
 import uuid
+import time
 
 from sqlalchemy import create_engine, text, insert
 from sqlalchemy.orm import sessionmaker, Session
@@ -80,13 +81,21 @@ class DatabaseManager:
             pool_size (int): Connection pool size (default: 10)
             max_overflow (int): Max overflow connections (default: 20)
         """
+        connection_kwargs = kwargs.copy()
+        retry_cfg = connection_kwargs.pop("writer_retry", {}) or {}
+
         self.db_type = db_type
-        self.connection_params = kwargs
+        self.connection_params = connection_kwargs.copy()
+
+        self.writer_retry_attempts = max(0, int(retry_cfg.get("max_attempts", 3)))
+        self.writer_retry_initial_delay = float(retry_cfg.get("initial_delay_seconds", 2.0))
+        self.writer_retry_backoff = float(retry_cfg.get("backoff_factor", 2.0))
+        self.writer_retry_enabled = self.writer_retry_attempts > 0
 
         # Define schema-qualified table names for raw SQL queries
         # This avoids repeating schema logic in every script
         if db_type == "postgresql":
-            schema = kwargs.get('schema', 'public')
+            schema = connection_kwargs.get('schema', 'public')
             self.sequences_table = f"{schema}.sequences"
             self.taxonomy_table = f"{schema}.taxonomy"
             self.seq_tax_table = f"{schema}.seq_tax"
@@ -105,7 +114,7 @@ class DatabaseManager:
             self.sources_table = "sources"
 
         # Create engine
-        self.engine = get_engine(db_type, **kwargs)
+        self.engine = get_engine(db_type, **connection_kwargs)
 
         # Create session factory with appropriate configuration
         if db_type == "postgresql":
@@ -120,7 +129,7 @@ class DatabaseManager:
 
         # Store db_path for backward compatibility
         if db_type == "sqlite":
-            self.db_path = Path(kwargs.get('path', 'data/db/its.db'))
+            self.db_path = Path(connection_kwargs.get('path', 'data/db/its.db'))
         else:
             self.db_path = None
 
@@ -166,6 +175,66 @@ class DatabaseManager:
             raise
         finally:
             session.close()
+
+    def _should_retry_operational_error(self, exc: OperationalError) -> bool:
+        """Return True if OperationalError should be retried."""
+        if not isinstance(exc, OperationalError):
+            return False
+
+        orig = getattr(exc, "orig", None)
+        if orig is not None:
+            pgcode = getattr(orig, "pgcode", None)
+            if pgcode in {"40001", "40P01"}:
+                return True
+            message = str(orig).lower()
+        else:
+            message = str(exc).lower()
+
+        retryable_substrings = [
+            "could not serialize access due to concurrent update",
+            "deadlock detected",
+            "server closed the connection unexpectedly",
+            "terminating connection due to unexpected postmaster exit",
+            "unknown transaction",
+            "connection not open",
+            "the database system is shutting down",
+            "database is locked"
+        ]
+        return any(token in message for token in retryable_substrings)
+
+    def _execute_with_retry(self, operation_name: str, func: Callable[[], Any]):
+        """Execute a DB operation with retry logic for transient OperationalErrors."""
+        attempts = 0
+        delay = self.writer_retry_initial_delay
+
+        while True:
+            try:
+                return func()
+            except OperationalError as exc:
+                attempts += 1
+                should_retry = self.writer_retry_enabled and self._should_retry_operational_error(exc)
+
+                if not should_retry or attempts > self.writer_retry_attempts:
+                    logger.error(
+                        "DB operation %s failed after %s attempt(s): %s",
+                        operation_name,
+                        attempts,
+                        exc
+                    )
+                    raise
+
+                wait_time = max(0.0, delay)
+                logger.warning(
+                    "DB operation %s encountered %s (attempt %s/%s). Retrying in %.1fs",
+                    operation_name,
+                    exc.__class__.__name__,
+                    attempts,
+                    self.writer_retry_attempts,
+                    wait_time
+                )
+                if wait_time:
+                    time.sleep(wait_time)
+                delay = wait_time * self.writer_retry_backoff if self.writer_retry_backoff else wait_time
 
     @profile_db_operation("create_schema")
     def create_schema(self) -> None:
@@ -583,55 +652,53 @@ class DatabaseManager:
             logger.debug(f"Deduplicated {len(taxonomies)} -> {len(unique_taxonomies)} taxonomies within batch")
 
         # Phase 1: Insert taxonomies using UPSERT (PostgreSQL) or try/except (SQLite)
-        with self.get_session() as session:
-            if self.db_type == "postgresql":
-                # PostgreSQL: Use INSERT ... ON CONFLICT DO NOTHING
-                # This is atomic and handles parallel inserts without conflicts
-                stmt = pg_insert(Taxonomy).values(unique_taxonomies)
-                stmt = stmt.on_conflict_do_nothing(
-                    index_elements=['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']
-                )
-                session.execute(stmt)
-                logger.debug(f"PostgreSQL UPSERT: inserted {len(unique_taxonomies)} taxonomies (duplicates ignored)")
-            else:
-                # SQLite: Use bulk insert with try/except for duplicates
-                try:
-                    session.bulk_insert_mappings(Taxonomy, unique_taxonomies, render_nulls=True)
-                    logger.debug(f"SQLite: inserted {len(unique_taxonomies)} unique taxonomies")
-                except IntegrityError:
-                    # Duplicates from previous batches - expected and safe
-                    # Rollback this transaction and continue to Phase 2
-                    session.rollback()
-                    logger.debug(f"SQLite: duplicate taxonomies ignored (already in DB)")
-                    pass
+        def insert_phase():
+            with self.get_session() as session:
+                if self.db_type == "postgresql":
+                    stmt = pg_insert(Taxonomy).values(unique_taxonomies)
+                    stmt = stmt.on_conflict_do_nothing(
+                        index_elements=['kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species']
+                    )
+                    session.execute(stmt)
+                    logger.debug(f"PostgreSQL UPSERT: inserted {len(unique_taxonomies)} taxonomies (duplicates ignored)")
+                else:
+                    try:
+                        session.bulk_insert_mappings(Taxonomy, unique_taxonomies, render_nulls=True)
+                        logger.debug(f"SQLite: inserted {len(unique_taxonomies)} unique taxonomies")
+                    except IntegrityError:
+                        session.rollback()
+                        logger.debug("SQLite: duplicate taxonomies ignored (already in DB)")
+
+        self._execute_with_retry("bulk_insert_taxonomies_insert", insert_phase)
 
         # Phase 2: Query for tax_ids in a separate transaction
-        # Build efficient IN query for all unique lineages
-        with self.get_session() as session:
-            tax_map = {}
-            unique_taxonomies = {
-                (t.get('kingdom'), t.get('phylum'), t.get('class_'),
-                 t.get('order_'), t.get('family'), t.get('genus'), t.get('species'))
-                for t in taxonomies
-            }
+        unique_taxonomy_tuples = {
+            (t.get('kingdom'), t.get('phylum'), t.get('class_'),
+             t.get('order_'), t.get('family'), t.get('genus'), t.get('species'))
+            for t in taxonomies
+        }
 
-            # Query all taxonomies at once instead of one by one
-            for tax_tuple in unique_taxonomies:
-                kingdom, phylum, class_, order_, family, genus, species = tax_tuple
-                query = session.query(Taxonomy).filter(
-                    (Taxonomy.kingdom == kingdom) | ((Taxonomy.kingdom.is_(None)) & (kingdom is None)),
-                    (Taxonomy.phylum == phylum) | ((Taxonomy.phylum.is_(None)) & (phylum is None)),
-                    (Taxonomy.class_ == class_) | ((Taxonomy.class_.is_(None)) & (class_ is None)),
-                    (Taxonomy.order_ == order_) | ((Taxonomy.order_.is_(None)) & (order_ is None)),
-                    (Taxonomy.family == family) | ((Taxonomy.family.is_(None)) & (family is None)),
-                    (Taxonomy.genus == genus) | ((Taxonomy.genus.is_(None)) & (genus is None)),
-                    (Taxonomy.species == species) | ((Taxonomy.species.is_(None)) & (species is None))
-                )
-                result = query.first()
-                if result:
-                    tax_map[tax_tuple] = result.tax_id
+        def fetch_phase():
+            with self.get_session() as session:
+                tax_map = {}
+                for tax_tuple in unique_taxonomy_tuples:
+                    kingdom, phylum, class_, order_, family, genus, species = tax_tuple
+                    query = session.query(Taxonomy).filter(
+                        (Taxonomy.kingdom == kingdom) | ((Taxonomy.kingdom.is_(None)) & (kingdom is None)),
+                        (Taxonomy.phylum == phylum) | ((Taxonomy.phylum.is_(None)) & (phylum is None)),
+                        (Taxonomy.class_ == class_) | ((Taxonomy.class_.is_(None)) & (class_ is None)),
+                        (Taxonomy.order_ == order_) | ((Taxonomy.order_.is_(None)) & (order_ is None)),
+                        (Taxonomy.family == family) | ((Taxonomy.family.is_(None)) & (family is None)),
+                        (Taxonomy.genus == genus) | ((Taxonomy.genus.is_(None)) & (genus is None)),
+                        (Taxonomy.species == species) | ((Taxonomy.species.is_(None)) & (species is None))
+                    )
+                    result = query.first()
+                    if result:
+                        tax_map[tax_tuple] = result.tax_id
 
-            return tax_map
+                return tax_map
+
+        return self._execute_with_retry("bulk_insert_taxonomies_fetch", fetch_phase)
 
     @profile_db_operation("bulk_insert_sequences")
     def bulk_insert_sequences(self, sequences: List[Dict[str, Any]]) -> Dict[str, str]:
@@ -647,22 +714,25 @@ class DatabaseManager:
         if not sequences:
             return {}
 
-        # Phase 1: Insert sequences
-        with self.get_session() as session:
-            session.bulk_insert_mappings(Sequence, sequences)
-            # Commit happens at context exit
+        def insert_phase():
+            with self.get_session() as session:
+                session.bulk_insert_mappings(Sequence, sequences)
 
-        # Phase 2: Query for seq_ids in a separate transaction
-        with self.get_session() as session:
-            source_id = sequences[0]['source_id']
-            original_ids = [s['original_id'] for s in sequences]
+        self._execute_with_retry("bulk_insert_sequences_insert", insert_phase)
 
-            results = session.query(Sequence.original_id, Sequence.seq_id).filter(
-                Sequence.source_id == source_id,
-                Sequence.original_id.in_(original_ids)
-            ).all()
+        def fetch_phase():
+            with self.get_session() as session:
+                source_id = sequences[0]['source_id']
+                original_ids = [s['original_id'] for s in sequences]
 
-            return {original_id: seq_id for original_id, seq_id in results}
+                results = session.query(Sequence.original_id, Sequence.seq_id).filter(
+                    Sequence.source_id == source_id,
+                    Sequence.original_id.in_(original_ids)
+                ).all()
+
+                return {original_id: seq_id for original_id, seq_id in results}
+
+        return self._execute_with_retry("bulk_insert_sequences_fetch", fetch_phase)
 
     @profile_db_operation("bulk_insert_seq_tax")
     def bulk_insert_seq_tax(self, relations: List[Dict[str, Any]]) -> None:
@@ -682,20 +752,21 @@ class DatabaseManager:
         for i in range(0, len(relations), batch_size):
             batch = relations[i:i + batch_size]
 
-            with self.get_session() as session:
-                if self.db_type == "postgresql":
-                    stmt = pg_insert(SeqTax).values(batch)
-                    stmt = stmt.on_conflict_do_nothing(
-                        index_elements=['seq_id', 'tax_id', 'backbone']
-                    )
-                    session.execute(stmt)
+            def insert_batch():
+                with self.get_session() as session:
+                    if self.db_type == "postgresql":
+                        stmt = pg_insert(SeqTax).values(batch)
+                        stmt = stmt.on_conflict_do_nothing(
+                            index_elements=['seq_id', 'tax_id', 'backbone']
+                        )
+                        session.execute(stmt)
 
-                else:
-                    stmt = sqlite_insert(SeqTax).values(batch)
-                    stmt = stmt.on_conflict_do_nothing(
-                        index_elements=['seq_id', 'tax_id', 'backbone']
-                    )
-                    session.execute(stmt)
+                    else:
+                        stmt = sqlite_insert(SeqTax).values(batch)
+                        stmt = stmt.on_conflict_do_nothing(
+                            index_elements=['seq_id', 'tax_id', 'backbone']
+                        )
+                        session.execute(stmt)
 
             if (i // batch_size) % 10 == 0 and i > 0:
                 logger.debug(f"bulk_insert_seq_tax: {i}/{len(relations)} rows processed")
@@ -908,13 +979,19 @@ def get_database_manager(config: Dict) -> DatabaseManager:
     db_config = config.get("database", {})
     db_type = db_config.get("type", "sqlite")
 
+    writer_retry_config = db_config.get("writer_retry", {})
+
     if db_type == "sqlite":
         sqlite_config = db_config.get("sqlite", {})
         db_dir = Path(sqlite_config.get("path", "data/db"))
         db_name = sqlite_config.get("name", "its.db")
         db_path = db_dir / db_name
 
-        return DatabaseManager(db_type="sqlite", path=str(db_path))
+        return DatabaseManager(
+            db_type="sqlite",
+            path=str(db_path),
+            writer_retry=writer_retry_config
+        )
 
     elif db_type == "postgresql":
         pg_config = db_config.get("postgresql", {})
@@ -927,7 +1004,8 @@ def get_database_manager(config: Dict) -> DatabaseManager:
             database=pg_config.get("database", "its_pipeline"),
             schema=pg_config.get("schema", "public"),  # Schema support
             pool_size=pg_config.get("pool_size", 10),
-            max_overflow=pg_config.get("max_overflow", 20)
+            max_overflow=pg_config.get("max_overflow", 20),
+            writer_retry=writer_retry_config
         )
 
     else:

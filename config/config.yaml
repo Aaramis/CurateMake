@@ -26,6 +26,11 @@ database:
     max_overflow: 20
     echo: false
 
+  writer_retry:
+    max_attempts: 5
+    initial_delay_seconds: 5
+    backoff_factor: 2.0
+
 
   # Common settings
   backup_retention_days: 30
@@ -35,26 +40,26 @@ database:
 # Source datasets (adjust paths as needed)
 databases:
   unite:
-    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/UNITE/mini_UNITE_public.fasta.gz"
+    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/UNITE/UNITE_public_19.02.2025.fasta.gz"
     # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/UNITE/UNITE_large_test.fasta.gz"
     
   bold:
-    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/BOLD/mini_BOLD_Public.tar.gz"
+    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/BOLD/BOLD_Public.22-Aug-2025.tar.gz"
     # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/BOLD/BOLD_small.tar.gz"
   
   planits:
-    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/PLANITS/mini_PLANiTS.zip"
+    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/PLANITS/PLANiTS_29-03-2020.zip"
     # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANITS_small.zip"
   
   caledna:
     files:
-      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/CALeDNA/mini_PITS_fasta_and_taxonomy.zip"
-      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/6.CurateMake/data/raw/CALeDNA/mini_FITS_fasta_and_taxonomy.zip"
+      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/CALeDNA/PITS_fasta_and_taxonomy.zip"
+      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/CALeDNA/FITS_fasta_and_taxonomy.zip"
       # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/FITS_fasta_and_taxonomy_small.zip"
       # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/PITS_fasta_and_taxonomy_small.zip"
 
 caledna_processing:
-  batch_size: 2000
+  batch_size: 5000
   writer_retry:
     max_attempts: 3
     initial_delay_seconds: 5
