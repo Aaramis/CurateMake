@@ -17,7 +17,8 @@ def run_mafft(sequences_df: pd.DataFrame,
               output_folder: str,
               seq_col: str,
               tax_columns: List[str],
-              id_col: str = "seq_id") -> Optional[str]:
+              id_col: str = "seq_id",
+              deterministic: bool = False) -> Optional[str]:
     """
     Run MAFFT on a set of sequences, save the result, and return the FASTA path.
 
@@ -30,6 +31,11 @@ def run_mafft(sequences_df: pd.DataFrame,
         seq_col: Column holding sequences.
         tax_columns: Taxonomy columns for FASTA headers.
         id_col: Identifier column.
+        deterministic: If True, use a fully reproducible MAFFT invocation
+            (FFT-NS-2, single thread, input order preserved) and sort sequences
+            deterministically before writing. If False (default), use the
+            production behaviour (``--auto --thread -1``) that matches the
+            published pipeline. Ported from 6.CurateMake.
 
     Returns:
         Path to the MAFFT alignment file.
@@ -42,8 +48,17 @@ def run_mafft(sequences_df: pd.DataFrame,
     # Write temporary input file for MAFFT
     with tempfile.NamedTemporaryFile(mode='w+', suffix=".fasta", delete=False) as infile:
         try:
+            # Deterministic mode: sort sequences by stable content keys (not UUID)
+            # so the MAFFT input order is reproducible across runs.
+            if deterministic:
+                sort_cols = [c for c in ['source_id', 'original_id', 'sequence']
+                             if c in sequences_df.columns]
+                rows_iter = (sequences_df.sort_values(sort_cols, kind="mergesort")
+                             if sort_cols else sequences_df).iterrows()
+            else:
+                rows_iter = sequences_df.iterrows()
             # Stream sequences into the temporary input
-            for _, row in sequences_df.iterrows():
+            for _, row in rows_iter:
                 header = utils.create_fasta_header(row, tax_columns, id_col)
                 infile.write(f"{header}\n{row[seq_col]}\n")
             infile_path = infile.name
@@ -52,7 +67,13 @@ def run_mafft(sequences_df: pd.DataFrame,
             return None
 
     # Execute MAFFT
-    command = ["mafft", "--auto", "--quiet", "--thread", "-1", infile_path]
+    if deterministic:
+        # FFT-NS-2 (--retree 2 --maxiterate 0), single-threaded, input order preserved:
+        # fully reproducible alignment (ported from 6.CurateMake).
+        command = ["mafft", "--retree", "2", "--maxiterate", "0", "--quiet",
+                   "--thread", "1", "--threadit", "0", "--inputorder", infile_path]
+    else:
+        command = ["mafft", "--auto", "--quiet", "--thread", "-1", infile_path]
     try:
         # Rediriger la sortie directement vers le fichier de sortie
         with open(output_file, 'w') as outfile:
@@ -198,10 +219,16 @@ def create_hmm_database(hmm_dir: str, combined_hmm_path: str) -> bool:
         bool: True on success, False otherwise.
     """
     try:
-        # Recursively gather all .hmm files
-        hmm_files = glob.glob(os.path.join(hmm_dir, '**', '*.hmm'), recursive=True)
+        # Recursively gather all .hmm files, excluding empty marker files
+        all_hmm_files = sorted(glob.glob(os.path.join(hmm_dir, '**', '*.hmm'), recursive=True))
+        hmm_files = [f for f in all_hmm_files if os.path.getsize(f) > 0]
+
+        skipped = len(all_hmm_files) - len(hmm_files)
+        if skipped > 0:
+            print(f"Info: skipping {skipped} empty HMM file(s)")
+
         if not hmm_files:
-            print(f"Warning: no .hmm files found in {hmm_dir}")
+            print(f"Warning: no valid .hmm files found in {hmm_dir}")
             return False
 
         # Remove previous hmmpress artifacts
@@ -245,14 +272,21 @@ def combine_hmm_databases(hmm_paths: List[str], output_path: str) -> bool:
             if os.path.exists(output_path + ext):
                 os.remove(output_path + ext)
 
-        # Concatenate HMM files
+        # Concatenate HMM files, skipping empty marker files
+        skipped = 0
         with open(output_path, 'w') as outfile:
-            for hmm_path in hmm_paths:
-                if os.path.exists(hmm_path):
-                    with open(hmm_path, 'r') as infile:
-                        outfile.write(infile.read())
-                else:
+            for hmm_path in sorted(hmm_paths):
+                if not os.path.exists(hmm_path):
                     print(f"Warning: missing HMM file {hmm_path}")
+                    continue
+                if os.path.getsize(hmm_path) == 0:
+                    skipped += 1
+                    continue
+                with open(hmm_path, 'r') as infile:
+                    outfile.write(infile.read())
+
+        if skipped > 0:
+            print(f"Info: skipping {skipped} empty HMM file(s)")
 
         # Rebuild indexes with hmmpress
         subprocess.run(

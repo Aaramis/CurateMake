@@ -1,20 +1,22 @@
 # Usage Guide
 
-This guide summarizes the most common workflows once the installation steps are complete.
+This guide summarises the most common operations once installation is complete.
+Run every command from the project root with the `curatemake` environment
+activated.
 
 ## 1. Command templates
 
 ```bash
-# inspect the DAG without executing jobs
-snakemake --use-conda -np
+# Inspect the DAG without executing jobs
+snakemake -np
 
-# run with N local cores
+# Run with N local cores (per-rule Conda envs are built on first use)
 snakemake --use-conda --cores 32
 
-# run a specific target (e.g. SATIVA taxonomy report)
+# Build a specific target (e.g. the SATIVA taxonomy report)
 snakemake --use-conda reports/html/sativa_taxonomy_report.html
 
-# rerun a rule ignoring caches
+# Force a rule (and its downstream) to rerun
 snakemake --use-conda -R sativa_task
 ```
 
@@ -23,33 +25,41 @@ Useful global flags:
 | Flag | Description |
 | ---- | ----------- |
 | `-n` | dry-run (plan only) |
-| `-r` | show reason for each job |
+| `-r` | show the reason for each job |
 | `-p` | print shell commands |
 | `--summary` | status of every output file |
-| `--resources sativa_jobs=10` | cap custom resources if needed |
+| `--keep-going` | continue with independent jobs after a failure |
+| `--resources sativa_jobs=10` | cap the custom `sativa_jobs` resource |
 
 ## 2. Primary targets
 
 | Target | What it produces |
 | ------ | ---------------- |
-| `config["sativa"]["visualization_report"]` | SATIVA per-MSA dashboard |
+| `data/processed/formatting_summary.json` | Ingestion/formatting summary |
+| `data/processed/col_matching_report.json` | Catalogue of Life harmonisation |
 | `data/processed/itsx_process.json` | Aggregated ITSx summary |
-| `data/processed/msa_run_report.json` | Run-level metrics for MSA phase |
+| `data/processed/msa_run_report.json` | Run-level MSA metrics |
+| `data/processed/sativa_analysis_report.json` | Aggregated SATIVA results |
 | `reports/html/msa_analysis_report.html` | Interactive MSA analytics |
-| `reports/html/sequence_flow_report.html` | Pipeline-level Sankey diagram |
+| `reports/html/sequence_flow_report.html` | Pipeline-level sequence flow |
 | `reports/html/sativa_taxonomy_report.html` | 4-way taxonomy comparison |
 | `reports/html/index.html` | Landing page linking all reports |
 
-Invoke any of these as a Snakemake target to materialize only the necessary upstream steps.
+Requesting any target materialises only the upstream steps it needs.
 
 ## 3. Partial workflows
 
-### Database formatting only
+### Database ingestion only
 ```bash
 snakemake --use-conda format_all_databases
 ```
 
-### ITSx extraction per barcode
+### Taxonomy harmonisation (Catalogue of Life)
+```bash
+snakemake --use-conda data/processed/col_matching_report.json
+```
+
+### ITSx extraction for one barcode
 ```bash
 snakemake --use-conda data/processed/itsx_run_ITS1.done
 ```
@@ -59,36 +69,41 @@ snakemake --use-conda data/processed/itsx_run_ITS1.done
 snakemake --use-conda data/processed/msa_run_report.json
 ```
 
-### SATIVA integration without reports
+### SATIVA validation without the final reports
 ```bash
 snakemake --use-conda data/processed/sativa_analysis_report.json
 ```
 
 ## 4. Monitoring & troubleshooting
 
-- Logs are stored hierarchically: `logs/<module>/...` (e.g., `logs/ITSX/run_itsx_ITS2.log`).
-- Benchmarks (runtime/memory) land in `benchmarks/<rule>/` if enabled via `config["benchmarking"]["enabled"]`.
-- `data/processed/*run_report.json` and `data/processed/*_manifest.json` expose structured metrics that feed the HTML reports.
-- To inspect failed tasks: `snakemake --use-conda --cores <N> --keep-going -p` captures shell commands; cross-reference the matching log file.
+- Logs are stored hierarchically under `logs/<module>/...`
+  (e.g. `logs/ITSX/run_itsx_ITS2.log`, `logs/MSA/align/...`).
+- Benchmarks (runtime/memory) land in `benchmarks/<rule>/...` when
+  `benchmarking.enabled` is true in `config/config.yaml`.
+- `data/processed/*_report.json` and `data/processed/*_manifest.json` expose the
+  structured metrics that feed the HTML reports.
+- To debug failing tasks: `snakemake --use-conda --cores <N> --keep-going -p`
+  prints shell commands; cross-reference the matching log file.
 
 ## 5. Housekeeping
 
-- Clean processed artifacts only:
+- Remove processed artefacts only:
   ```bash
   snakemake clean --cores 1
   ```
-- Clean everything (processed data, logs, results):
+- Remove everything (processed data, ITSx outputs, results, logs):
   ```bash
   snakemake clean_all --cores 1
   ```
-  Use with caution; these rules delete directories defined inside the Snakefile.
+  Use with caution; these rules delete the directories listed in the `Snakefile`.
 
 ## 6. Cluster execution
 
-Prepare a Snakemake profile (e.g., SLURM) and run:
+Configure a Snakemake profile (e.g. SLURM) and run:
 
 ```bash
 snakemake --use-conda --profile profiles/slurm
 ```
 
-Adjust resource mappings in the profile to respect rule-level `threads:` and custom resources (e.g., `sativa_jobs`).
+Map cluster resources to the rule-level `threads:` and custom resources (e.g.
+`sativa_jobs`, `db_lock`) declared in the rule files.

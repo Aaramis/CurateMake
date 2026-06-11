@@ -1059,9 +1059,10 @@ class ReportGenerator:
 class SativaPipeline:
     """Orchestrates the complete SATIVA analysis workflow."""
 
-    def __init__(self, root_dir: Optional[Path] = None, db_engine=None):
+    def __init__(self, root_dir: Optional[Path] = None, db_engine=None, db_manager=None):
         self.root_dir = Path(root_dir) if root_dir else None
         self.engine = db_engine
+        self.db_manager = db_manager
         self.SessionFactory = sessionmaker(bind=db_engine) if db_engine else None
         self.all_results: List[SequenceResult] = []
         self.modifications: List[TaxonomicModification] = []
@@ -1122,102 +1123,135 @@ class SativaPipeline:
               f"{humanize_count(len(self.modifications))} modified")
 
     def _load_data_from_db(self):
-        """Load SATIVA analysis data directly from the database."""
+        """Load SATIVA analysis data directly from the database with retry logic."""
         if not self.engine:
             raise ValueError("Database engine is not configured.")
 
         if not self.SessionFactory:
             self.SessionFactory = sessionmaker(bind=self.engine)
 
-        session = self.SessionFactory()
-        try:
-            sativa_rows = session.query(
-                SeqTax.seq_id.label("seq_id"),
-                DBSequence.barcode.label("barcode"),
-                Source.name.label("source_name"),
-                SeqTax.confidence.label("confidence"),
-                Taxonomy.kingdom.label("kingdom"),
-                Taxonomy.phylum.label("phylum"),
-                Taxonomy.class_.label("class_"),
-                Taxonomy.order_.label("order_"),
-                Taxonomy.family.label("family"),
-                Taxonomy.genus.label("genus"),
-                Taxonomy.species.label("species")
-            ).join(DBSequence, SeqTax.seq_id == DBSequence.seq_id
-            ).join(Source, DBSequence.source_id == Source.source_id
-            ).join(Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
-            ).filter(SeqTax.backbone == 'Sativa').all()
+        # Query 1: Fetch Sativa assignments with retry
+        def fetch_sativa_rows():
+            session = self.SessionFactory()
+            try:
+                return session.query(
+                    SeqTax.seq_id.label("seq_id"),
+                    DBSequence.barcode.label("barcode"),
+                    Source.name.label("source_name"),
+                    SeqTax.confidence.label("confidence"),
+                    Taxonomy.kingdom.label("kingdom"),
+                    Taxonomy.phylum.label("phylum"),
+                    Taxonomy.class_.label("class_"),
+                    Taxonomy.order_.label("order_"),
+                    Taxonomy.family.label("family"),
+                    Taxonomy.genus.label("genus"),
+                    Taxonomy.species.label("species")
+                ).join(DBSequence, SeqTax.seq_id == DBSequence.seq_id
+                ).join(Source, DBSequence.source_id == Source.source_id
+                ).join(Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
+                ).filter(SeqTax.backbone == 'Sativa').all()
+            finally:
+                session.close()
 
-            if not sativa_rows:
-                logger.warning("No Sativa assignments found in the database.")
+        if self.db_manager:
+            sativa_rows = self.db_manager._execute_with_retry("viz_fetch_sativa_rows", fetch_sativa_rows)
+        else:
+            sativa_rows = fetch_sativa_rows()
 
-            original_rows = session.query(
-                SeqTax.seq_id.label("seq_id"),
-                SeqTax.backbone.label("backbone"),
-                Taxonomy.kingdom.label("kingdom"),
-                Taxonomy.phylum.label("phylum"),
-                Taxonomy.class_.label("class_"),
-                Taxonomy.order_.label("order_"),
-                Taxonomy.family.label("family"),
-                Taxonomy.genus.label("genus"),
-                Taxonomy.species.label("species")
-            ).join(Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
-            ).filter(SeqTax.backbone.in_(["CoL", "Raw"])).all()
+        if not sativa_rows:
+            logger.warning("No Sativa assignments found in the database.")
 
-            priority = {'CoL': 0, 'Raw': 1}
-            original_map: Dict[str, List[str]] = {}
-            for row in sorted(original_rows, key=lambda r: priority.get(r.backbone, 99)):
-                if row.seq_id not in original_map:
-                    original_map[row.seq_id] = self._build_taxonomy_path(row)
+        # Query 2: Fetch original taxonomies (CoL/Raw) with retry
+        def fetch_original_rows():
+            session = self.SessionFactory()
+            try:
+                return session.query(
+                    SeqTax.seq_id.label("seq_id"),
+                    SeqTax.backbone.label("backbone"),
+                    Taxonomy.kingdom.label("kingdom"),
+                    Taxonomy.phylum.label("phylum"),
+                    Taxonomy.class_.label("class_"),
+                    Taxonomy.order_.label("order_"),
+                    Taxonomy.family.label("family"),
+                    Taxonomy.genus.label("genus"),
+                    Taxonomy.species.label("species")
+                ).join(Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
+                ).filter(SeqTax.backbone.in_(["CoL", "Raw"])).all()
+            finally:
+                session.close()
 
-            seq_results: List[SequenceResult] = []
-            for row in sativa_rows:
-                proposed_path = self._build_taxonomy_path(row)
-                original_path = original_map.get(row.seq_id, [])
-                seq_results.append(
-                    self._create_sequence_result(
-                        seq_id=row.seq_id,
-                        barcode=row.barcode,
-                        source=row.source_name,
-                        original_path=original_path,
-                        proposed_path=proposed_path,
-                        confidence=row.confidence if row.confidence is not None else 0.0
-                    )
+        if self.db_manager:
+            original_rows = self.db_manager._execute_with_retry("viz_fetch_original_rows", fetch_original_rows)
+        else:
+            original_rows = fetch_original_rows()
+
+        # Build original taxonomy map
+        priority = {'CoL': 0, 'Raw': 1}
+        original_map: Dict[str, List[str]] = {}
+        for row in sorted(original_rows, key=lambda r: priority.get(r.backbone, 99)):
+            if row.seq_id not in original_map:
+                original_map[row.seq_id] = self._build_taxonomy_path(row)
+
+        # Create SequenceResult objects from Sativa rows
+        seq_results: List[SequenceResult] = []
+        for row in sativa_rows:
+            proposed_path = self._build_taxonomy_path(row)
+            original_path = original_map.get(row.seq_id, [])
+            seq_results.append(
+                self._create_sequence_result(
+                    seq_id=row.seq_id,
+                    barcode=row.barcode,
+                    source=row.source_name,
+                    original_path=original_path,
+                    proposed_path=proposed_path,
+                    confidence=row.confidence if row.confidence is not None else 0.0
                 )
-
-            processed_ids = {res.seq_id for res in seq_results}
-
-            warning_rows = session.query(
-                SativaWarning.seq_id,
-                SativaWarning.barcode,
-                SativaWarning.sativa_original_taxonomy,
-                SativaWarning.sativa_proposed_taxonomy,
-                SativaWarning.sativa_confidence,
-                Source.name.label("source_name")
-            ).join(DBSequence, SativaWarning.seq_id == DBSequence.seq_id
-            ).join(Source, DBSequence.source_id == Source.source_id, isouter=True).all()
-            for warn in warning_rows:
-                if warn.seq_id in processed_ids:
-                    continue
-                seq_results.append(
-                    self._create_sequence_result(
-                        seq_id=warn.seq_id,
-                        barcode=warn.barcode,
-                        source=warn.source_name,
-                        original_path=self._parse_taxonomy_string(warn.sativa_original_taxonomy),
-                        proposed_path=self._parse_taxonomy_string(warn.sativa_proposed_taxonomy),
-                        confidence=warn.sativa_confidence or 0.0
-                    )
-                )
-
-            self.all_results = seq_results
-            self.modifications = [r.modification for r in self.all_results if r.is_modified]
-            logger.info(
-                f"✅ Loaded {humanize_count(len(self.all_results))} sequences from database, "
-                f"{humanize_count(len(self.modifications))} modified"
             )
-        finally:
-            session.close()
+
+        processed_ids = {res.seq_id for res in seq_results}
+
+        # Query 3: Fetch warning rows with retry
+        def fetch_warning_rows():
+            session = self.SessionFactory()
+            try:
+                return session.query(
+                    SativaWarning.seq_id,
+                    SativaWarning.barcode,
+                    SativaWarning.sativa_original_taxonomy,
+                    SativaWarning.sativa_proposed_taxonomy,
+                    SativaWarning.sativa_confidence,
+                    Source.name.label("source_name")
+                ).join(DBSequence, SativaWarning.seq_id == DBSequence.seq_id
+                ).join(Source, DBSequence.source_id == Source.source_id, isouter=True).all()
+            finally:
+                session.close()
+
+        if self.db_manager:
+            warning_rows = self.db_manager._execute_with_retry("viz_fetch_warning_rows", fetch_warning_rows)
+        else:
+            warning_rows = fetch_warning_rows()
+
+        # Process warning rows
+        for warn in warning_rows:
+            if warn.seq_id in processed_ids:
+                continue
+            seq_results.append(
+                self._create_sequence_result(
+                    seq_id=warn.seq_id,
+                    barcode=warn.barcode,
+                    source=warn.source_name,
+                    original_path=self._parse_taxonomy_string(warn.sativa_original_taxonomy),
+                    proposed_path=self._parse_taxonomy_string(warn.sativa_proposed_taxonomy),
+                    confidence=warn.sativa_confidence or 0.0
+                )
+            )
+
+        self.all_results = seq_results
+        self.modifications = [r.modification for r in self.all_results if r.is_modified]
+        logger.info(
+            f"✅ Loaded {humanize_count(len(self.all_results))} sequences from database, "
+            f"{humanize_count(len(self.modifications))} modified"
+        )
 
     @staticmethod
     def _build_taxonomy_path(row) -> List[str]:
@@ -1312,6 +1346,7 @@ def main():
     """Main function for Snakemake or standalone execution."""
     try:
         engine = None
+        db_manager = None
         root_dir = None
 
         # Configuration from Snakemake
@@ -1348,15 +1383,18 @@ def main():
                 if not db_path.exists():
                     logger.error(f"Database not found: {db_path}")
                     sys.exit(1)
-                engine = get_engine("sqlite", path=str(db_path))
+                # Create a minimal db_manager for standalone mode
+                from db_manager import DatabaseManager
+                db_manager = DatabaseManager(db_type="sqlite", path=str(db_path))
+                engine = db_manager.engine
             root_dir = Path(args.sativa_dir) if args.sativa_dir else None
 
         if not engine and not root_dir:
             logger.error("Please provide either a database configuration or a SATIVA output directory.")
             sys.exit(1)
 
-        # Execute pipeline
-        pipeline = SativaPipeline(root_dir=root_dir, db_engine=engine)
+        # Execute pipeline with db_manager for retry support
+        pipeline = SativaPipeline(root_dir=root_dir, db_engine=engine, db_manager=db_manager)
         pipeline.load_data()
         pipeline.analyze()
         pipeline.visualize()

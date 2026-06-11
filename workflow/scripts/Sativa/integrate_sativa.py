@@ -382,6 +382,19 @@ class CoLValidator:
 class SativaMisParser:
     """Parse SATIVA .mis and .tax files"""
 
+    MISSING_TAX_TOKENS = {"", "na", "n/a", "none", "null", "unknown", "unidentified"}
+
+    @staticmethod
+    def _normalize_tax_token(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if cleaned.lower() in SativaMisParser.MISSING_TAX_TOKENS:
+            return None
+        return cleaned
+
     @staticmethod
     def parse_taxonomy_path_to_dict(tax_path: str) -> Dict[str, str]:
         """
@@ -395,8 +408,8 @@ class SativaMisParser:
         """
         levels = tax_path.split(';')
 
-        # Remove empty strings and strip whitespace
-        levels = [level.strip() if level and level.strip() else None for level in levels]
+        # Normalize and remove empty/NA tokens
+        levels = [SativaMisParser._normalize_tax_token(level) for level in levels]
 
         # Pad with None if fewer than 7 levels
         while len(levels) < 7:
@@ -535,9 +548,17 @@ class ModificationClassifier:
         Returns:
             ModificationType enum
         """
-        # Parse into lists
-        original_levels = [x.strip() for x in original_path.split(';') if x.strip()]
-        proposed_levels = [x.strip() for x in proposed_path.split(';') if x.strip()]
+        # Parse into lists, treating NA/empty as missing
+        original_levels = [
+            token
+            for token in (SativaMisParser._normalize_tax_token(x) for x in original_path.split(';'))
+            if token
+        ]
+        proposed_levels = [
+            token
+            for token in (SativaMisParser._normalize_tax_token(x) for x in proposed_path.split(';'))
+            if token
+        ]
 
         # Find common length and check if common levels are identical
         min_length = min(len(original_levels), len(proposed_levels))
@@ -607,6 +628,10 @@ class DatabaseIntegrator:
             return f"{schema}.{table_name}"
         return table_name
 
+    def _run_with_retry(self, operation_name: str, func):
+        """Execute a DB operation with retry."""
+        return self.db_manager._execute_with_retry(operation_name, func)
+
     def get_original_tax_id_for_sequence(self, seq_id: str) -> Optional[str]:
         """
         Get the original (Raw) taxonomy ID for a sequence.
@@ -621,25 +646,28 @@ class DatabaseIntegrator:
 
         seq_tax_table = self._get_table('seq_tax')
 
-        with self.db_manager.get_session() as session:
-            # Priority: Raw taxonomy
-            result = session.execute(text(f"""
-                SELECT tax_id FROM {seq_tax_table}
-                WHERE seq_id = :seq_id AND backbone = 'Raw'
-                LIMIT 1
-            """), {"seq_id": seq_id}).fetchone()
+        def fetch_tax_id():
+            with self.db_manager.get_session() as session:
+                # Priority: Raw taxonomy
+                result = session.execute(text(f"""
+                    SELECT tax_id FROM {seq_tax_table}
+                    WHERE seq_id = :seq_id AND backbone = 'Raw'
+                    LIMIT 1
+                """), {"seq_id": seq_id}).fetchone()
 
-            if result:
-                return result[0]
+                if result:
+                    return result[0]
 
-            # Fallback: any taxonomy
-            result = session.execute(text(f"""
-                SELECT tax_id FROM {seq_tax_table}
-                WHERE seq_id = :seq_id
-                LIMIT 1
-            """), {"seq_id": seq_id}).fetchone()
+                # Fallback: any taxonomy
+                result = session.execute(text(f"""
+                    SELECT tax_id FROM {seq_tax_table}
+                    WHERE seq_id = :seq_id
+                    LIMIT 1
+                """), {"seq_id": seq_id}).fetchone()
 
-            return result[0] if result else None
+                return result[0] if result else None
+
+        return self.db_manager._execute_with_retry("sativa_get_original_tax_id", fetch_tax_id)
 
     def get_col_taxonomy_for_sequence(self, seq_id: str) -> Optional[Dict[str, str]]:
         """
@@ -656,27 +684,30 @@ class DatabaseIntegrator:
         seq_tax_table = self._get_table('seq_tax')
         taxonomy_table = self._get_table('taxonomy')
 
-        with self.db_manager.get_session() as session:
-            result = session.execute(text(f"""
-                SELECT t.kingdom, t.phylum, t.class_, t.order_, t.family, t.genus, t.species
-                FROM {seq_tax_table} st
-                JOIN {taxonomy_table} t ON st.tax_id = t.tax_id
-                WHERE st.seq_id = :seq_id AND st.backbone = 'CoL'
-                LIMIT 1
-            """), {"seq_id": seq_id}).fetchone()
+        def fetch_col_taxonomy():
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    SELECT t.kingdom, t.phylum, t.class_, t.order_, t.family, t.genus, t.species
+                    FROM {seq_tax_table} st
+                    JOIN {taxonomy_table} t ON st.tax_id = t.tax_id
+                    WHERE st.seq_id = :seq_id AND st.backbone = 'CoL'
+                    LIMIT 1
+                """), {"seq_id": seq_id}).fetchone()
 
-            if result:
-                return {
-                    'kingdom': result[0] or '',
-                    'phylum': result[1] or '',
-                    'class_': result[2] or '',
-                    'order_': result[3] or '',
-                    'family': result[4] or '',
-                    'genus': result[5] or '',
-                    'species': result[6] or ''
-                }
+                if result:
+                    return {
+                        'kingdom': result[0] or '',
+                        'phylum': result[1] or '',
+                        'class_': result[2] or '',
+                        'order_': result[3] or '',
+                        'family': result[4] or '',
+                        'genus': result[5] or '',
+                        'species': result[6] or ''
+                    }
 
-            return None
+                return None
+
+        return self.db_manager._execute_with_retry("sativa_get_col_taxonomy", fetch_col_taxonomy)
 
     def check_taxonomy_exists(self, taxonomy: Dict[str, str]) -> Optional[str]:
         """
@@ -692,29 +723,32 @@ class DatabaseIntegrator:
 
         taxonomy_table = self._get_table('taxonomy')
 
-        with self.db_manager.get_session() as session:
-            result = session.execute(text(f"""
-                SELECT tax_id FROM {taxonomy_table}
-                WHERE
-                    COALESCE(kingdom, '') = :kingdom AND
-                    COALESCE(phylum, '') = :phylum AND
-                    COALESCE(class_, '') = :class_ AND
-                    COALESCE(order_, '') = :order_ AND
-                    COALESCE(family, '') = :family AND
-                    COALESCE(genus, '') = :genus AND
-                    COALESCE(species, '') = :species
-                LIMIT 1
-            """), {
-                'kingdom': taxonomy.get('kingdom') or '',
-                'phylum': taxonomy.get('phylum') or '',
-                'class_': taxonomy.get('class_') or '',
-                'order_': taxonomy.get('order_') or '',
-                'family': taxonomy.get('family') or '',
-                'genus': taxonomy.get('genus') or '',
-                'species': taxonomy.get('species') or ''
-            }).fetchone()
+        def fetch_existing_taxonomy():
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    SELECT tax_id FROM {taxonomy_table}
+                    WHERE
+                        COALESCE(kingdom, '') = :kingdom AND
+                        COALESCE(phylum, '') = :phylum AND
+                        COALESCE(class_, '') = :class_ AND
+                        COALESCE(order_, '') = :order_ AND
+                        COALESCE(family, '') = :family AND
+                        COALESCE(genus, '') = :genus AND
+                        COALESCE(species, '') = :species
+                    LIMIT 1
+                """), {
+                    'kingdom': taxonomy.get('kingdom') or '',
+                    'phylum': taxonomy.get('phylum') or '',
+                    'class_': taxonomy.get('class_') or '',
+                    'order_': taxonomy.get('order_') or '',
+                    'family': taxonomy.get('family') or '',
+                    'genus': taxonomy.get('genus') or '',
+                    'species': taxonomy.get('species') or ''
+                }).fetchone()
 
-            return result[0] if result else None
+                return result[0] if result else None
+
+        return self.db_manager._execute_with_retry("sativa_check_taxonomy", fetch_existing_taxonomy)
 
     def get_taxonomy_by_id(self, tax_id: str) -> Optional[Dict[str, str]]:
         """Retrieve a taxonomy dict by its ID."""
@@ -722,26 +756,29 @@ class DatabaseIntegrator:
 
         taxonomy_table = self._get_table('taxonomy')
 
-        with self.db_manager.get_session() as session:
-            row = session.execute(text(f"""
-                SELECT kingdom, phylum, class_, order_, family, genus, species
-                FROM {taxonomy_table}
-                WHERE tax_id = :tax_id
-                LIMIT 1
-            """), {"tax_id": tax_id}).fetchone()
+        def fetch_taxonomy():
+            with self.db_manager.get_session() as session:
+                row = session.execute(text(f"""
+                    SELECT kingdom, phylum, class_, order_, family, genus, species
+                    FROM {taxonomy_table}
+                    WHERE tax_id = :tax_id
+                    LIMIT 1
+                """), {"tax_id": tax_id}).fetchone()
 
-            if not row:
-                return None
+                if not row:
+                    return None
 
-            return {
-                'kingdom': row[0],
-                'phylum': row[1],
-                'class_': row[2],
-                'order_': row[3],
-                'family': row[4],
-                'genus': row[5],
-                'species': row[6],
-            }
+                return {
+                    'kingdom': row[0],
+                    'phylum': row[1],
+                    'class_': row[2],
+                    'order_': row[3],
+                    'family': row[4],
+                    'genus': row[5],
+                    'species': row[6],
+                }
+
+        return self.db_manager._execute_with_retry("sativa_get_taxonomy_by_id", fetch_taxonomy)
 
     def create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str]) -> str:
         """
@@ -781,13 +818,16 @@ class DatabaseIntegrator:
 
         seq_tax_table = self._get_table('seq_tax')
 
-        with self.db_manager.get_session() as session:
-            result = session.execute(text(f"""
-                SELECT 1 FROM {seq_tax_table}
-                WHERE seq_id = :seq_id AND tax_id = :tax_id AND backbone = :backbone
-            """), {"seq_id": seq_id, "tax_id": tax_id, "backbone": backbone}).fetchone()
+        def fetch_exists():
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    SELECT 1 FROM {seq_tax_table}
+                    WHERE seq_id = :seq_id AND tax_id = :tax_id AND backbone = :backbone
+                """), {"seq_id": seq_id, "tax_id": tax_id, "backbone": backbone}).fetchone()
 
-            return result is not None
+                return result is not None
+
+        return self.db_manager._execute_with_retry("sativa_check_seq_tax_exists", fetch_exists)
 
     def decide_integration_action(self, modification: ModificationRecord,
                                    mod_type: ModificationType,
@@ -796,17 +836,10 @@ class DatabaseIntegrator:
         Decide what actions to take for a modification.
 
         New logic:
-        - No modification (VALIDATED): If CoL exists -> create new entry with same taxonomy + backbone=sativa
-                                       If no CoL -> do nothing
-        - Modification (deletion/completion/substitution):
-            If CoL exists:
-                - Validate new taxonomy via CoL API
-                - If validation OK -> create new entry with new taxonomy + backbone=sativa
-                - If validation fails -> create new entry with old CoL taxonomy + backbone=sativa
-            If no CoL exists:
-                - Validate new taxonomy via CoL API
-                - If validation OK -> create new entry with new taxonomy + backbone=sativa
-                - If validation fails -> do nothing
+        - For each SATIVA suggestion, validate the proposed taxonomy via CoL.
+        - Always create a Sativa seq_tax entry using the SATIVA proposed taxonomy.
+        - Always create a warning entry to record CoL outcome (COL_MATCHED,
+          COL_MODIFIED_SATIVA, or COL_NO_MATCH).
 
         Args:
             modification: The modification record
@@ -816,87 +849,53 @@ class DatabaseIntegrator:
         Returns:
             IntegrationAction with all necessary information
         """
-        if mod_type == ModificationType.VALIDATED:
-            # No modification from SATIVA
-            if existing_col_taxonomy:
-                # CoL exists -> create new entry with same taxonomy + backbone=sativa
-                return IntegrationAction(
-                    create_seq_tax=True,
-                    update_seq_tax_backbone=False,
-                    create_warning=False,
-                    taxonomy_to_use=existing_col_taxonomy,
-                    seq_tax_status='Correct',
-                    warning_type=None,
-                    col_validation_result=None
-                )
-            else:
-                # No CoL -> do nothing
-                return IntegrationAction(
-                    create_seq_tax=False,
-                    update_seq_tax_backbone=False,
-                    create_warning=False,
-                    taxonomy_to_use={},
-                    seq_tax_status='',
-                    warning_type=None,
-                    col_validation_result=None
-                )
+        proposed_tax_dict = SativaMisParser.parse_taxonomy_path_to_dict(
+            modification.proposed_taxonomy
+        )
+        col_result = self.col_validator.validate_taxonomy(proposed_tax_dict)
 
-        elif mod_type == ModificationType.DELETION_SIMPLE:
-            # Simple deletion: only create warning, no seq_tax
-            return IntegrationAction(
-                create_seq_tax=False,
-                update_seq_tax_backbone=False,
-                create_warning=True,
-                taxonomy_to_use={},
-                seq_tax_status='',
-                warning_type='DELETION_SIMPLE',
-                col_validation_result=None
+        warning_type = 'COL_NO_MATCH'
+
+        if col_result.success and col_result.match_quality == CoLMatchQuality.EXACT:
+            warning_type = 'COL_MATCHED'
+        elif col_result.match_quality == CoLMatchQuality.MODIFIED:
+            warning_type = 'COL_MODIFIED_SATIVA'
+
+        seq_tax_status = 'Correct' if (
+            col_result.success and col_result.match_quality == CoLMatchQuality.EXACT
+        ) else 'Check'
+
+        taxonomy_to_use = proposed_tax_dict
+        if col_result.success and col_result.col_taxonomy:
+            taxonomy_to_use = self._merge_col_with_sativa(
+                proposed_tax_dict,
+                col_result.col_taxonomy
             )
 
-        else:
-            # DELETION_MULTIPLE, SUBSTITUTION, COMPLETION
-            # -> Validate new SATIVA taxonomy with CoL
-            proposed_tax_dict = SativaMisParser.parse_taxonomy_path_to_dict(
-                modification.proposed_taxonomy
-            )
+        return IntegrationAction(
+            create_seq_tax=True,
+            update_seq_tax_backbone=False,
+            create_warning=True,
+            taxonomy_to_use=taxonomy_to_use,
+            seq_tax_status=seq_tax_status,
+            warning_type=warning_type,
+            col_validation_result=col_result
+        )
 
-            col_result = self.col_validator.validate_taxonomy(proposed_tax_dict)
+    @staticmethod
+    def _merge_col_with_sativa(sativa_tax: Dict[str, str],
+                               col_tax: Dict[str, str]) -> Dict[str, str]:
+        """
+        Use CoL taxonomy where available, but keep SATIVA values for deletions.
 
-            if col_result.success and col_result.match_quality in [CoLMatchQuality.EXACT, CoLMatchQuality.MODIFIED]:
-                # CoL validation successful -> use CoL returned taxonomy
-                return IntegrationAction(
-                    create_seq_tax=True,
-                    update_seq_tax_backbone=False,
-                    create_warning=col_result.match_quality == CoLMatchQuality.MODIFIED,
-                    taxonomy_to_use=col_result.col_taxonomy,
-                    seq_tax_status='Correct' if col_result.match_quality == CoLMatchQuality.EXACT else 'Check',
-                    warning_type='COL_MODIFIED_SATIVA' if col_result.match_quality == CoLMatchQuality.MODIFIED else None,
-                    col_validation_result=col_result
-                )
-            else:
-                # CoL validation failed (NO_MATCH)
-                if existing_col_taxonomy:
-                    # CoL exists -> use old CoL taxonomy + backbone=sativa
-                    return IntegrationAction(
-                        create_seq_tax=True,
-                        update_seq_tax_backbone=False,
-                        create_warning=True,
-                        taxonomy_to_use=existing_col_taxonomy,
-                        seq_tax_status='Check',
-                        warning_type='COL_NO_MATCH',
-                        col_validation_result=col_result
-                    )
-                else:
-                    # No CoL exists -> do nothing
-                    return IntegrationAction(
-                        create_seq_tax=False,
-                        update_seq_tax_backbone=False,
-                        create_warning=True,
-                        taxonomy_to_use={},
-                        seq_tax_status='',
-                        warning_type='COL_NO_MATCH',
-                        col_validation_result=col_result
-                    )
+        A deletion is when CoL returns a missing/empty rank while SATIVA had one.
+        """
+        merged = {}
+        for key in ('kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species'):
+            col_value = col_tax.get(key)
+            sativa_value = sativa_tax.get(key)
+            merged[key] = col_value if col_value else sativa_value
+        return merged
 
     def prepare_seq_tax_entry(self, seq_id: str, tax_id: str, status: str,
                              confidence: float) -> Dict:
@@ -928,40 +927,43 @@ class DatabaseIntegrator:
         # Define backbone priority: CoL preferred over Raw
         priority_order = ['CoL', 'Raw']
 
-        with self.db_manager.get_session() as session:
-            # Debug: check what backbones exist for this sequence
-            all_backbones = session.execute(text(f"""
-                SELECT backbone FROM {seq_tax_table}
-                WHERE seq_id = :seq_id
-            """), {"seq_id": seq_id}).fetchall()
+        def update_op():
+            with self.db_manager.get_session() as session:
+                # Debug: check what backbones exist for this sequence
+                all_backbones = session.execute(text(f"""
+                    SELECT backbone FROM {seq_tax_table}
+                    WHERE seq_id = :seq_id
+                """), {"seq_id": seq_id}).fetchall()
 
-            if not all_backbones:
-                logger.warning(f"No seq_tax entries at all for {seq_id}")
+                if not all_backbones:
+                    logger.warning(f"No seq_tax entries at all for {seq_id}")
+                    return False
+
+                existing_backbones = [row[0] for row in all_backbones]
+                logger.debug(f"Seq {seq_id} has backbones: {existing_backbones}")
+
+                # Find existing seq_tax with priority: CoL > Raw
+                for backbone in priority_order:
+                    if backbone not in existing_backbones:
+                        continue
+
+                    # Update this backbone to 'Sativa'
+                    result = session.execute(text(f"""
+                        UPDATE {seq_tax_table}
+                        SET backbone = 'Sativa',
+                            status = 'Correct',
+                            confidence = :confidence
+                        WHERE seq_id = :seq_id AND backbone = :backbone
+                    """), {"seq_id": seq_id, "backbone": backbone, "confidence": confidence})
+
+                    if result.rowcount > 0:
+                        logger.debug(f"Updated seq_tax for {seq_id}: {backbone} → Sativa")
+                        return True
+
+                logger.warning(f"No CoL or Raw seq_tax found for {seq_id} (has: {existing_backbones})")
                 return False
 
-            existing_backbones = [row[0] for row in all_backbones]
-            logger.debug(f"Seq {seq_id} has backbones: {existing_backbones}")
-
-            # Find existing seq_tax with priority: CoL > Raw
-            for backbone in priority_order:
-                if backbone not in existing_backbones:
-                    continue
-
-                # Update this backbone to 'Sativa'
-                result = session.execute(text(f"""
-                    UPDATE {seq_tax_table}
-                    SET backbone = 'Sativa',
-                        status = 'Correct',
-                        confidence = :confidence
-                    WHERE seq_id = :seq_id AND backbone = :backbone
-                """), {"seq_id": seq_id, "backbone": backbone, "confidence": confidence})
-
-                if result.rowcount > 0:
-                    logger.debug(f"Updated seq_tax for {seq_id}: {backbone} → Sativa")
-                    return True
-
-            logger.warning(f"No CoL or Raw seq_tax found for {seq_id} (has: {existing_backbones})")
-            return False
+        return self.db_manager._execute_with_retry("sativa_update_seq_tax_backbone", update_op)
 
     def prepare_warning_entry(self, modification: ModificationRecord,
                              warning_type: str, original_tax_id: str,
@@ -972,8 +974,7 @@ class DatabaseIntegrator:
             modification.original_taxonomy,
             modification.proposed_taxonomy
         )
-        # Map DELETION_SIMPLE and DELETION_MULTIPLE to just DELETION for DB constraint
-        db_mod_type = 'DELETION' if 'DELETION' in mod_type.value else mod_type.value
+        db_mod_type = mod_type.value
 
         entry = {
             'seq_id': modification.seq_id,
@@ -1024,37 +1025,53 @@ class DatabaseIntegrator:
 
         return entry
 
-    def bulk_insert_seq_tax(self, entries: List[Dict]):
-        """Bulk insert seq_tax entries"""
+    def bulk_insert_seq_tax(self, entries: List[Dict], batch_size: int = 1000):
+        """Bulk insert seq_tax entries in batches.
+
+        Args:
+            entries: List of entry dicts to insert
+            batch_size: Number of entries per batch (default 1000)
+        """
         if not entries:
             return
 
         from sqlalchemy import text
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         seq_tax_table = self._get_table('seq_tax')
 
-        with self.db_manager.get_session() as session:
-            if self.db_manager.db_type == "postgresql":
-                # Use PostgreSQL-specific INSERT ... ON CONFLICT
-                for entry in entries:
-                    session.execute(text(f"""
-                        INSERT INTO {seq_tax_table} (seq_id, tax_id, backbone, status, confidence)
-                        VALUES (:seq_id, :tax_id, :backbone, :status, :confidence)
-                        ON CONFLICT (seq_id, tax_id, backbone) DO NOTHING
-                    """), entry)
-            else:
-                # SQLite: Use INSERT OR IGNORE
-                for entry in entries:
-                    session.execute(text(f"""
-                        INSERT OR IGNORE INTO {seq_tax_table} (seq_id, tax_id, backbone, status, confidence)
-                        VALUES (:seq_id, :tax_id, :backbone, :status, :confidence)
-                    """), entry)
+        # Process in batches
+        for i in range(0, len(entries), batch_size):
+            batch = entries[i:i + batch_size]
 
-            session.commit()
+            def insert_batch(batch_entries=batch):
+                with self.db_manager.get_session() as session:
+                    if self.db_manager.db_type == "postgresql":
+                        # Use PostgreSQL-specific INSERT ... ON CONFLICT with executemany
+                        stmt = text(f"""
+                            INSERT INTO {seq_tax_table} (seq_id, tax_id, backbone, status, confidence)
+                            VALUES (:seq_id, :tax_id, :backbone, :status, :confidence)
+                            ON CONFLICT (seq_id, tax_id, backbone) DO NOTHING
+                        """)
+                        for entry in batch_entries:
+                            session.execute(stmt, entry)
+                    else:
+                        # SQLite: Use INSERT OR IGNORE
+                        stmt = text(f"""
+                            INSERT OR IGNORE INTO {seq_tax_table} (seq_id, tax_id, backbone, status, confidence)
+                            VALUES (:seq_id, :tax_id, :backbone, :status, :confidence)
+                        """)
+                        for entry in batch_entries:
+                            session.execute(stmt, entry)
 
-    def bulk_insert_warnings(self, entries: List[Dict]):
-        """Bulk insert sativa_warnings entries"""
+            self.db_manager._execute_with_retry(f"sativa_bulk_insert_seq_tax_batch_{i}", insert_batch)
+
+    def bulk_insert_warnings(self, entries: List[Dict], batch_size: int = 1000):
+        """Bulk insert sativa_warnings entries in batches.
+
+        Args:
+            entries: List of entry dicts to insert
+            batch_size: Number of entries per batch (default 1000)
+        """
         if not entries:
             return
 
@@ -1063,30 +1080,38 @@ class DatabaseIntegrator:
 
         warnings_table = self._get_table('sativa_warnings')
 
-        with self.db_manager.get_session() as session:
-            for entry in entries:
-                # Add warning_id
+        # Add warning_id to all entries upfront
+        for entry in entries:
+            if 'warning_id' not in entry:
                 entry['warning_id'] = str(uuid.uuid4())
 
-                session.execute(text(f"""
-                    INSERT INTO {warnings_table} (
-                        warning_id, seq_id, seq_original_id, original_tax_id,
-                        warning_type, sativa_modification_type, sativa_confidence,
-                        sativa_original_taxonomy, sativa_proposed_taxonomy,
-                        deleted_levels, col_validation_attempted, col_returned_taxonomy,
-                        col_match_quality, barcode, tax_level, mislabeled_level,
-                        per_rank_confidence
-                    ) VALUES (
-                        :warning_id, :seq_id, :seq_original_id, :original_tax_id,
-                        :warning_type, :sativa_modification_type, :sativa_confidence,
-                        :sativa_original_taxonomy, :sativa_proposed_taxonomy,
-                        :deleted_levels, :col_validation_attempted, :col_returned_taxonomy,
-                        :col_match_quality, :barcode, :tax_level, :mislabeled_level,
-                        :per_rank_confidence
-                    )
-                """), entry)
+        # Process in batches
+        for i in range(0, len(entries), batch_size):
+            batch = entries[i:i + batch_size]
 
-            session.commit()
+            def insert_batch(batch_entries=batch):
+                with self.db_manager.get_session() as session:
+                    stmt = text(f"""
+                        INSERT INTO {warnings_table} (
+                            warning_id, seq_id, seq_original_id, original_tax_id,
+                            warning_type, sativa_modification_type, sativa_confidence,
+                            sativa_original_taxonomy, sativa_proposed_taxonomy,
+                            deleted_levels, col_validation_attempted, col_returned_taxonomy,
+                            col_match_quality, barcode, tax_level, mislabeled_level,
+                            per_rank_confidence
+                        ) VALUES (
+                            :warning_id, :seq_id, :seq_original_id, :original_tax_id,
+                            :warning_type, :sativa_modification_type, :sativa_confidence,
+                            :sativa_original_taxonomy, :sativa_proposed_taxonomy,
+                            :deleted_levels, :col_validation_attempted, :col_returned_taxonomy,
+                            :col_match_quality, :barcode, :tax_level, :mislabeled_level,
+                            :per_rank_confidence
+                        )
+                    """)
+                    for entry in batch_entries:
+                        session.execute(stmt, entry)
+
+            self.db_manager._execute_with_retry(f"sativa_bulk_insert_warnings_batch_{i}", insert_batch)
 
 
 # ============================================================================
@@ -1094,82 +1119,95 @@ class DatabaseIntegrator:
 # ============================================================================
 
 def create_sativa_warnings_table(db_manager):
-    """Create sativa_warnings table if it doesn't exist"""
+    """Create sativa_warnings table if it doesn't exist.
+
+    Table creation and index creation are done in separate transactions
+    to avoid YugabyteDB timeout issues with CREATE INDEX.
+    """
     from sqlalchemy import text
 
     integrator = DatabaseIntegrator(db_manager, None)
     warnings_table = integrator._get_table('sativa_warnings')
 
-    with db_manager.get_session() as session:
-        if db_manager.db_type == "postgresql":
-            session.execute(text(f"""
-                CREATE TABLE IF NOT EXISTS {warnings_table} (
-                    warning_id UUID PRIMARY KEY,
-                    seq_id UUID NOT NULL,
-                    seq_original_id TEXT NOT NULL,
-                    original_tax_id UUID NOT NULL,
+    # Step 1: Create table
+    def create_table_op():
+        with db_manager.get_session() as session:
+            if db_manager.db_type == "postgresql":
+                session.execute(text(f"""
+                    CREATE TABLE IF NOT EXISTS {warnings_table} (
+                        warning_id UUID PRIMARY KEY,
+                        seq_id UUID NOT NULL,
+                        seq_original_id TEXT NOT NULL,
+                        original_tax_id UUID NOT NULL,
                     warning_type TEXT NOT NULL CHECK (warning_type IN (
                         'DELETION_SIMPLE', 'DELETION_MULTIPLE',
-                        'COL_MODIFIED_SATIVA', 'COL_NO_MATCH'
+                        'COL_MATCHED', 'COL_MODIFIED_SATIVA', 'COL_NO_MATCH'
                     )),
                     sativa_modification_type TEXT CHECK (sativa_modification_type IN (
-                        'DELETION', 'SUBSTITUTION', 'COMPLETION'
+                        'DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION'
                     )),
-                    sativa_confidence FLOAT,
-                    sativa_original_taxonomy TEXT,
-                    sativa_proposed_taxonomy TEXT,
-                    deleted_levels TEXT,
-                    col_validation_attempted BOOLEAN DEFAULT FALSE,
-                    col_returned_taxonomy TEXT,
-                    col_match_quality TEXT,
-                    barcode TEXT NOT NULL,
-                    tax_level TEXT NOT NULL,
-                    mislabeled_level TEXT,
-                    per_rank_confidence TEXT,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """))
-
-            # Create indices
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_seq ON {warnings_table}(seq_id)"))
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_type ON {warnings_table}(warning_type)"))
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_barcode ON {warnings_table}(barcode)"))
-
-        else:  # SQLite
-            session.execute(text(f"""
-                CREATE TABLE IF NOT EXISTS {warnings_table} (
-                    warning_id TEXT PRIMARY KEY,
-                    seq_id TEXT NOT NULL,
-                    seq_original_id TEXT NOT NULL,
-                    original_tax_id TEXT NOT NULL,
+                        sativa_confidence FLOAT,
+                        sativa_original_taxonomy TEXT,
+                        sativa_proposed_taxonomy TEXT,
+                        deleted_levels TEXT,
+                        col_validation_attempted BOOLEAN DEFAULT FALSE,
+                        col_returned_taxonomy TEXT,
+                        col_match_quality TEXT,
+                        barcode TEXT NOT NULL,
+                        tax_level TEXT NOT NULL,
+                        mislabeled_level TEXT,
+                        per_rank_confidence TEXT,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+            else:  # SQLite
+                session.execute(text(f"""
+                    CREATE TABLE IF NOT EXISTS {warnings_table} (
+                        warning_id TEXT PRIMARY KEY,
+                        seq_id TEXT NOT NULL,
+                        seq_original_id TEXT NOT NULL,
+                        original_tax_id TEXT NOT NULL,
                     warning_type TEXT NOT NULL CHECK (warning_type IN (
                         'DELETION_SIMPLE', 'DELETION_MULTIPLE',
-                        'COL_MODIFIED_SATIVA', 'COL_NO_MATCH'
+                        'COL_MATCHED', 'COL_MODIFIED_SATIVA', 'COL_NO_MATCH'
                     )),
                     sativa_modification_type TEXT CHECK (sativa_modification_type IN (
-                        'DELETION', 'SUBSTITUTION', 'COMPLETION'
+                        'DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION'
                     )),
-                    sativa_confidence REAL,
-                    sativa_original_taxonomy TEXT,
-                    sativa_proposed_taxonomy TEXT,
-                    deleted_levels TEXT,
-                    col_validation_attempted INTEGER DEFAULT 0,
-                    col_returned_taxonomy TEXT,
-                    col_match_quality TEXT,
-                    barcode TEXT NOT NULL,
-                    tax_level TEXT NOT NULL,
-                    mislabeled_level TEXT,
-                    per_rank_confidence TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
+                        sativa_confidence REAL,
+                        sativa_original_taxonomy TEXT,
+                        sativa_proposed_taxonomy TEXT,
+                        deleted_levels TEXT,
+                        col_validation_attempted INTEGER DEFAULT 0,
+                        col_returned_taxonomy TEXT,
+                        col_match_quality TEXT,
+                        barcode TEXT NOT NULL,
+                        tax_level TEXT NOT NULL,
+                        mislabeled_level TEXT,
+                        per_rank_confidence TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
 
-            # Create indices
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_seq ON {warnings_table}(seq_id)"))
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_type ON {warnings_table}(warning_type)"))
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_barcode ON {warnings_table}(barcode)"))
+    db_manager._execute_with_retry("sativa_create_warnings_table", create_table_op)
 
-        session.commit()
+    # Step 2: Create indexes separately (each in its own transaction with retry)
+    index_statements = [
+        ("idx_sativa_warnings_seq", f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_seq ON {warnings_table}(seq_id)"),
+        ("idx_sativa_warnings_type", f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_type ON {warnings_table}(warning_type)"),
+        ("idx_sativa_warnings_barcode", f"CREATE INDEX IF NOT EXISTS idx_sativa_warnings_barcode ON {warnings_table}(barcode)"),
+    ]
+
+    for idx_name, idx_sql in index_statements:
+        def create_index_op(sql=idx_sql):
+            with db_manager.get_session() as session:
+                session.execute(text(sql))
+
+        try:
+            db_manager._execute_with_retry(f"sativa_create_index_{idx_name}", create_index_op)
+        except Exception as e:
+            # Index creation failure should not stop the pipeline
+            logger.warning(f"Could not create index {idx_name}: {e}")
 
     logger.info("sativa_warnings table created/verified")
 

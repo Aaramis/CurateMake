@@ -53,37 +53,27 @@ class SequenceRecord:
 
 class CALeDNAParser:
     """CALeDNA parser and ingestion pipeline."""
-    
-    def __init__(self, db_manager, config_validation: Dict, processing_config: Optional[Dict] = None):
+
+    def __init__(self, db_manager, config_validation: Dict, database_formatting: Optional[Dict] = None):
         self.db_manager = db_manager
         self.config_validation = config_validation
-        self.processing_config = processing_config or {}
 
-        batch_size_cfg = self.processing_config.get('batch_size', DEFAULT_BATCH_SIZE)
+        # Read batch_size from database_formatting config (consistent with other parsers)
+        formatting_config = database_formatting or {}
+        batch_size_cfg = formatting_config.get('batch_size', DEFAULT_BATCH_SIZE)
         try:
             self.batch_size = max(1, int(batch_size_cfg))
         except (TypeError, ValueError):
-            logger.warning(f"Invalid CALeDNA batch_size '{batch_size_cfg}', falling back to {DEFAULT_BATCH_SIZE}")
+            logger.warning(f"Invalid batch_size '{batch_size_cfg}', falling back to {DEFAULT_BATCH_SIZE}")
             self.batch_size = DEFAULT_BATCH_SIZE
 
-        writer_retry_cfg = self.processing_config.get('writer_retry', {})
+        # Read writer_retry config
+        writer_retry_cfg = formatting_config.get('writer_retry', {})
         try:
             self.flush_retry_attempts = max(0, int(writer_retry_cfg.get('max_attempts', DEFAULT_RETRY_ATTEMPTS)))
         except (TypeError, ValueError):
             logger.warning("Invalid writer_retry.max_attempts, defaulting to %s", DEFAULT_RETRY_ATTEMPTS)
             self.flush_retry_attempts = DEFAULT_RETRY_ATTEMPTS
-
-        try:
-            self.flush_retry_initial_delay = max(0.0, float(writer_retry_cfg.get('initial_delay_seconds', DEFAULT_RETRY_DELAY)))
-        except (TypeError, ValueError):
-            logger.warning("Invalid writer_retry.initial_delay_seconds, defaulting to %s", DEFAULT_RETRY_DELAY)
-            self.flush_retry_initial_delay = DEFAULT_RETRY_DELAY
-
-        try:
-            self.flush_retry_backoff = max(1.0, float(writer_retry_cfg.get('backoff_factor', DEFAULT_RETRY_BACKOFF)))
-        except (TypeError, ValueError):
-            logger.warning("Invalid writer_retry.backoff_factor, defaulting to %s", DEFAULT_RETRY_BACKOFF)
-            self.flush_retry_backoff = DEFAULT_RETRY_BACKOFF
         
         # Pre-compiled regex patterns
         self.version_pattern = re.compile(r'(\d{1,2}\.\d{1,2}|\d{4})')
@@ -412,9 +402,8 @@ class CALeDNAParser:
             raise
 
     def _flush_with_retry(self, batch: List[SequenceRecord], source_id: str):
-        """Flush batch with retry handling for transient OperationalError failures."""
+        """Flush batch with immediate retry for transient OperationalError failures."""
         attempts = 0
-        delay = self.flush_retry_initial_delay
 
         while True:
             try:
@@ -426,17 +415,12 @@ class CALeDNAParser:
                     raise
 
                 attempts += 1
-                wait_time = max(0.0, delay)
                 logger.warning(
-                    "OperationalError flushing CALeDNA batch (attempt %s/%s). Retrying in %.1fs. Error: %s",
+                    "OperationalError flushing CALeDNA batch (attempt %s/%s). Retrying immediately... Error: %s",
                     attempts,
                     self.flush_retry_attempts,
-                    wait_time,
                     exc
                 )
-                if wait_time:
-                    time.sleep(wait_time)
-                delay = wait_time * self.flush_retry_backoff if self.flush_retry_backoff else wait_time
 
     def _flush_batch_sqlalchemy(self, batch: List[SequenceRecord], source_id: str):
         """Flush batch using SQLAlchemy bulk operations (source_id is UUID string)."""
@@ -610,12 +594,12 @@ def main():
             )
             output_report = snakemake.output[0]
             config_validation = snakemake.params.sequence_validation
+            database_formatting = snakemake.params.database_formatting
             config = snakemake.config
             log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
             file_handler = logging.FileHandler(log_file, mode="w")
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             logger.addHandler(file_handler)
-            caledna_processing = getattr(snakemake.params, "caledna_processing", {})
         else:
             # Test mode
             logger.warning("Running in standalone test mode")
@@ -624,18 +608,18 @@ def main():
             log_file = "test_format_caledna.log"
             config = {'database': {'path': input_db}}
             config_validation = {
-                'min_length': 50, 
-                'valid_chars': 'ATCGN', 
+                'min_length': 50,
+                'valid_chars': 'ATCGN',
                 'max_n_fraction': 0.1
             }
-            caledna_processing = {}
+            database_formatting = {}
 
         # Import and initialization
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
-        
+
         db_manager = get_database_manager(config)
-        parser = CALeDNAParser(db_manager, config_validation, caledna_processing)
+        parser = CALeDNAParser(db_manager, config_validation, database_formatting)
         
         # Restore safe settings before processing each file
         db_manager.restore_safe_settings()

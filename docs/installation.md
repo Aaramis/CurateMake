@@ -1,66 +1,87 @@
-# Pipeline Installation
+# Installation
 
-Follow these steps to prepare a workstation or HPC login node for the Snakemake workflow.
+Follow these steps to prepare a workstation or HPC login node for the workflow.
 
 ## 1. Prerequisites
 
-- Linux/macOS shell with Bash, GNU coreutils, and `git`
+- A Linux/macOS shell with Bash, GNU coreutils, and `git`
 - Conda or Mamba (Miniforge/Mambaforge recommended)
-- PostgreSQL client tools if you plan to use the remote DB backend
+- PostgreSQL client libraries **only** if you intend to use the PostgreSQL
+  backend (the default SQLite backend needs nothing extra)
 
 ```bash
-# Install Mambaforge (recommended)
-wget https://github.com/conda-forge/miniforge/releases/latest/download/Mambaforge-Linux-x86_64.sh
-bash Mambaforge-Linux-x86_64.sh
+# Install Miniforge (provides conda + mamba)
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash Miniforge3-Linux-x86_64.sh
 ```
 
 ## 2. Clone the repository
 
 ```bash
-git clone https://github.com/<org>/ITS-pipeline.git
-cd ITS-pipeline/6.CurateMake
+git clone https://github.com/Aaramis/CurateMake.git
+cd CurateMake
 ```
 
-## 3. Bootstrap Snakemake + rule environments
+## 3. Create the orchestration environment
 
-The repo ships with a helper script that pins Snakemake and creates the shared tooling env:
+The workflow uses a two-tier environment model:
+
+- **One orchestration environment** (`curatemake`) that you activate — it
+  contains Snakemake and its launch-time dependencies.
+- **Per-rule environments** under `workflow/envs/`, created automatically by
+  Snakemake the first time each rule runs with `--use-conda`.
+
+```bash
+conda env create -f environment.yaml      # or: mamba env create -f environment.yaml
+conda activate curatemake
+```
+
+Alternatively, run the interactive bootstrap script, which also offers to create
+the development environment and a local `.env`:
 
 ```bash
 chmod +x setup_env.sh
 ./setup_env.sh
-# This installs snakemake via Conda/Mamba and leaves envs under ~/.conda/envs/
 ```
 
-Rule-specific Conda environments (ITSx, MAFFT, SATIVA, etc.) are automatically created by Snakemake the first time each rule runs. No manual activation is required.
+No manual installation of ITSx, MAFFT, trimAl, HMMER, or SATIVA is required —
+they are provisioned per rule.
 
-## 4. Configure secrets and paths
+## 4. Configure paths and credentials
 
-1. Copy the `.env` template and define database credentials, API keys, etc.
+1. Edit `config/config.yaml` (or create an override and pass it with
+   `--configfile`) to point at your raw data, set resource limits, and choose
+   the database backend (`sqlite` vs `postgresql`).
+2. For the **PostgreSQL backend only**, copy the credentials template to the
+   project root and edit it:
    ```bash
-   cp config/.env.example config/.env
-   # edit config/.env
+   cp config/.env.example .env
+   # edit .env: POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
    ```
-2. Edit `config/config.yaml` (or create a `config/local.yaml` override) to point to your raw data, tweak resource limits, and choose the database backend (`sqlite` vs `postgresql`). Environment variables referenced via `{{ env.VAR }}` will be resolved from `.env`.
+   The `Snakefile` loads `.env` from the project root and resolves
+   `{{ env.VAR }}` placeholders found in `config/config.yaml`. Missing variables
+   raise a clear error at start-up.
 
-## 5. Optional: initialize the database schema
+## 5. Initialise the database schema (optional)
 
-- **SQLite** is created automatically in `data/db`.
-- **PostgreSQL**: ensure the database, user, and schema already exist. The pipeline will create tables on first run, but you can pre-create them by running:
+- **SQLite** — created automatically under `data/db/` on first run.
+- **PostgreSQL** — make sure the database, user, and schema already exist; the
+  pipeline creates the tables on first run. You can pre-create them with:
   ```bash
-  snakemake create_database --use-conda --cores 1
+  snakemake --use-conda --cores 1 create_database
   ```
 
 ## 6. Validate the installation
 
 ```bash
-# Confirm snakemake is on PATH
+# Confirm Snakemake is on PATH
 snakemake --version
 
 # Dry-run the default DAG (no jobs executed)
-snakemake --use-conda -np
+snakemake -np
 ```
 
-If the dry-run completes without errors, you're ready to launch the full workflow:
+If the dry-run completes without errors, launch the full workflow:
 
 ```bash
 snakemake --use-conda --cores <N>
@@ -68,6 +89,12 @@ snakemake --use-conda --cores <N>
 
 ## Troubleshooting
 
-- **Missing system libraries**: rerun `setup_env.sh` after updating Conda/Mamba.
-- **Database authentication errors**: double-check `config/.env` and the `database` block in `config/config.yaml`.
-- **Insufficient disk space**: the pipeline writes large FASTA/MSA/SATIVA artifacts under `data/`. Use symlinks or update the paths in the config if needed.
+- **`import dotenv` / parse-time errors** — make sure the `curatemake`
+  environment is activated; it provides `python-dotenv`.
+- **A leaking virtualenv shadows `python`** — deactivate any active `.venv`
+  before launching; the `Snakefile` also strips `VIRTUAL_ENV`/`PYTHONPATH`
+  defensively.
+- **Database authentication errors** — double-check `.env` and the `database`
+  block in `config/config.yaml`.
+- **Insufficient disk space** — the pipeline writes large FASTA/MSA/SATIVA
+  artefacts under `data/`. Use symlinks or update the paths in the config.

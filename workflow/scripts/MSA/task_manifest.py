@@ -58,6 +58,8 @@ def split_group_into_tasks(
     id_col: str
 ) -> List[Dict]:
     tasks: List[Dict] = []
+    if id_col in group.columns:
+        group = group.sort_values(id_col, kind="mergesort")
     num_splits = (len(group) + max_sequences - 1) // max_sequences
 
     for idx in range(num_splits):
@@ -92,8 +94,10 @@ def create_tasks_recursive(
     if level not in df.columns:
         return tasks
 
-    for clade_name, group in df.groupby(level):
+    for clade_name, group in df.groupby(level, sort=True):
         name = str(clade_name).replace(" ", "_")
+        if cfg.id_col in group.columns:
+            group = group.sort_values(cfg.id_col, kind="mergesort")
 
         if len(group) < cfg.min_seq_threshold:
             continue
@@ -179,7 +183,7 @@ def build_manifest(df: pd.DataFrame, cfg: TaskConfig) -> Dict:
         manifest["barcodes"][barcode] = {
             "tasks": normal_tasks,
             "large_tasks": large_tasks,
-            "unprocessed_sequence_ids": unprocessed_df[cfg.id_col].tolist()
+            "unprocessed_sequence_ids": sorted(unprocessed_df[cfg.id_col].tolist(), key=str)
         }
 
     return manifest

@@ -1,15 +1,50 @@
 # Database Configuration
 
-The workflow targets two backends:
+The workflow stores every record in a normalised relational schema and supports
+two interchangeable backends. Switching backend requires only a configuration
+change — no code edits.
 
 | Backend | When to use | Configuration keys |
 | ------- | ----------- | ------------------ |
-| SQLite  | Local prototyping / CI | `database.type: sqlite`, path defined in `database.sqlite.path/name` |
+| SQLite | Local prototyping / CI / small datasets | `database.type: sqlite`, path in `database.sqlite.path` + `database.sqlite.name` |
 | PostgreSQL | Production scale, concurrent writers | `database.type: postgresql`, connection info under `database.postgresql` |
 
-## 1. Environment variables
+## 1. Schema
 
-Secrets such as host, port, user, and password are referenced via `{{ env.VAR }}` inside `config/config.yaml`. Populate them in `config/.env`:
+Five tables (defined in `workflow/scripts/utils/db_models.py`):
+
+| Table | Primary key | Role |
+| ----- | ----------- | ---- |
+| `sources` | `source_id` | One row per input dataset (UNITE, BOLD, PLANiTS, CALeDNA, PERSONAL) |
+| `sequences` | `seq_id` | Sequence text, `length`, `percentage_n`, `barcode`, `barcode_status`, optional `parent_seq_id` |
+| `taxonomy` | `tax_id` | Unique lineages `kingdom → species` (uniqueness enforced across all ranks) |
+| `seq_tax` | (`seq_id`, `tax_id`, `backbone`) | Sequence↔taxonomy links with provenance and validation `status` |
+| `sativa_warnings` | `warning_id` | Modifications flagged by SATIVA integration for manual review |
+
+The composite key of `seq_tax` is what makes the **two-stage curation**
+auditable. The `backbone` column records where an assignment came from:
+
+| `backbone` value | Meaning |
+| ---------------- | ------- |
+| `Raw` | Original label as ingested from the source database |
+| `CoL` | Label reconciled against the Catalogue of Life |
+| `Sativa` | Label validated/corrected by SATIVA |
+| `GBIF` | Reserved for an optional GBIF backbone |
+
+Because the three revisions coexist per sequence, downstream reports (notably
+`sativa_taxonomy_report.html`) can present a four-way comparison of the original,
+CoL, and SATIVA assignments.
+
+## 2. Environment variables
+
+Secrets — host, port, user, password, database — are referenced via
+`{{ env.VAR }}` inside `config/config.yaml` and resolved from a `.env` file in
+the **project root** (loaded by the `Snakefile` at start-up). Copy the template
+and edit it:
+
+```bash
+cp config/.env.example .env
+```
 
 ```env
 POSTGRES_HOST=db.internal
@@ -19,16 +54,16 @@ POSTGRES_PASSWORD=***
 POSTGRES_DB=its_curate
 ```
 
-Snakemake loads `.env` at startup (`workflow/Snakefile`). Missing variables will raise a clear error.
+Missing variables raise a clear error at start-up.
 
-## 2. Config keys
+## 3. Config keys
 
 ```yaml
 database:
   type: "postgresql"        # or "sqlite"
   sqlite:
     path: "data/db"
-    name: "its.db"
+    name: "its_mini_database.db"
   postgresql:
     host: "{{ env.POSTGRES_HOST }}"
     port: "{{ env.POSTGRES_PORT }}"
@@ -39,38 +74,47 @@ database:
     pool_size: 10
     max_overflow: 20
     echo: false
+  writer_retry:
+    max_attempts: 100        # retries for transient errors on distributed DBs
   backup_retention_days: 30
   vacuum_threshold_mb: 100
 ```
 
-- `schema` lets the SATIVA integration and ingestion scripts qualify tables automatically.
-- `pool_size`/`max_overflow` control SQLAlchemy’s connection pooling when running multiple jobs per process.
+- `schema` lets ingestion and SATIVA integration qualify tables automatically
+  (a `SET search_path` is issued on each PostgreSQL connection).
+- `pool_size` / `max_overflow` control SQLAlchemy connection pooling for
+  parallel jobs.
+- `writer_retry.max_attempts` makes writes resilient on distributed backends
+  (e.g. YugabyteDB), which return transient errors under contention.
 
-## 3. Creating/initializing the schema
+## 4. Creating / initialising the schema
 
 ```bash
-# Create tables on the selected backend
-snakemake --use-conda create_database
+snakemake --use-conda --cores 1 create_database
 ```
 
-This rule relies on `workflow/scripts/create_database.py`. For PostgreSQL, ensure the user has `CREATE` privileges within the target schema.
+This rule runs `workflow/scripts/create_database.py` and is idempotent
+(`CREATE TABLE IF NOT EXISTS`). For PostgreSQL, the user must hold `CREATE`
+privileges in the target schema.
 
-## 4. Runtime behavior
+## 5. Concurrency model
 
-- Formatting rules (`workflow/rules/format_databases.smk`) use `ancient(get_db_path())` to serialize writes when using SQLite, and allow higher parallelism via `db_lock` resources when using PostgreSQL.
-- ITSx/MSA/SATIVA scripts use `workflow/scripts/utils/db_manager.py` to abstract away the backend. Switching between SQLite and PostgreSQL requires no code changes beyond the config.
-- SATIVA integration writes warning summaries and optional backups according to `sativa_integration.database.*` and `sativa_integration.reporting.*` blocks.
+- Formatting rules acquire a `db_lock` resource. For SQLite the lock level is `1`
+  (a single writer, since SQLite serialises writes); for PostgreSQL it is
+  effectively unlimited (MVCC allows concurrent writers).
+- All ingestion, ITSx, MSA, and SATIVA scripts go through
+  `workflow/scripts/utils/db_manager.py`, which abstracts the backend.
 
-## 5. Backups & hygiene
+## 6. Backups & hygiene
 
-- Enable automatic backups before SATIVA integration by toggling `sativa_integration.database.backup_before_integration`.
-- Manual backup example (SQLite):
+- SQLite snapshot:
   ```bash
-  sqlite3 data/db/its.db ".backup data/db/its.db.$(date +%Y%m%d)"
+  sqlite3 data/db/its_mini_database.db ".backup data/db/backup_$(date +%Y%m%d).db"
   ```
-- Manual backup example (PostgreSQL):
+- PostgreSQL dump:
   ```bash
-  pg_dump -h $POSTGRES_HOST -U $POSTGRES_USER $POSTGRES_DB > backup.sql
+  pg_dump -h "$POSTGRES_HOST" -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
   ```
 
-Keep `data/db` (SQLite) or the remote schema under versioned retention policies if regulatory compliance is required.
+Keep `data/db/` (SQLite) or the remote schema under a retention policy if your
+project requires it.

@@ -8,11 +8,20 @@ Every Snakemake rule specifies its own Conda environment under `workflow/envs/`.
 - Entry point: `workflow/Snakefile`
 - Profiles supported: local cores or any Snakemake profile you configure (SLURM, SGE, etc.)
 
+## Catalogue of Life harmonisation
+
+- Env: `workflow/envs/harmonize_taxo.yaml`
+- Rule: `col_taxonomic_matching`
+- Script: `workflow/scripts/col_taxonomic_matcher.py`
+- Config knobs: `CoL_api.*`
+- Output: `data/processed/col_matching_report.json` (writes `backbone = 'CoL'`
+  rows into `seq_tax`)
+
 ## ITSx
 
 - Env: `workflow/envs/itsx.yaml`
 - Rule: `run_itsx_barcode`
-- Config knobs: `itsx_cpu`, `sequence_validation.*`
+- Config knobs: `itsx_cpu`, `itsx_deterministic`, `sequence_validation.*`
 - Outputs per barcode: `data/processed/itsx_run_<barcode>.done`, `logs/ITSX/run_itsx_<barcode>.log`
 
 ## MAFFT + trimAl
@@ -49,9 +58,13 @@ Every Snakemake rule specifies its own Conda environment under `workflow/envs/`.
 
 ## Database utilities
 
-- Shared helper: `workflow/scripts/utils/db_manager.py` wraps SQLAlchemy.
-- Schema bootstrap: `workflow/scripts/create_database.py`.
-- SATIVA warnings table: created on demand by `integrate_sativa.py`.
+- ORM models (5 tables: `sources`, `sequences`, `taxonomy`, `seq_tax`,
+  `sativa_warnings`): `workflow/scripts/utils/db_models.py`.
+- Shared backend-agnostic helper: `workflow/scripts/utils/db_manager.py`
+  (wraps SQLAlchemy for both SQLite and PostgreSQL).
+- Schema bootstrap: `workflow/scripts/create_database.py` (rule `create_database`).
+- See [Database configuration](database.md) for the full schema and the
+  `seq_tax.backbone` provenance model.
 
 ## Benchmarks & logging
 

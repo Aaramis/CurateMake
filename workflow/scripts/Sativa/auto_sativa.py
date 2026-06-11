@@ -28,11 +28,18 @@ logger = logging.getLogger(__name__)
 
 
 _SANITIZE_PATTERN = re.compile(r"[^A-Za-z0-9_.-]")
+_TAXON_PLACEHOLDER = "NA"
 
 
 def _sanitize_label(value: str) -> str:
     """Convert arbitrary taxon/barcode labels into a filesystem-safe token."""
     return _SANITIZE_PATTERN.sub("_", value)
+
+
+def _normalize_tax_value(value: str) -> str:
+    """Ensure taxonomy ranks are never empty to keep SATIVA Newick parsing happy."""
+    value = (value or "").strip()
+    return value if value else _TAXON_PLACEHOLDER
 
 
 @dataclass
@@ -204,7 +211,7 @@ def parse_msa_to_sativa_format(msa_path: Path, output_dir: Path, taxon: str) -> 
 
                 # Build taxonomy string in order
                 tax_order = ['kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
-                tax_string = ';'.join(tax_info.get(rank, '') for rank in tax_order)
+                tax_string = ';'.join(_normalize_tax_value(tax_info.get(rank, "")) for rank in tax_order)
 
                 tax_out.write(f"{current_id}\t{tax_string}\n")
             else:
@@ -411,6 +418,10 @@ def main():
 
         # Step 2: Check thresholds
         skip_reasons = []
+        if n_seq == 0:
+            skip_reasons.append("MSA is empty (no sequences)")
+        elif n_seq < 2:
+            skip_reasons.append("fewer than 2 sequences (SATIVA requires at least 2)")
         if n_seq > max_seqs:
             skip_reasons.append(f"n_seq ({n_seq}) > max_seqs ({max_seqs})")
         if aln_len > max_len:

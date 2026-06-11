@@ -17,7 +17,8 @@ Defined in `config/config.yaml`:
 
 ```yaml
 itsx_cpu: 30                     # threads per ITSx invocation
-itsx_output_dir: "data"          # where raw FASTA inputs live
+itsx_deterministic: false        # set true for reproducible (single-threaded) runs
+itsx_output_dir: "data"          # where raw FASTA inputs live (defaults to "data")
 msa:
   barcodes: ["ITS","ITS1","ITS2"]  # reused by ITSx rules
 sequence_validation:
@@ -28,7 +29,9 @@ sequence_validation:
 Key points:
 
 - `itsx_cpu` is applied to both Snakemake’s `threads` directive and the `ITSx --cpu` flag.
-- The rule auto-discovers barcodes by inspecting `data/ITSx/` so additional barcodes can be injected without editing the rule file.
+- `itsx_deterministic: true` forces a single thread (`--cpu 1 --multi_thread F`)
+  for reproducible output, at the cost of speed.
+- The rule auto-discovers barcodes by inspecting `data/ITSx/`, so additional barcodes can be injected without editing the rule file.
 - Sequence validation thresholds come from the shared `sequence_validation` block; any sequence failing length or `N`-content checks will not be reinserted.
 
 ## Outputs
@@ -44,4 +47,6 @@ Key points:
   ```bash
   snakemake --use-conda --cores 16 data/processed/itsx_run_ITS2.done
   ```
-- Inspect unprocessed sequences: `data/MSA/classification/msa_unprocessed_sequences.csv` is updated after the post-ITSx deduplication rule.
+- The `barcode_status` column in the `sequences` table tracks each sequence
+  through extraction (`Pending` → `ITSx`/`no_detection` → `Processed`), so you
+  can audit ITSx outcomes directly in the database.

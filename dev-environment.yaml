@@ -1,32 +1,56 @@
-name: its-pipeline-dev
+# Development environment for CurateMake.
+#
+# Standalone environment that extends the orchestration toolchain with linters,
+# type checkers, test runners, and the MkDocs documentation stack. Create it
+# alongside (not instead of) the `curatemake` environment.
+#
+# Usage:
+#   conda env create -f dev-environment.yaml
+#   conda activate curatemake-dev
+
+name: curatemake-dev
 channels:
   - conda-forge
   - bioconda
   - defaults
 
 dependencies:
-  # Include all dependencies from the main environment
-  - file: environment.yaml
+  - python=3.10
+  - pip
 
-  # Core development tools
+  # Workflow engine (so the dev env can run dry-runs on its own)
+  - snakemake-minimal>=7.0
+  - python-dotenv
+  - pyyaml
+  - pandas
+  - graphviz
+  - pygraphviz
+
+  # Code quality
   - black
   - flake8
   - isort
   - mypy
   - pylint
   - pre-commit
+
+  # Testing
   - pytest
   - pytest-cov
   - pytest-xdist
+
+  # Interactive development
   - jupyterlab
   - jupyterlab-git
   - python-lsp-server
+
+  # Type stubs
   - types-requests
   - types-pyyaml
   - types-setuptools
-  - python-dotenv
 
   # Documentation
+  - mkdocs
   - mkdocs-material
   - mkdocstrings
   - mkdocstrings-python

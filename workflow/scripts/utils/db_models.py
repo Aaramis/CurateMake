@@ -112,6 +112,7 @@ class Sequence(Base):
         Index('idx_sequences_barcode', 'barcode'),
         Index('idx_sequences_length', 'length'),
         Index('idx_sequences_status', 'barcode_status'),
+        Index('idx_sequences_original_id', 'original_id'),  # For bulk_insert_sequences fetch queries
     )
 
     def __repr__(self):
@@ -211,10 +212,10 @@ class SativaWarning(Base):
     original_tax_id = Column(String(36), ForeignKey('taxonomy.tax_id', ondelete='CASCADE'), nullable=False)
 
     # Warning type
-    warning_type = Column(String, nullable=False)  # DELETION_SIMPLE, COL_MODIFIED_SATIVA, COL_NO_MATCH, DELETION_MULTIPLE
+    warning_type = Column(String, nullable=False)  # DELETION_SIMPLE, DELETION_MULTIPLE, COL_MATCHED, COL_MODIFIED_SATIVA, COL_NO_MATCH
 
     # SATIVA information
-    sativa_modification_type = Column(String)  # DELETION, SUBSTITUTION, COMPLETION
+    sativa_modification_type = Column(String)  # DELETION_SIMPLE, DELETION_MULTIPLE, SUBSTITUTION, COMPLETION
     sativa_confidence = Column(Float)
     sativa_original_taxonomy = Column(Text)  # Semicolon-separated path
     sativa_proposed_taxonomy = Column(Text)  # Semicolon-separated path
@@ -239,11 +240,11 @@ class SativaWarning(Base):
     # Constraints
     __table_args__ = (
         CheckConstraint(
-            "warning_type IN ('DELETION_SIMPLE', 'DELETION_MULTIPLE', 'COL_MODIFIED_SATIVA', 'COL_NO_MATCH')",
+            "warning_type IN ('DELETION_SIMPLE', 'DELETION_MULTIPLE', 'COL_MATCHED', 'COL_MODIFIED_SATIVA', 'COL_NO_MATCH')",
             name='check_warning_type_values'
         ),
         CheckConstraint(
-            "sativa_modification_type IS NULL OR sativa_modification_type IN ('DELETION', 'SUBSTITUTION', 'COMPLETION')",
+            "sativa_modification_type IS NULL OR sativa_modification_type IN ('DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION')",
             name='check_sativa_modification_type_values'
         ),
         # Performance indices
@@ -339,12 +340,22 @@ def get_engine(db_type: str = "sqlite", echo: bool = False, **kwargs):
             raise ValueError("PostgreSQL password is required")
 
         url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+        # PostgreSQL connection options with timeout configuration
+        connect_args = {
+            'connect_timeout': 30,  # Connection timeout
+            'options': '-c statement_timeout=600000 -c idle_in_transaction_session_timeout=600000'  # 10min query, 10min idle
+        }
+
         engine = create_engine(
             url,
             echo=echo,
             pool_size=pool_size,
             max_overflow=max_overflow,
             pool_pre_ping=True,  # Verify connections before using
+            pool_recycle=300,  # Recycle connections after 5 minutes to avoid stale connections
+            pool_timeout=30,  # Timeout for getting connection from pool
+            connect_args=connect_args,
             isolation_level="READ COMMITTED"  # Best for concurrent writes (parallel rules)
         )
 

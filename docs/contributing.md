@@ -55,9 +55,9 @@ To propose a new feature:
 
 ### Requirements
 
-- Python 3.8+
+- Python 3.10 (matches the pipeline environments)
 - Git
-- GitHub account
+- A GitHub account
 - Basic familiarity with Snakemake
 
 ### Workflow
@@ -65,16 +65,17 @@ To propose a new feature:
 1. **Fork** the repository
 2. Clone your fork locally:
    ```bash
-   git clone https://github.com/<your-user>/ITS-pipeline.git
-   cd ITS-pipeline/6.CurateMake
+   git clone https://github.com/<your-user>/CurateMake.git
+   cd CurateMake
    ```
 3. Create a feature branch:
    ```bash
    git checkout -b feature/<feature-name>
    ```
-4. Install development dependencies (optional):
+4. Create the development environment (optional):
    ```bash
-   pip install -e ".[dev]"
+   conda env create -f dev-environment.yaml
+   conda activate curatemake-dev
    ```
 5. Implement your changes
 6. Check formatting/linting:
@@ -155,7 +156,7 @@ pytest tests/test_utils.py::test_my_function
 
 ## Code review
 
-Toutes les contributions passent par un processus de revue de code. Voici comment cela fonctionne :
+Every contribution goes through a code-review process:
 
 1. Open a Pull Request
 2. Ensure tests/dry-runs pass and CI is green
@@ -176,6 +177,7 @@ If you have questions or run into issues:
 2. Open a GitHub issue
 3. Contact the maintainers (see AUTHORS.md) for sensitive topics
 
-## Reconnaissance
+## Acknowledgements
 
-Thanks to everyone who contributes time and ideas—your name is added to CONTRIBUTORS.md once your first PR lands.
+Thanks to everyone who contributes time and ideas — your name is added to
+CONTRIBUTORS.md once your first PR lands.

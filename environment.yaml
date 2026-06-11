@@ -1,73 +1,35 @@
-name: its-pipeline
+# Orchestration environment for CurateMake.
+#
+# This is the ONLY environment you activate by hand. It holds Snakemake and the
+# dependencies needed to parse the Snakefile and launch jobs. The heavy
+# scientific tooling (ITSx, MAFFT, trimAl, HMMER, RAxML/SATIVA, ...) lives in the
+# per-rule environments under workflow/envs/ and is installed automatically by
+# Snakemake when the workflow is run with `--use-conda`.
+#
+# Usage:
+#   conda env create -f environment.yaml      # or: mamba env create -f environment.yaml
+#   conda activate curatemake
+#   snakemake --use-conda --cores <N>
+
+name: curatemake
 channels:
   - conda-forge
   - bioconda
   - defaults
 
 dependencies:
-  # Core Python
   - python=3.10
   - pip
 
-  # Package management
-  - conda
+  # Faster Conda solver used by Snakemake to build per-rule environments
   - mamba
-  - pip
-  - pip-tools
 
-  # Core data science
-  - tqdm
-  # - numpy>=1.21.0
-  # - pandas>=1.3.0
-  # - scipy>=1.7.0
-  # - scikit-learn>=1.0.0
-  # - matplotlib>=3.4.0
-  # - seaborn>=0.11.0
-  # - jupyter
-  # - jupyterlab
+  # Workflow engine and launch-time dependencies
+  - snakemake-minimal>=7.0
+  - python-dotenv      # Snakefile loads .env at parse time
+  - pyyaml
+  - pandas
 
-  # Bioinformatics tools
-  # - biopython>=1.79
-  - itsx
-  - mafft
-  # - sativa>=1.10
-  # - triche>=2.0.1
-  # - blast
-  - hmmer
-  - trimal
-
-  # Database
-  - psycopg2
-  - sqlalchemy
-  - alembic
-  - sqlite
-
-  # Workflow
-  - snakemake>=7.0
+  # DAG visualisation (snakemake --dag | dot ...)
   - graphviz
   - pygraphviz
-  - pandas-stubs
-  - networkx
-
-  # Documentation
-  - mkdocs
-  - mkdocs-material
-  - mkdocstrings
-  - mkdocstrings-python
-
-  # Development tools (could be moved to dev environment)
-  - black
-  - flake8
-  - mypy
-  - pytest
-  - pytest-cov
-  - pre-commit
-
-  # Install local package in development mode
-  - pip:
-    - -e .
-
-# Environment variables
-variables:
-  PGDATA: "{{ CONDA_PREFIX }}/pg"
-  PGPORT: 5432

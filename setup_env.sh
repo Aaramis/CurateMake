@@ -1,44 +1,59 @@
 #!/bin/bash
+#
+# Bootstrap script for CurateMake.
+#
+# Creates the orchestration Conda environment (curatemake), optionally the
+# development environment (curatemake-dev), installs pre-commit hooks when
+# available, and prepares a local .env file from the template.
+#
+# Usage:
+#   ./setup_env.sh
 
-# Setup script for bio-pipeline environment
-# Usage: source setup_env.sh
+set -euo pipefail
 
-# Exit on error
-set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Check if Conda is installed
-if ! command -v conda &> /dev/null; then
-    echo "Conda not found. Please install Miniconda or Anaconda first."
+# Prefer mamba when available (much faster solver), fall back to conda.
+if command -v mamba &> /dev/null; then
+    CONDA_BIN="mamba"
+elif command -v conda &> /dev/null; then
+    CONDA_BIN="conda"
+else
+    echo "Error: neither mamba nor conda found. Install Miniforge/Mambaforge first." >&2
     exit 1
 fi
 
-# # Create and activate the base environment
-# echo "Creating base environment..."
-# conda env create -f workflow/envs/environment.yaml
-# conda activate its-pipeline
+echo "Using '$CONDA_BIN' to manage environments."
 
-# echo "Base environment created and activated."
+# 1. Orchestration environment (Snakemake)
+echo "Creating the orchestration environment (curatemake)..."
+"$CONDA_BIN" env create -f environment.yaml || \
+    echo "Environment 'curatemake' already exists; skipping creation."
 
-# Create development environment if requested
-read -p "Would you like to create a development environment? [y/N] " -n 1 -r
+# 2. Optional development environment
+read -p "Create the development environment (curatemake-dev)? [y/N] " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "Creating development environment..."
-    conda env create -f workflow/envs/dev-environment.yaml --name its-pipeline-dev
-    echo "Development environment created. Activate with: conda activate its-pipeline-dev"
+    "$CONDA_BIN" env create -f dev-environment.yaml || \
+        echo "Environment 'curatemake-dev' already exists; skipping creation."
+    echo "Activate it with: conda activate curatemake-dev"
 fi
 
-# Set up pre-commit hooks
-echo "Setting up pre-commit hooks..."
-pre-commit install
+# 3. Pre-commit hooks (only if pre-commit is installed and a config exists)
+if command -v pre-commit &> /dev/null && [ -f .pre-commit-config.yaml ]; then
+    echo "Installing pre-commit hooks..."
+    pre-commit install
+fi
 
-# Create .env file if it doesn't exist
+# 4. Local .env (project-root, loaded by the Snakefile)
 if [ ! -f .env ]; then
-    echo "Creating .env file from template..."
-    cp .env.example .env
-    echo "Please edit the .env file with your configuration."
+    echo "Creating .env from config/.env.example..."
+    cp config/.env.example .env
+    echo "Edit .env to set your database credentials (PostgreSQL backend only)."
 fi
 
-echo "Setup complete!"
-echo "Activate the environment with: conda activate its-pipeline"
-echo "or for development: conda activate its-pipeline-dev"
+echo
+echo "Setup complete."
+echo "Activate the pipeline with: conda activate curatemake"
+echo "Then run a dry-run with:    snakemake -np"

@@ -185,7 +185,8 @@ rule msa_align_task:
         output_folder=MSA_DIR,
         seq_col=config["msa"]['seq_col'],
         id_col=config["msa"]['id_col'],
-        tax_columns=" ".join(config["msa"]['tax_columns'])
+        tax_columns=" ".join(config["msa"]['tax_columns']),
+        deterministic=lambda wildcards: "--deterministic" if config["msa"].get("deterministic", False) else ""
     log:
         "logs/MSA/align/{barcode}/{level}/{clade}.log"
     benchmark:
@@ -197,13 +198,14 @@ rule msa_align_task:
         python workflow/scripts/MSA/run_alignment_task.py \
             --manifest {input.manifest} \
             --barcode {wildcards.barcode} \
-            --clade {wildcards.clade} \
+            --clade {wildcards.clade:q} \
             --input-csv {input.csv} \
             --output-folder {params.output_folder} \
             --seq-col {params.seq_col} \
             --id-col {params.id_col} \
             --tax-columns {params.tax_columns} \
-            --log-file {log}
+            {params.deterministic} \
+            --log-file {log:q}
         """
 
 
@@ -234,14 +236,14 @@ rule msa_trim_task:
     shell:
         """
         python workflow/scripts/MSA/trim_alignment_task.py \
-            --input-msa {input.msa} \
-            --trimmed-msa {output.trimmed} \
+            --input-msa {input.msa:q} \
+            --trimmed-msa {output.trimmed:q} \
             --barcode {wildcards.barcode} \
-            --clade {wildcards.clade} \
+            --clade {wildcards.clade:q} \
             --min-overlap {params.seq_overlap} \
             --res-overlap {params.res_overlap} \
-            --removed-json {output.removed} \
-            --log-file {log}
+            --removed-json {output.removed:q} \
+            --log-file {log:q}
         """
 
 
@@ -270,11 +272,11 @@ rule msa_build_hmm_task:
     shell:
         """
         python workflow/scripts/MSA/build_hmm_task.py \
-            --trimmed-msa {input.trimmed} \
-            --output-dir {params.output_dir} \
+            --trimmed-msa {input.trimmed:q} \
+            --output-dir {params.output_dir:q} \
             --barcode {wildcards.barcode} \
-            --clade {wildcards.clade} \
-            --log-file {log}
+            --clade {wildcards.clade:q} \
+            --log-file {log:q}
         """
 
 

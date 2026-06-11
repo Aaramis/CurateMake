@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 # Constants
 FASTA_CHUNK_SIZE = 10000    # Increased to reduce overhead
-BATCH_SIZE = 10000          # Larger batches to reduce DB I/O
 QUEUE_SIZE = 20             # More buffer to avoid stalls
 MIN_SEQUENCE_LENGTH = 50    # Early filtering
+DEFAULT_BATCH_SIZE = 1000   # Default batch size if not provided in config
 
 @dataclass
 class SequenceRecord:
@@ -46,11 +46,14 @@ class SequenceRecord:
 
 class PLANITSParser:
     """PLANITS parser and ingestion orchestrator."""
-    
-    def __init__(self, db_manager, config_validation: Dict):
+
+    def __init__(self, db_manager, config_validation: Dict, database_formatting: Optional[Dict] = None):
         self.db_manager = db_manager
         self.config_validation = config_validation
-        self.batch_size = BATCH_SIZE
+
+        # Read batch_size from config
+        formatting_config = database_formatting or {}
+        self.batch_size = formatting_config.get('batch_size', DEFAULT_BATCH_SIZE)
         
         # Thread-safe statistics
         self.stats = mp.Manager().dict({
@@ -473,6 +476,7 @@ def main():
             )
             output_report = snakemake.output[0]
             config_validation = snakemake.params.sequence_validation
+            database_formatting = snakemake.params.database_formatting
             config = snakemake.config
             log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
             file_handler = logging.FileHandler(log_file, mode="w")
@@ -485,19 +489,20 @@ def main():
             input_db = "test_output.sqlite"
             config = {'database': {'path': input_db}}
             config_validation = {
-                'min_length': 50, 
-                'valid_chars': 'ATCGN', 
+                'min_length': 50,
+                'valid_chars': 'ATCGN',
                 'max_n_fraction': 0.1
             }
+            database_formatting = {}
 
         # Import and initialization
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
-        
+
         db_manager = get_database_manager(config)
-        
+
         # Parser
-        parser = PLANITSParser(db_manager, config_validation)
+        parser = PLANITSParser(db_manager, config_validation, database_formatting)
         
         # Detect version
         version_match = parser.version_pattern.search(Path(input_file).name)
@@ -529,7 +534,7 @@ def main():
             'performance_metrics': {
                 'cpu_cores_used': os.cpu_count(),
                 'memory_optimizations': True,
-                'batch_size': BATCH_SIZE,
+                'batch_size': parser.batch_size,
                 'chunk_size': FASTA_CHUNK_SIZE
             },
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')

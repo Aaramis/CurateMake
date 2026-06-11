@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+title: "CurateMake: a reproducible Snakemake workflow for curating and validating ITS reference sequences"
+message: "If you use this software, please cite it using the metadata below."
+type: software
+authors:
+  - given-names: Auguste
+    family-names: Gardette
+    email: auguste.gardette@gmail.com
+    affiliation: "UMMISCO, Institut de Recherche pour le Développement (IRD), France"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"   # TODO: add your ORCID iD
+  # TODO: add co-authors / supervisors in submission order, e.g.:
+  # - given-names: ""
+  #   family-names: ""
+  #   affiliation: ""
+  #   orcid: ""
+license: GPL-3.0-or-later
+repository-code: "https://github.com/Aaramis/CurateMake"
+url: "https://github.com/Aaramis/CurateMake"
+keywords:
+  - ITS
+  - metabarcoding
+  - DNA metabarcoding
+  - reference database curation
+  - taxonomy validation
+  - phylogenetic placement
+  - Snakemake
+  - bioinformatics workflow
+abstract: >-
+  CurateMake is a reproducible Snakemake workflow that ingests heterogeneous ITS
+  (ITS1/ITS2) barcode datasets, harmonises their taxonomy against the Catalogue
+  of Life, extracts barcode regions with ITSx, builds curated multiple-sequence
+  alignments, validates taxonomic labels phylogenetically with SATIVA, and stores
+  every record in a fully traceable relational database.
+# version: "1.0.0"                         # TODO: set at release
+# date-released: "2026-01-01"              # TODO: set at release
+# doi: "10.5281/zenodo.XXXXXXX"            # TODO: add the archived Zenodo DOI
+
+# Once the Methods in Ecology and Evolution paper is published, set it as the
+# preferred citation so that `cff` tooling and GitHub point users to the article.
+# preferred-citation:
+#   type: article
+#   title: ""
+#   authors:
+#     - given-names: Auguste
+#       family-names: Gardette
+#   journal: "Methods in Ecology and Evolution"
+#   year: 2026
+#   doi: ""

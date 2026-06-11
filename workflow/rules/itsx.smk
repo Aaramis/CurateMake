@@ -8,6 +8,7 @@ from pathlib import Path
 
 ITSX_FASTA_DIR = config.get("itsx_output_dir", "data")
 ITSX_BARCODES = config["msa"].get("barcodes", ["ITS", "ITS1", "ITS2"])
+ITSX_DETERMINISTIC = bool(config.get("itsx_deterministic", False))
 ITSX_FASTA_FILES = [
     os.path.join(ITSX_FASTA_DIR, f"{barcode}.fasta") for barcode in ITSX_BARCODES
 ]
@@ -18,7 +19,7 @@ def get_itsx_barcodes(wildcards):
     itsx_dir = Path("data/ITSx")
     if itsx_dir.exists():
         barcodes = [d.name for d in itsx_dir.iterdir() if d.is_dir()]
-        return barcodes
+        return sorted(barcodes)
     return ITSX_BARCODES  # Fallback
 
 
@@ -70,7 +71,8 @@ rule run_itsx_barcode:
     params:
         output_dir="data/ITSx/{barcode}",
         temp_dir="data/ITSx/.temp_{barcode}",
-        cpu=config.get("itsx_cpu", 30)
+        cpu=1 if ITSX_DETERMINISTIC else config.get("itsx_cpu", 30),
+        multi_thread="F" if ITSX_DETERMINISTIC else "T"
     output:
         done="data/processed/itsx_run_{barcode}.done"
     log:
@@ -79,7 +81,7 @@ rule run_itsx_barcode:
         "benchmarks/itsx/run_itsx_{barcode}.benchmark.txt"
     conda:
         "../envs/itsx.yaml"
-    threads: config.get("itsx_cpu", 30)
+    threads: 1 if ITSX_DETERMINISTIC else config.get("itsx_cpu", 30)
     shell:
         """
         mkdir -p {params.output_dir}
@@ -88,7 +90,7 @@ rule run_itsx_barcode:
         echo "Processing {wildcards.barcode}..." >> {log} 2>&1
 
         ITSx --graphical F --preserve T --save_regions all \
-            --cpu {params.cpu} --multi_thread T --fasta T --summary T \
+            --cpu {params.cpu} --multi_thread {params.multi_thread} --fasta T --summary T \
             --temp {params.temp_dir} \
             -i {input.fasta} \
             -o {params.output_dir}/{wildcards.barcode} \

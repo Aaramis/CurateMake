@@ -58,7 +58,7 @@ msa:
   large_task_threshold: 2000
   trimal_seq_overlap: 75
   trimal_res_overlap: 0.5
-  classification_threads_per_worker: 4
+  classification_threads_per_worker: 1   # single-threaded hmmscan for reproducibility
   classification_max_workers: 20
 ```
 

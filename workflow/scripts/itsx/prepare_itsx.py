@@ -63,20 +63,26 @@ class SequenceExtractor:
 
         sequences_by_barcode: Dict[str, List[Tuple[int, str, str, int]]] = defaultdict(list)
 
-        try:
+        def fetch_rows():
             with self.db_manager.get_session() as session:
-                result = session.execute(query)
+                return list(session.execute(query))
 
-                for row in result:
-                    seq_id = row.seq_id
-                    sequence = row.sequence
-                    original_id = row.original_id
-                    barcode = row.barcode
-                    tax_id = row.tax_id
+        try:
+            rows = self.db_manager._execute_with_retry(
+                "itsx_extract_col_sequences",
+                fetch_rows
+            )
 
-                    sequences_by_barcode[barcode].append(
-                        (seq_id, sequence, original_id, tax_id)
-                    )
+            for row in rows:
+                seq_id = row.seq_id
+                sequence = row.sequence
+                original_id = row.original_id
+                barcode = row.barcode
+                tax_id = row.tax_id
+
+                sequences_by_barcode[barcode].append(
+                    (seq_id, sequence, original_id, tax_id)
+                )
 
             logger.info("Sequences extracted per barcode:")
             for barcode, sequences in sequences_by_barcode.items():
@@ -108,14 +114,18 @@ class SequenceExtractor:
 
         created_files: List[str] = []
 
-        for barcode, sequences in sequences_by_barcode.items():
+        for barcode in sorted(sequences_by_barcode):
+            sequences = sequences_by_barcode[barcode]
             # Output: [barcode].fasta
             filename = f"{barcode}.fasta"
             filepath = output_path / filename
 
             try:
                 with filepath.open('w') as f:
-                    for seq_id, sequence, original_id, tax_id in sequences:
+                    for seq_id, sequence, original_id, tax_id in sorted(
+                        sequences,
+                        key=lambda row: (str(row[2]), str(row[1]))
+                    ):
                         # Header uses seq_id and tax_id as requested
                         header = f">{seq_id}|tax_id:{tax_id}|original_id:{original_id}"
                         f.write(f"{header}\n")
@@ -255,6 +265,18 @@ def main():
             # FASTA generation
             logger.info("Generating FASTA files...")
             created_files = extractor.write_fasta_files(sequences_by_barcode, output_dir)
+
+            # Robustness (ported from 6): ensure every expected barcode has at least an
+            # empty FASTA placeholder, so downstream ITSx barcode rules remain optional
+            # (no crash when a barcode yields no sequences).
+            expected_barcodes = config.get("msa", {}).get("barcodes", [])
+            if expected_barcodes:
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                for barcode in expected_barcodes:
+                    filepath = output_path / f"{barcode}.fasta"
+                    if not filepath.exists():
+                        filepath.touch()
 
             # Statistics generation
             logger.info("Computing extraction statistics...")

@@ -36,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--id-col", required=True, help="ID column in the CSV")
     parser.add_argument("--tax-columns", required=True, nargs='+', help="Taxonomy columns list")
     parser.add_argument("--log-file", required=True, help="Log file path")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Use fully reproducible MAFFT (FFT-NS-2, single thread). "
+                             "Default off = production behaviour (--auto).")
     return parser.parse_args()
 
 
@@ -62,10 +65,15 @@ def main():
     df = pd.read_csv(args.input_csv)
 
     seq_ids = task["sequence_ids"]
-    subset = df[df[args.id_col].isin(seq_ids)]
+    subset = df[df[args.id_col].isin(seq_ids)].copy()
     if subset.empty:
         logger.error("No sequences found for task %s/%s", args.barcode, args.clade)
         raise SystemExit(1)
+
+    # Preserve manifest ordering for deterministic MAFFT input.
+    order_map = {seq_id: idx for idx, seq_id in enumerate(seq_ids)}
+    subset["__order"] = subset[args.id_col].map(order_map)
+    subset = subset.sort_values("__order", kind="mergesort").drop(columns="__order")
 
     logger.info("Running MAFFT for %s/%s (%d sequences)", args.barcode, args.clade, len(subset))
     output_path = run_mafft(
@@ -76,7 +84,8 @@ def main():
         output_folder=args.output_folder,
         seq_col=args.seq_col,
         tax_columns=args.tax_columns,
-        id_col=args.id_col
+        id_col=args.id_col,
+        deterministic=args.deterministic
     )
 
     if not output_path:

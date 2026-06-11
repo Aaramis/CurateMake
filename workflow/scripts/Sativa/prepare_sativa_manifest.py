@@ -29,12 +29,24 @@ def infer_taxon_from_filename(msa_file: Path) -> str:
     return msa_file.stem.replace("_msa", "")
 
 
+def is_fasta_empty(fasta_path: Path) -> bool:
+    """Check if a FASTA file is empty (no sequences)."""
+    if not fasta_path.exists() or fasta_path.stat().st_size == 0:
+        return True
+    with fasta_path.open("r") as f:
+        for line in f:
+            if line.startswith(">"):
+                return False
+    return True
+
+
 def list_msa_files(msa_dir: Path, barcodes: List[str], tax_levels: List[str]) -> List[Tuple[str, str, str, Path]]:
     """
     Enumerate every available MSA file for the requested barcodes/levels.
     Returns: List of tuples (barcode, tax_level, taxon, msa_path)
     """
     results: List[Tuple[str, str, str, Path]] = []
+    skipped_empty = 0
 
     if not msa_dir.exists():
         logger.warning("MSA directory does not exist: %s", msa_dir)
@@ -54,8 +66,14 @@ def list_msa_files(msa_dir: Path, barcodes: List[str], tax_levels: List[str]) ->
             candidates = trimmed if trimmed else sorted(align_dir.glob("*_msa.fasta"))
 
             for msa_file in candidates:
+                if is_fasta_empty(msa_file):
+                    skipped_empty += 1
+                    continue
                 taxon = infer_taxon_from_filename(msa_file)
                 results.append((barcode, level, taxon, msa_file))
+
+    if skipped_empty > 0:
+        logger.info("Skipped %d empty MSA file(s)", skipped_empty)
 
     return results
 

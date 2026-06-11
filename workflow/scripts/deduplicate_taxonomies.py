@@ -67,18 +67,27 @@ class TaxonomyDeduplicator:
             HAVING COUNT(*) > 1
         """
 
-        with self.db_manager.get_session() as session:
-            result = session.execute(text(query))
+        def fetch_duplicates():
+            groups = []
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(query))
 
-            for row in result:
-                keeper_id = row[0]
-                # Convert "uuid1,uuid2,uuid3" string into a list
-                all_ids = [id_str.strip() for id_str in row[1].split(',')]
-                # Remove every ID except the keeper
-                ids_to_remove = [id_val for id_val in all_ids if id_val != keeper_id]
+                for row in result:
+                    keeper_id = row[0]
+                    # Convert "uuid1,uuid2,uuid3" string into a list
+                    all_ids = [id_str.strip() for id_str in row[1].split(',')]
+                    # Remove every ID except the keeper
+                    ids_to_remove = [id_val for id_val in all_ids if id_val != keeper_id]
 
-                if ids_to_remove:
-                    duplicate_groups.append((keeper_id, ids_to_remove))
+                    if ids_to_remove:
+                        groups.append((keeper_id, ids_to_remove))
+
+            return groups
+
+        duplicate_groups = self.db_manager._execute_with_retry(
+            "dedup_taxonomies_find_duplicates",
+            fetch_duplicates
+        )
 
         self.stats['duplicate_groups'] = len(duplicate_groups)
         self.stats['duplicates_removed'] = sum(len(ids) for _, ids in duplicate_groups)
@@ -93,6 +102,7 @@ class TaxonomyDeduplicator:
         """
         Merge duplicate taxonomies by updating seq_tax references while
         respecting the unique constraint (seq_id, tax_id, backbone).
+        Each UPDATE is retried individually to handle YugabyteDB RPC timeouts.
         """
 
         logger.info("Merging duplicate taxonomies...")
@@ -111,19 +121,24 @@ class TaxonomyDeduplicator:
 
         all_ids_to_remove = list(id_remap.keys())
         total_sequences_updated = 0
+        total_remaps = len(id_remap)
 
-        with self.db_manager.get_session() as session:
-            try:
-                logger.info(f"Updating seq_tax references for {len(id_remap)} taxonomies...")
+        logger.info(f"Updating seq_tax references for {total_remaps} taxonomies...")
 
-                # 2. UPDATE each old tax_id -> new tax_id safely
-                for old_tax_id, new_tax_id in id_remap.items():
+        # 2. UPDATE each old tax_id -> new tax_id safely with individual retry
+        for idx, (old_tax_id, new_tax_id) in enumerate(id_remap.items(), start=1):
 
+            # Log progress every 100 updates or at the end
+            if idx % 100 == 0 or idx == total_remaps:
+                logger.info(f"  Processing taxonomy {idx}/{total_remaps}...")
+
+            def merge_single_taxonomy():
+                """Merge a single taxonomy with its own transaction."""
+                with self.db_manager.get_session() as session:
                     # ⚠ Count affected rows before updating
                     count = session.query(func.count(SeqTax.seq_id)).filter(
                         SeqTax.tax_id == old_tax_id
                     ).scalar()
-                    total_sequences_updated += count
 
                     # ⚠ SAFE UPDATE to avoid PK collisions (NOT EXISTS)
                     safe_update_sql = text(f"""
@@ -152,69 +167,110 @@ class TaxonomyDeduplicator:
 
                     session.execute(delete_remaining_sql, {"old_tax_id": old_tax_id})
 
-                logger.info("All seq_tax references updated safely.")
+                    return count
 
-                # 3. Delete duplicate taxonomy rows
-                logger.info(f"Deleting {len(all_ids_to_remove)} obsolete taxonomy rows...")
+            # Execute with retry for this specific taxonomy
+            count = self.db_manager._execute_with_retry(
+                f"dedup_taxonomies_merge_{idx}",
+                merge_single_taxonomy
+            )
+            total_sequences_updated += count
 
-                delete_batch = 10000
-                for i in range(0, len(all_ids_to_remove), delete_batch):
-                    batch_ids = all_ids_to_remove[i:i + delete_batch]
+        logger.info("All seq_tax references updated safely.")
+        logger.info("Seq_tax reference updates committed. Proceeding with batched taxonomy deletions...")
+        self._delete_taxonomies_in_batches(all_ids_to_remove)
+        logger.info("Taxonomy merge completed successfully.")
 
+        self.stats['sequences_updated'] = total_sequences_updated
+
+    def _delete_taxonomies_in_batches(self, tax_ids: List[str], batch_size: int = 2000):
+        """
+        Delete taxonomy rows in manageable batches to avoid long-running transactions.
+
+        Parameters
+        ----------
+        tax_ids : List[str]
+            Taxonomy identifiers slated for removal.
+        batch_size : int
+            Number of rows to delete per transaction.
+        """
+        if not tax_ids:
+            logger.info("No duplicate taxonomy rows to delete.")
+            return
+
+        total = len(tax_ids)
+        logger.info(f"Deleting {total} taxonomy rows in batches of {batch_size}...")
+
+        for batch_index, start in enumerate(range(0, total, batch_size), start=1):
+            batch = tax_ids[start:start + batch_size]
+
+            def delete_op(batch_ids=batch):
+                with self.db_manager.get_session() as session:
                     session.query(Taxonomy).filter(
                         Taxonomy.tax_id.in_(batch_ids)
                     ).delete(synchronize_session=False)
 
-                logger.info("Duplicate taxonomies removed.")
+            if hasattr(self.db_manager, "_execute_with_retry"):
+                operation_name = f"taxonomy_delete_batch_{batch_index}"
+                self.db_manager._execute_with_retry(operation_name, delete_op)
+            else:
+                delete_op()
 
-                session.commit()
-                logger.info("Taxonomy merge completed successfully.")
+            processed = min(start + batch_size, total)
+            if batch_index % 10 == 0 or processed == total:
+                logger.info("  - Deleted %d/%d taxonomy rows", processed, total)
 
-            except Exception as e:
-                session.rollback()
-                logger.error(f"Error while merging taxonomies: {e}", exc_info=True)
-                raise
-
-        self.stats['sequences_updated'] = total_sequences_updated
+        logger.info("Duplicate taxonomy rows deleted in batches.")
 
     
     def verify_integrity(self) -> bool:
         """Verify integrity after deduplication."""
         logger.info("Performing final integrity checks...")
 
-        with self.db_manager.get_session() as session:
-            # Ensure no duplicate groups remain
-            result = session.execute(text(f"""
-                SELECT COUNT(*) FROM (
-                    SELECT 1 FROM {self.db_manager.taxonomy_table}
-                    GROUP BY kingdom, phylum, class_, order_, family, genus, species
-                    HAVING COUNT(*) > 1
-                ) AS subquery
-            """))
-            remaining_duplicates = result.scalar()
+        def check_op():
+            with self.db_manager.get_session() as session:
+                # Ensure no duplicate groups remain
+                result = session.execute(text(f"""
+                    SELECT COUNT(*) FROM (
+                        SELECT 1 FROM {self.db_manager.taxonomy_table}
+                        GROUP BY kingdom, phylum, class_, order_, family, genus, species
+                        HAVING COUNT(*) > 1
+                    ) AS subquery
+                """))
+                remaining_duplicates = result.scalar()
 
-            # Detect orphan seq_tax relations
-            result = session.execute(text(f"""
-                SELECT COUNT(*) FROM {self.db_manager.seq_tax_table} st
-                LEFT JOIN {self.db_manager.taxonomy_table} t ON st.tax_id = t.tax_id
-                WHERE t.tax_id IS NULL
-            """))
-            orphaned_relations = result.scalar()
+                # Detect orphan seq_tax relations
+                result = session.execute(text(f"""
+                    SELECT COUNT(*) FROM {self.db_manager.seq_tax_table} st
+                    LEFT JOIN {self.db_manager.taxonomy_table} t ON st.tax_id = t.tax_id
+                    WHERE t.tax_id IS NULL
+                """))
+                orphaned_relations = result.scalar()
 
-            if remaining_duplicates == 0 and orphaned_relations == 0:
-                logger.info("✓ Integrity verification passed.")
-                return True
-            else:
-                logger.warning(f"⚠ Integrity issues detected: "
-                               f"{remaining_duplicates} duplicate groups remaining, "
-                               f"{orphaned_relations} orphaned relations.")
-                return False
+            return remaining_duplicates, orphaned_relations
+
+        remaining_duplicates, orphaned_relations = self.db_manager._execute_with_retry(
+            "dedup_taxonomies_verify",
+            check_op
+        )
+
+        if remaining_duplicates == 0 and orphaned_relations == 0:
+            logger.info("✓ Integrity verification passed.")
+            return True
+        else:
+            logger.warning(f"⚠ Integrity issues detected: "
+                           f"{remaining_duplicates} duplicate groups remaining, "
+                           f"{orphaned_relations} orphaned relations.")
+            return False
 
     def optimize_database(self):
         """Optimize the database after deduplication."""
         logger.info("Running database optimization (VACUUM)...")
         # Use the db_manager helper which handles SQLite and PostgreSQL
-        self.db_manager.vacuum_database()
+        self.db_manager._execute_with_retry(
+            "dedup_taxonomies_vacuum",
+            self.db_manager.vacuum_database
+        )
         logger.info("Database optimization completed.")
     
     def deduplicate_taxonomies(self):
@@ -224,9 +280,15 @@ class TaxonomyDeduplicator:
         self.stats['final_unique_tax_in_seq'] = 0
 
         try:
-            with self.db_manager.get_session() as session:
-                # Use ORM query instead of raw SQL
-                self.stats['initial_taxonomy_count'] = session.query(func.count(Taxonomy.tax_id)).scalar()
+            def fetch_initial_count():
+                with self.db_manager.get_session() as session:
+                    # Use ORM query instead of raw SQL
+                    return session.query(func.count(Taxonomy.tax_id)).scalar()
+
+            self.stats['initial_taxonomy_count'] = self.db_manager._execute_with_retry(
+                "dedup_taxonomies_initial_count",
+                fetch_initial_count
+            )
             logger.info(f"Initial taxonomy count: {self.stats['initial_taxonomy_count']}")
 
             # 0. Prepare indexes
@@ -247,13 +309,21 @@ class TaxonomyDeduplicator:
             integrity_ok = self.verify_integrity()
 
             # 4. Update final stats
-            with self.db_manager.get_session() as session:
-                # Use ORM queries instead of raw SQL
-                self.stats['final_taxonomy_count'] = session.query(func.count(Taxonomy.tax_id)).scalar()
-                self.stats['final_unique_tax_in_seq'] = session.query(
-                    func.count(func.distinct(SeqTax.tax_id))
-                ).scalar()
-                logger.info(f"Final unique tax IDs referenced in seq_tax: {self.stats['final_unique_tax_in_seq']}")
+            def fetch_final_stats():
+                with self.db_manager.get_session() as session:
+                    final_tax_count = session.query(func.count(Taxonomy.tax_id)).scalar()
+                    final_unique_seq = session.query(
+                        func.count(func.distinct(SeqTax.tax_id))
+                    ).scalar()
+                    return final_tax_count, final_unique_seq
+
+            final_tax_count, final_unique_seq = self.db_manager._execute_with_retry(
+                "dedup_taxonomies_final_stats",
+                fetch_final_stats
+            )
+            self.stats['final_taxonomy_count'] = final_tax_count
+            self.stats['final_unique_tax_in_seq'] = final_unique_seq
+            logger.info(f"Final unique tax IDs referenced in seq_tax: {self.stats['final_unique_tax_in_seq']}")
 
             # 5. Optimize storage
             self.optimize_database()

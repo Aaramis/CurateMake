@@ -37,10 +37,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Performance constants
-BATCH_SIZE = 10_000       # Batch size used when writing to the database
 QUEUE_SIZE = 20           # Queue size between reader / workers / writer
 MIN_SEQUENCE_LENGTH = 50  # Default minimum sequence length
 TSV_CHUNK_SIZE = 10_000   # pandas chunk size
+DEFAULT_BATCH_SIZE = 1000  # Default batch size if not provided in config
 
 # Accepted ITS markers
 ACCEPTED_MARKERS = {"ITS", "ITS1", "ITS2"}
@@ -65,10 +65,13 @@ class SequenceRecord:
 class BOLDParser:
     """Parsing and ingestion pipeline from BOLD into the SQLAlchemy database."""
 
-    def __init__(self, db_manager, config_validation: Dict):
+    def __init__(self, db_manager, config_validation: Dict, database_formatting: Optional[Dict] = None):
         self.db_manager = db_manager
         self.config_validation = config_validation
-        self.batch_size = BATCH_SIZE
+
+        # Read batch_size from config
+        formatting_config = database_formatting or {}
+        self.batch_size = formatting_config.get('batch_size', DEFAULT_BATCH_SIZE)
 
         # Shared statistics
         self.stats = mp.Manager().dict({
@@ -302,8 +305,14 @@ class BOLDParser:
                 raw_sequence = raw_sequence.strip().upper().replace("-", "")
                 sequence = self._clean_sequence(raw_sequence)
 
+                original_id = (
+                    row_data.get("record_id")
+                    or row_data.get("processid")
+                    or row_data.get("sampleid")
+                    or ""
+                )
                 record = SequenceRecord(
-                    original_id=(row_data.get("processid", "") or "").strip(),
+                    original_id=str(original_id).strip(),
                     sequence=sequence,
                     length=seq_len,
                     marker_code=(row_data.get("marker_code", "") or "").strip(),
@@ -564,6 +573,7 @@ def main():
             input_file = snakemake.input["source"]
             output_report = snakemake.output["report"]
             config_validation = snakemake.params.sequence_validation
+            database_formatting = snakemake.params.database_formatting
             config = snakemake.config
 
             log_file = (
@@ -594,13 +604,14 @@ def main():
                     "sqlite": {"path": "data/db", "name": "its.db"},
                 }
             }
+            database_formatting = {}
 
         # Import du db_manager depuis utils/
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
         db_manager = get_database_manager(config)
-        parser = BOLDParser(db_manager, config_validation)
+        parser = BOLDParser(db_manager, config_validation, database_formatting)
 
         stats = parser.process_bold_database(input_file=input_file)
 
@@ -621,7 +632,7 @@ def main():
             "performance_metrics": {
                 "cpu_cores_used": os.cpu_count(),
                 "memory_optimizations": True,
-                "batch_size": BATCH_SIZE,
+                "batch_size": parser.batch_size,
                 "chunk_size": TSV_CHUNK_SIZE,
             },
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

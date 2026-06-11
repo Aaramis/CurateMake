@@ -24,7 +24,8 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from sqlalchemy import func, case
+from sqlalchemy import func, case, text
+from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
 # Import database models
@@ -62,7 +63,7 @@ MAX_DEPTH = 3
 # KPI QUERY FUNCTIONS
 # ============================================
 
-def get_kpi_metrics(engine) -> Dict[str, int]:
+def get_kpi_metrics(engine, db_manager=None) -> Dict[str, int]:
     """
     Calculate all 5 KPI metrics.
 
@@ -73,52 +74,121 @@ def get_kpi_metrics(engine) -> Dict[str, int]:
     - unique_taxa_original: Distinct lineages from original taxonomy
     - unique_taxa_after: Distinct lineages after processing (best backbone)
     """
-    session = get_session(engine)
+    SessionFactory = sessionmaker(bind=engine)
 
-    try:
-        # KPI 1: Total original sequences (before ITSx)
-        total_original = session.query(func.count(Sequence.seq_id)).filter(
-            Sequence.parent_seq_id.is_(None)
-        ).scalar()
+    def _run(name, func):
+        if db_manager:
+            return db_manager._execute_with_retry(name, func)
+        return func()
 
-        # KPI 2: Total after all processes (non-duplicates)
-        total_after = session.query(func.count(Sequence.seq_id)).filter(
-            Sequence.barcode_status != 'Duplicate'
-        ).scalar()
+    def fetch_total_original():
+        session = SessionFactory()
+        try:
+            return session.query(func.count(Sequence.seq_id)).filter(
+                Sequence.parent_seq_id.is_(None)
+            ).scalar()
+        finally:
+            session.close()
 
-        # KPI 3: Total database sources
-        total_sources = session.query(func.count(func.distinct(Source.name))).scalar()
+    def fetch_total_after():
+        session = SessionFactory()
+        try:
+            return session.query(func.count(Sequence.seq_id)).filter(
+                Sequence.barcode_status != 'Duplicate'
+            ).scalar()
+        finally:
+            session.close()
 
-        # KPI 4: Unique taxa originally (Raw backbone only)
-        unique_taxa_original = session.query(
-            func.count(func.distinct(SeqTax.tax_id))
-        ).join(
-            Sequence, SeqTax.seq_id == Sequence.seq_id
-        ).filter(
-            Sequence.parent_seq_id.is_(None),
-            SeqTax.backbone == 'Raw'
-        ).scalar()
+    def fetch_total_sources():
+        session = SessionFactory()
+        try:
+            return session.query(func.count(func.distinct(Source.name))).scalar()
+        finally:
+            session.close()
 
-        # KPI 5: Unique taxa after processing (CoL backbone, non-duplicates)
-        unique_taxa_after = session.query(
-            func.count(func.distinct(SeqTax.tax_id))
-        ).join(
-            Sequence, SeqTax.seq_id == Sequence.seq_id
-        ).filter(
-            Sequence.barcode_status != 'Duplicate',
-            SeqTax.backbone == 'CoL'
-        ).scalar()
+    def fetch_unique_taxa_original():
+        # Step 1: seq_ids from sequences only (single-table indexed scan on parent_seq_id)
+        def _fetch_seq_ids():
+            session = SessionFactory()
+            try:
+                return [r[0] for r in session.query(Sequence.seq_id).filter(
+                    Sequence.parent_seq_id.is_(None)
+                ).all()]
+            finally:
+                session.close()
 
-        return {
-            'total_original': total_original or 0,
-            'total_after': total_after or 0,
-            'total_sources': total_sources or 0,
-            'unique_taxa_original': unique_taxa_original or 0,
-            'unique_taxa_after': unique_taxa_after or 0
-        }
+        seq_ids = _run("kpi_unique_taxa_original_seq_ids", _fetch_seq_ids)
+        if not seq_ids:
+            return 0
 
-    finally:
-        session.close()
+        # Step 2: collect distinct tax_ids from seq_tax in chunks (avoids cross-table subquery)
+        all_tax_ids = set()
+        chunk_size = 1000
+        for i in range(0, len(seq_ids), chunk_size):
+            chunk = seq_ids[i:i + chunk_size]
+
+            def _fetch_chunk(chunk=chunk):
+                session = SessionFactory()
+                try:
+                    return [r[0] for r in session.query(SeqTax.tax_id).filter(
+                        SeqTax.backbone == 'Raw',
+                        SeqTax.seq_id.in_(chunk)
+                    ).distinct().all()]
+                finally:
+                    session.close()
+
+            all_tax_ids.update(_run(f"kpi_unique_taxa_original_chunk_{i}", _fetch_chunk))
+
+        return len(all_tax_ids)
+
+    def fetch_unique_taxa_after():
+        # Step 1: seq_ids from sequences only (single-table indexed scan on barcode_status)
+        def _fetch_seq_ids():
+            session = SessionFactory()
+            try:
+                return [r[0] for r in session.query(Sequence.seq_id).filter(
+                    Sequence.barcode_status != 'Duplicate'
+                ).all()]
+            finally:
+                session.close()
+
+        seq_ids = _run("kpi_unique_taxa_after_seq_ids", _fetch_seq_ids)
+        if not seq_ids:
+            return 0
+
+        # Step 2: collect distinct tax_ids from seq_tax in chunks (avoids cross-table subquery)
+        all_tax_ids = set()
+        chunk_size = 1000
+        for i in range(0, len(seq_ids), chunk_size):
+            chunk = seq_ids[i:i + chunk_size]
+
+            def _fetch_chunk(chunk=chunk):
+                session = SessionFactory()
+                try:
+                    return [r[0] for r in session.query(SeqTax.tax_id).filter(
+                        SeqTax.backbone == 'CoL',
+                        SeqTax.seq_id.in_(chunk)
+                    ).distinct().all()]
+                finally:
+                    session.close()
+
+            all_tax_ids.update(_run(f"kpi_unique_taxa_after_chunk_{i}", _fetch_chunk))
+
+        return len(all_tax_ids)
+
+    total_original = _run("kpi_total_original", fetch_total_original)
+    total_after = _run("kpi_total_after", fetch_total_after)
+    total_sources = _run("kpi_total_sources", fetch_total_sources)
+    unique_taxa_original = _run("kpi_unique_taxa_original", fetch_unique_taxa_original)
+    unique_taxa_after = _run("kpi_unique_taxa_after", fetch_unique_taxa_after)
+
+    return {
+        'total_original': total_original or 0,
+        'total_after': total_after or 0,
+        'total_sources': total_sources or 0,
+        'unique_taxa_original': unique_taxa_original or 0,
+        'unique_taxa_after': unique_taxa_after or 0
+    }
 
 
 # ============================================
@@ -126,73 +196,114 @@ def get_kpi_metrics(engine) -> Dict[str, int]:
 # ============================================
 
 def query_and_prepare_data(engine, backbone_filter: str, parent_seq_id_null: bool = False,
-                           non_duplicate: bool = False) -> pd.DataFrame:
+                           non_duplicate: bool = False, db_manager=None) -> pd.DataFrame:
     """
-    Query sequences with specific filters - inspired by test_sunburst_db.py logic.
+    Query sequences with specific filters using batched IN queries to avoid server
+    connection drops on large datasets.
 
     Args:
         engine: Database engine
         backbone_filter: Backbone to filter ('Raw', 'CoL', 'Sativa')
         parent_seq_id_null: If True, only get original sequences (parent_seq_id IS NULL)
         non_duplicate: If True, filter out duplicates
+        db_manager: Optional DatabaseManager for retry support
 
     Returns:
         DataFrame with sequences and taxonomy
     """
-    session = get_session(engine)
-    try:
-        query = session.query(
-            Sequence.seq_id,
-            Source.name.label('source_name'),
-            Sequence.barcode,
-            Taxonomy.kingdom,
-            Taxonomy.phylum,
-            Taxonomy.class_.label('class_'),
-            Taxonomy.order_.label('order_'),
-            Taxonomy.family,
-            Taxonomy.genus,
-            SeqTax.backbone
-        ).join(
-            Source, Sequence.source_id == Source.source_id
-        ).join(
-            SeqTax, Sequence.seq_id == SeqTax.seq_id
-        ).join(
-            Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
-        ).filter(
-            SeqTax.backbone == backbone_filter
-        )
+    SessionFactory = sessionmaker(bind=engine)
+    batch_size = 1000
 
-        # Apply optional filters
-        if parent_seq_id_null:
-            query = query.filter(Sequence.parent_seq_id.is_(None))
+    # Step 1: fetch seq_ids from seq_tax only (single-table indexed scan, no distributed join)
+    # Sequence-level filters (parent_seq_id_null, non_duplicate) are applied in Step 2
+    # so that the heavy join only happens on small batches.
+    def fetch_seq_ids():
+        session = SessionFactory()
+        try:
+            return [r[0] for r in session.query(SeqTax.seq_id).filter(
+                SeqTax.backbone == backbone_filter
+            ).all()]
+        finally:
+            session.close()
 
-        if non_duplicate:
-            query = query.filter(Sequence.barcode_status != 'Duplicate')
+    op_name_ids = f"query_prepare_data_{backbone_filter}_ids"
+    if db_manager:
+        seq_ids = db_manager._execute_with_retry(op_name_ids, fetch_seq_ids)
+    else:
+        seq_ids = fetch_seq_ids()
 
-        results = query.all()
+    if not seq_ids:
+        logger.warning(f"No sequences found for backbone={backbone_filter}")
+        return pd.DataFrame(columns=['seq_id', 'source_name', 'barcode', 'kingdom',
+                                    'phylum', 'class_', 'order_', 'family', 'genus', 'backbone'])
 
-        # Handle empty results
-        if len(results) == 0:
-            logger.warning(f"No sequences found for backbone={backbone_filter}")
-            return pd.DataFrame(columns=['seq_id', 'source_name', 'barcode', 'kingdom',
-                                        'phylum', 'class_', 'order_', 'family', 'genus', 'backbone'])
+    total_batches = (len(seq_ids) + batch_size - 1) // batch_size
+    logger.info(f"Fetching {len(seq_ids)} sequences for backbone={backbone_filter} in {total_batches} batch(es)")
 
-        # Convert to DataFrame
-        df = pd.DataFrame([{
-            'seq_id': r.seq_id,
-            'source_name': r.source_name,
-            'barcode': r.barcode,
-            'kingdom': r.kingdom,
-            'phylum': r.phylum,
-            'class_': r.class_,
-            'order_': r.order_,
-            'family': r.family,
-            'genus': r.genus,
-            'backbone': r.backbone
-        } for r in results])
+    # Step 2: fetch full taxonomy data in batches using IN on seq_ids
+    all_rows = []
+    for batch_num, i in enumerate(range(0, len(seq_ids), batch_size), 1):
+        batch_ids = seq_ids[i:i + batch_size]
 
-    finally:
-        session.close()
+        def fetch_batch():
+            session = SessionFactory()
+            try:
+                q = session.query(
+                    Sequence.seq_id,
+                    Source.name.label('source_name'),
+                    Sequence.barcode,
+                    Taxonomy.kingdom,
+                    Taxonomy.phylum,
+                    Taxonomy.class_.label('class_'),
+                    Taxonomy.order_.label('order_'),
+                    Taxonomy.family,
+                    Taxonomy.genus,
+                    SeqTax.backbone
+                ).join(
+                    Source, Sequence.source_id == Source.source_id
+                ).join(
+                    SeqTax, Sequence.seq_id == SeqTax.seq_id
+                ).join(
+                    Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
+                ).filter(
+                    SeqTax.backbone == backbone_filter,
+                    Sequence.seq_id.in_(batch_ids)
+                )
+                if parent_seq_id_null:
+                    q = q.filter(Sequence.parent_seq_id.is_(None))
+                if non_duplicate:
+                    q = q.filter(Sequence.barcode_status != 'Duplicate')
+                return q.all()
+            finally:
+                session.close()
+
+        op_name = f"query_prepare_data_{backbone_filter}_batch_{i}"
+        if db_manager:
+            rows = db_manager._execute_with_retry(op_name, fetch_batch)
+        else:
+            rows = fetch_batch()
+
+        all_rows.extend(rows)
+        if batch_num % 10 == 0 or batch_num == total_batches:
+            logger.info(f"  {backbone_filter}: {batch_num}/{total_batches} batches ({len(all_rows)} rows so far)")
+
+    if not all_rows:
+        logger.warning(f"No sequences found for backbone={backbone_filter}")
+        return pd.DataFrame(columns=['seq_id', 'source_name', 'barcode', 'kingdom',
+                                    'phylum', 'class_', 'order_', 'family', 'genus', 'backbone'])
+
+    df = pd.DataFrame([{
+        'seq_id': r.seq_id,
+        'source_name': r.source_name,
+        'barcode': r.barcode,
+        'kingdom': r.kingdom,
+        'phylum': r.phylum,
+        'class_': r.class_,
+        'order_': r.order_,
+        'family': r.family,
+        'genus': r.genus,
+        'backbone': r.backbone
+    } for r in all_rows])
 
     # Fill NULLs with "Unknown"
     for col in TAXO_LEVELS:
@@ -797,25 +908,26 @@ def main():
         if not db_path.exists():
             logger.error(f"Database not found: {db_path}")
             sys.exit(1)
+        db_manager = None
         engine = get_engine("sqlite", path=str(db_path))
 
     logger.info("Generating taxonomic report...")
 
     # Step 1: Calculate KPIs
-    kpis = get_kpi_metrics(engine)
+    kpis = get_kpi_metrics(engine, db_manager=db_manager)
 
     # Step 2: Query data
     # Before CoL: Raw backbone, original sequences only
-    df_before_col = query_and_prepare_data(engine, 'Raw', parent_seq_id_null=True, non_duplicate=False)
+    df_before_col = query_and_prepare_data(engine, 'Raw', parent_seq_id_null=True, non_duplicate=False, db_manager=db_manager)
 
     # After CoL: CoL backbone, original non-duplicate sequences
-    df_after_col = query_and_prepare_data(engine, 'CoL', parent_seq_id_null=True, non_duplicate=True)
+    df_after_col = query_and_prepare_data(engine, 'CoL', parent_seq_id_null=True, non_duplicate=True, db_manager=db_manager)
 
     # After ITSx: CoL backbone, all non-duplicate sequences
-    df_after_itsx = query_and_prepare_data(engine, 'CoL', parent_seq_id_null=False, non_duplicate=True)
+    df_after_itsx = query_and_prepare_data(engine, 'CoL', parent_seq_id_null=False, non_duplicate=True, db_manager=db_manager)
 
     # After Sativa: Sativa backbone, all non-duplicate sequences
-    df_after_sativa = query_and_prepare_data(engine, 'Sativa', parent_seq_id_null=False, non_duplicate=True)
+    df_after_sativa = query_and_prepare_data(engine, 'Sativa', parent_seq_id_null=False, non_duplicate=True, db_manager=db_manager)
 
     if df_before_col.empty:
         logger.error("No original sequences found with Raw backbone!")

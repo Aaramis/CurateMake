@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Sequence deduplication script.
-Detect and mark duplicate sequences based on sequence + barcode + tax_id.
+Marks duplicate sequences based on (sequence, barcode, tax_id).
 """
 
 import os
@@ -10,7 +10,7 @@ import time
 import logging
 import json
 from datetime import datetime
-from typing import List, Tuple, Set, Dict, Any
+from typing import List, Tuple, Set, Dict, Any, Optional
 from pathlib import Path
 from sqlalchemy import func, text
 
@@ -19,274 +19,587 @@ sys.path.append(str(Path(__file__).parent / "utils"))
 from db_models import Sequence
 
 # Logging configuration
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
 
 class SequenceDeduplicator:
     """Sequence deduplication manager."""
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, config: Optional[Dict[str, Any]] = None):
         self.db_manager = db_manager
+        config = config or {}
+        dedup_config = config.get("deduplication", {})
+        sequence_config = config.get("sequence_validation", {})
+
+        self.create_indexes = dedup_config.get("create_indexes", True)
+        self.skip_verify_integrity = dedup_config.get("skip_verify_integrity", False)
+        self.barcode_log_every = max(1, int(dedup_config.get("barcode_log_every", 20)))
+        self.update_batch_size = max(1, int(dedup_config.get("update_batch_size", 500)))
+        self.tax_id_batch_size = max(1, int(dedup_config.get("tax_id_batch_size", 100)))
+
         self.stats = {
-            'initial_sequence_count': 0,
-            'final_sequence_count': 0,
-            'duplicate_groups': 0,
-            'duplicates_marked': 0,
-            'unique_sequences_kept': 0,
-            'processing_time': 0.0
+            "initial_sequence_count": 0,
+            "final_sequence_count": 0,
+            "duplicate_groups": 0,
+            "duplicates_marked": 0,
+            "duplicates_to_mark": 0,
+            "unique_sequences_kept": 0,
+            "processing_time": 0.0,
         }
 
     def setup_database(self):
         """Create indexes required for performant deduplication."""
         logger.info("Verifying/creating indexes for deduplication...")
 
-        with self.db_manager.get_session() as session:
-            # Essential indexes for deduplication
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sequences_seq_barcode ON {self.db_manager.sequences_table}(sequence, barcode)"))
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_sequences_barcode_status ON {self.db_manager.sequences_table}(barcode_status)"))
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_seq_tax_seq_id ON {self.db_manager.seq_tax_table}(seq_id)"))
-            session.execute(text(f"CREATE INDEX IF NOT EXISTS idx_seq_tax_tax_id ON {self.db_manager.seq_tax_table}(tax_id)"))
-
-            # Composite index to speed grouping
-            session.execute(text(f"""
+        index_statements = [
+            ("seq_barcode", f"CREATE INDEX IF NOT EXISTS idx_sequences_seq_barcode ON {self.db_manager.sequences_table}(sequence, barcode)"),
+            ("seq_tax_seq", f"CREATE INDEX IF NOT EXISTS idx_seq_tax_seq_id ON {self.db_manager.seq_tax_table}(seq_id)"),
+            ("seq_tax_tax", f"CREATE INDEX IF NOT EXISTS idx_seq_tax_tax_id ON {self.db_manager.seq_tax_table}(tax_id)"),
+            ("dedup_composite", f"""
                 CREATE INDEX IF NOT EXISTS idx_sequences_dedup_composite
                 ON {self.db_manager.sequences_table}(sequence, barcode, barcode_status)
-            """))
+            """),
+        ]
 
-            session.commit()
+        for name, sql in index_statements:
+            def create_index(stmt=sql):
+                with self.db_manager.get_session() as session:
+                    session.execute(text(stmt))
+                    session.commit()
+
+            self.db_manager._execute_with_retry(
+                f"dedup_sequences_create_index_{name}",
+                create_index,
+            )
+
         logger.info("Indexes ready.")
 
-    def find_duplicate_sequences(self) -> List[Tuple[str, List[str]]]:
-        """
-        Find duplicate sequences via a single SQL query.
-        A duplicate means identical (sequence, barcode, tax_id).
-        Returns a list of tuples: (seq_id_to_keep, [seq_ids_to_mark_duplicate]).
-        """
-        logger.info("Searching for duplicate sequences via SQL...")
-
-        duplicate_groups = []
-
+    def _fetch_barcodes(self) -> List[Optional[str]]:
         sequences_table = self.db_manager.sequences_table
-        seq_tax_table  = self.db_manager.seq_tax_table
 
-        # Dialect-specific GROUP_CONCAT / STRING_AGG
-        if self.db_manager.db_type == "postgresql":
-            group_concat_expr = "STRING_AGG(CAST(seq_id AS TEXT), ',' ORDER BY seq_id)"
-        else:
-            group_concat_expr = "GROUP_CONCAT(seq_id ORDER BY seq_id)"
+        def fetch():
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    SELECT DISTINCT barcode
+                    FROM {sequences_table}
+                    WHERE barcode_status != 'Duplicate'
+                    ORDER BY barcode
+                """))
+                return [row[0] for row in result]
 
-        query = f"""
-            WITH sequence_groups AS (
-                SELECT
-                    s.seq_id,
-                    s.sequence,
-                    s.barcode,
-                    st.tax_id,
-                    s.barcode_status,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY s.sequence, s.barcode, st.tax_id
-                        ORDER BY s.seq_id
-                    ) as row_num
-                FROM {sequences_table} s
-                INNER JOIN {seq_tax_table} st ON s.seq_id = st.seq_id
-                WHERE s.barcode_status != 'Duplicate'
-            ),
-            duplicate_candidates AS (
-                SELECT
-                    sequence,
-                    barcode,
-                    tax_id,
-                    COUNT(*) as duplicate_count,
-                    {group_concat_expr} as all_seq_ids
-                FROM sequence_groups
-                GROUP BY sequence, barcode, tax_id
-                HAVING COUNT(*) > 1
-            )
-            SELECT
-                sequence,
-                barcode,
-                tax_id,
-                duplicate_count,
-                all_seq_ids
-            FROM duplicate_candidates
-            ORDER BY duplicate_count DESC
-        """
-
-        with self.db_manager.get_session() as session:
-            result = session.execute(text(query))
-
-            for row in result:
-                sequence, barcode, tax_id, duplicate_count, all_seq_ids_str = row
-
-                all_seq_ids = [sid.strip() for sid in all_seq_ids_str.split(',')]
-
-                keeper_seq_id = all_seq_ids[0]
-                seq_ids_to_mark = all_seq_ids[1:]
-
-                if seq_ids_to_mark:
-                    duplicate_groups.append((keeper_seq_id, seq_ids_to_mark))
-
-        self.stats['duplicate_groups'] = len(duplicate_groups)
-        self.stats['duplicates_marked'] = sum(len(seq_ids) for _, seq_ids in duplicate_groups)
-        self.stats['unique_sequences_kept'] = len(duplicate_groups)
-
-        logger.info(
-            f"Found {self.stats['duplicate_groups']} duplicate groups "
-            f"({self.stats['duplicates_marked']} sequences to flag)"
+        return self.db_manager._execute_with_retry(
+            "dedup_sequences_fetch_barcodes",
+            fetch,
         )
 
-        return duplicate_groups
+    def _update_sequences_by_ids(self, seq_ids: List[str]) -> int:
+        if not seq_ids:
+            return 0
 
-    def mark_duplicate_sequences(self, duplicate_groups: List[Tuple[str, List[str]]]):
+        sequences_table = self.db_manager.sequences_table
+        if self.db_manager.db_type == "postgresql":
+            update_sql = text(f"""
+                UPDATE {sequences_table}
+                SET barcode_status = 'Duplicate'
+                WHERE seq_id = ANY(:seq_ids)
+                  AND barcode_status != 'Duplicate'
+            """)
+            params = {"seq_ids": list(seq_ids)}
+
+            def apply_update():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(update_sql, params)
+                    session.commit()
+                    return result.rowcount
+
+            return self.db_manager._execute_with_retry(
+                "dedup_sequences_mark_batch",
+                apply_update,
+            )
+
+        placeholders = ", ".join([f":id{i}" for i in range(len(seq_ids))])
+        params = {f"id{i}": seq_id for i, seq_id in enumerate(seq_ids)}
+        update_sql = text(f"""
+            UPDATE {sequences_table}
+            SET barcode_status = 'Duplicate'
+            WHERE seq_id IN ({placeholders})
+              AND barcode_status != 'Duplicate'
+        """)
+
+        def apply_update():
+            with self.db_manager.get_session() as session:
+                result = session.execute(update_sql, params)
+                session.commit()
+                return result.rowcount
+
+        return self.db_manager._execute_with_retry(
+            "dedup_sequences_mark_batch",
+            apply_update,
+        )
+
+    def _mark_duplicates_for_barcode_streaming(self, barcode: Optional[str]) -> Tuple[int, int, int]:
         """
-        Mark duplicate sequences by setting barcode_status = 'Duplicate'.
+        Mark duplicate sequences for a barcode using seq_id batching:
+        1. Fetch seq_ids for the barcode in batches (no JOIN, avoids temp_file_limit)
+        2. For each seq_id batch, fetch sequences with their tax_ids
+        3. Accumulate all data, sort in Python, mark duplicates
+
+        This completely avoids large JOINs that exceed YugabyteDB's temp_file_limit.
         """
+        sequences_table = self.db_manager.sequences_table
+        seq_tax_table = self.db_manager.seq_tax_table
+
+        if barcode is None:
+            barcode_filter = "barcode IS NULL"
+            params = {}
+        else:
+            barcode_filter = "barcode = :barcode"
+            params = {"barcode": barcode}
+
+        # Step 1: Fetch seq_ids for this barcode in batches (no JOIN)
+        # We use OFFSET/LIMIT to stream through seq_ids without loading all at once
+        seq_id_batch_size = self.tax_id_batch_size * 10  # Larger batches for seq_ids
+        offset = 0
+        all_rows = []
+
+        while True:
+            seq_id_query = f"""
+                SELECT seq_id
+                FROM {sequences_table}
+                WHERE barcode_status != 'Duplicate'
+                  AND {barcode_filter}
+                LIMIT :limit OFFSET :offset
+            """
+
+            def fetch_seq_ids():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(
+                        text(seq_id_query),
+                        {**params, "limit": seq_id_batch_size, "offset": offset}
+                    )
+                    return [row[0] for row in result]
+
+            try:
+                seq_ids = self.db_manager._execute_with_retry(
+                    f"dedup_fetch_seq_ids_{barcode}_offset_{offset}",
+                    fetch_seq_ids
+                )
+            except Exception as e:
+                logger.error(f"Failed to fetch seq_ids at offset {offset}: {e}")
+                break
+
+            if not seq_ids:
+                break
+
+            logger.info(f"Fetching data for {len(seq_ids)} sequences (offset {offset}) for barcode {barcode}...")
+
+            # Step 2: Fetch sequences and tax_ids for this batch of seq_ids
+            if self.db_manager.db_type == "postgresql":
+                seq_filter = "s.seq_id = ANY(:seq_ids)"
+                seq_params = {"seq_ids": seq_ids}
+            else:
+                placeholders = ", ".join([f":sid{i}" for i in range(len(seq_ids))])
+                seq_filter = f"s.seq_id IN ({placeholders})"
+                seq_params = {f"sid{i}": sid for i, sid in enumerate(seq_ids)}
+
+            data_query = f"""
+                SELECT s.seq_id, s.sequence, st.tax_id
+                FROM {sequences_table} s
+                INNER JOIN {seq_tax_table} st ON s.seq_id = st.seq_id
+                WHERE {seq_filter}
+            """
+
+            def fetch_sequences():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(text(data_query), seq_params)
+                    return list(result)
+
+            try:
+                rows = self.db_manager._execute_with_retry(
+                    f"dedup_fetch_data_{barcode}_offset_{offset}",
+                    fetch_sequences
+                )
+                all_rows.extend(rows)
+            except Exception as e:
+                logger.error(f"Failed to fetch data for seq_id batch at offset {offset}: {e}")
+
+            offset += seq_id_batch_size
+
+        if not all_rows:
+            logger.info(f"No sequences found for barcode {barcode}")
+            return 0, 0, 0
+
+        logger.info(f"Collected {len(all_rows)} sequence records for barcode {barcode}, sorting...")
+
+        # Step 3: Sort all data in Python by (tax_id, sequence, seq_id)
+        all_rows.sort(key=lambda r: (r[2], r[1], r[0]))
+
+        logger.info(f"Sorted, now detecting duplicates...")
+
+        # Step 4: Detect duplicates and mark them
+        batch_ids: List[str] = []
+        batch_seen: Set[str] = set()
+        total_marked = 0
+        total_groups = 0
+        total_to_mark = 0
+
+        def flush_batch():
+            nonlocal total_marked, batch_ids, batch_seen
+            if not batch_ids:
+                return
+            total_marked += self._update_sequences_by_ids(batch_ids)
+            batch_ids = []
+            batch_seen = set()
+
+        current_key = None
+        keep_seq_id = None
+        group_size = 0
+
+        def close_group():
+            nonlocal total_groups, total_to_mark, group_size
+            if group_size > 1:
+                total_groups += 1
+                total_to_mark += group_size - 1
+            group_size = 0
+
+        for seq_id, sequence, tax_id in all_rows:
+            key = (tax_id, sequence)
+            if key != current_key:
+                if current_key is not None:
+                    close_group()
+                current_key = key
+                keep_seq_id = seq_id
+                group_size = 1
+                continue
+
+            group_size += 1
+            if seq_id == keep_seq_id:
+                continue
+            if seq_id in batch_seen:
+                continue
+            batch_seen.add(seq_id)
+            batch_ids.append(seq_id)
+            batch_limit = self.update_batch_size
+            if self.db_manager.db_type == "sqlite":
+                batch_limit = min(batch_limit, 900)
+            if len(batch_ids) >= batch_limit:
+                flush_batch()
+
+        if current_key is not None:
+            close_group()
+
+        flush_batch()
+        return total_marked, total_groups, total_to_mark
+
+    def mark_duplicate_sequences(self) -> None:
+        """Mark duplicate sequences by streaming through sorted groups."""
         logger.info("Marking duplicate sequences...")
 
-        if not duplicate_groups:
-            return
-
+        barcodes = self._fetch_barcodes()
+        total_barcodes = len(barcodes)
         total_marked = 0
+        total_groups = 0
+        total_to_mark = 0
+
+        for idx, barcode in enumerate(barcodes, start=1):
+            if idx == 1 or idx % self.barcode_log_every == 0 or idx == total_barcodes:
+                logger.info(f"Barcode stream {idx}/{total_barcodes}...")
+            marked, groups, to_mark = self._mark_duplicates_for_barcode_streaming(barcode)
+            total_marked += marked
+            total_groups += groups
+            total_to_mark += to_mark
+
+        self.stats["duplicates_marked"] = total_marked
+        self.stats["duplicate_groups"] = total_groups
+        self.stats["duplicates_to_mark"] = total_to_mark
+        logger.info(f"Marking complete. {total_marked} sequences marked as duplicates.")
+
+    def _count_remaining_duplicates_for_barcode_streaming(self, barcode: Optional[str]) -> int:
+        """
+        Count remaining duplicate groups using seq_id batching (same as marking).
+        """
         sequences_table = self.db_manager.sequences_table
+        seq_tax_table = self.db_manager.seq_tax_table
 
-        with self.db_manager.get_session() as session:
+        if barcode is None:
+            barcode_filter = "barcode IS NULL"
+            params = {}
+        else:
+            barcode_filter = "barcode = :barcode"
+            params = {"barcode": barcode}
+
+        # Step 1: Fetch seq_ids in batches and accumulate all data
+        seq_id_batch_size = self.tax_id_batch_size * 10
+        offset = 0
+        all_rows = []
+
+        while True:
+            seq_id_query = f"""
+                SELECT seq_id
+                FROM {sequences_table}
+                WHERE barcode_status != 'Duplicate'
+                  AND {barcode_filter}
+                LIMIT :limit OFFSET :offset
+            """
+
+            def fetch_seq_ids():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(
+                        text(seq_id_query),
+                        {**params, "limit": seq_id_batch_size, "offset": offset}
+                    )
+                    return [row[0] for row in result]
+
             try:
-                batch_size = 1000
-                all_seq_ids_to_mark = []
-
-                # Collect all seq_ids
-                for _, seq_ids_to_mark in duplicate_groups:
-                    all_seq_ids_to_mark.extend(seq_ids_to_mark)
-
-                logger.info(f"Flagging {len(all_seq_ids_to_mark)} sequences as duplicates...")
-
-                for i in range(0, len(all_seq_ids_to_mark), batch_size):
-                    batch = all_seq_ids_to_mark[i:i + batch_size]
-
-                    if self.db_manager.db_type == "postgresql":
-                        update_query = text(f"""
-                            UPDATE {sequences_table}
-                            SET barcode_status = 'Duplicate'
-                            WHERE seq_id = ANY(:seq_ids)
-                            AND barcode_status != 'Duplicate'
-                        """)
-                        result = session.execute(update_query, {"seq_ids": batch})
-
-                    else:  # SQLite
-                        placeholders = ", ".join([f":id{j}" for j in range(len(batch))])
-                        params = {f'id{j}': batch[j] for j in range(len(batch))}
-                        update_query = text(f"""
-                            UPDATE {sequences_table}
-                            SET barcode_status = 'Duplicate'
-                            WHERE seq_id IN ({placeholders})
-                            AND barcode_status != 'Duplicate'
-                        """)
-                        result = session.execute(update_query, params)
-
-                    total_marked += result.rowcount
-                    logger.debug(f"Batch {i//batch_size + 1}: {result.rowcount} sequences marked")
-
-                session.commit()
-                logger.info(f"Marking complete. {total_marked} sequences marked as duplicates.")
-
+                seq_ids = self.db_manager._execute_with_retry(
+                    f"dedup_verify_seq_ids_{barcode}_offset_{offset}",
+                    fetch_seq_ids
+                )
             except Exception as e:
-                session.rollback()
-                logger.error(f"Error while marking duplicates: {e}", exc_info=True)
-                raise
+                logger.error(f"Failed to fetch seq_ids for verification at offset {offset}: {e}")
+                break
 
-            self.stats['duplicates_marked'] = total_marked
+            if not seq_ids:
+                break
 
+            # Fetch sequences and tax_ids for this batch
+            if self.db_manager.db_type == "postgresql":
+                seq_filter = "s.seq_id = ANY(:seq_ids)"
+                seq_params = {"seq_ids": seq_ids}
+            else:
+                placeholders = ", ".join([f":sid{i}" for i in range(len(seq_ids))])
+                seq_filter = f"s.seq_id IN ({placeholders})"
+                seq_params = {f"sid{i}": sid for i, sid in enumerate(seq_ids)}
+
+            data_query = f"""
+                SELECT s.sequence, st.tax_id
+                FROM {sequences_table} s
+                INNER JOIN {seq_tax_table} st ON s.seq_id = st.seq_id
+                WHERE {seq_filter}
+            """
+
+            def fetch_sequences():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(text(data_query), seq_params)
+                    return list(result)
+
+            try:
+                rows = self.db_manager._execute_with_retry(
+                    f"dedup_verify_data_{barcode}_offset_{offset}",
+                    fetch_sequences
+                )
+                all_rows.extend(rows)
+            except Exception as e:
+                logger.error(f"Failed to fetch data for verification at offset {offset}: {e}")
+
+            offset += seq_id_batch_size
+
+        if not all_rows:
+            return 0
+
+        # Sort in Python
+        all_rows.sort(key=lambda r: (r[1], r[0]))  # (tax_id, sequence)
+
+        # Count duplicate groups
+        total_groups = 0
+        current_key = None
+        group_size = 0
+
+        def close_group():
+            nonlocal total_groups, group_size
+            if group_size > 1:
+                total_groups += 1
+            group_size = 0
+
+        for sequence, tax_id in all_rows:
+            key = (tax_id, sequence)
+            if key != current_key:
+                if current_key is not None:
+                    close_group()
+                current_key = key
+                group_size = 1
+                continue
+            group_size += 1
+
+        if current_key is not None:
+            close_group()
+
+        return total_groups
 
     def verify_integrity(self) -> bool:
-        """Verify integrity after deduplication."""
+        """Verify integrity after deduplication using streaming checks."""
         logger.info("Performing final integrity checks...")
 
+        barcodes = self._fetch_barcodes()
+        total_barcodes = len(barcodes)
+        remaining_duplicates = 0
+        for idx, barcode in enumerate(barcodes, start=1):
+            if idx == 1 or idx % self.barcode_log_every == 0 or idx == total_barcodes:
+                logger.info(f"Barcode verify {idx}/{total_barcodes}...")
+            remaining_duplicates += self._count_remaining_duplicates_for_barcode_streaming(barcode)
+
         sequences_table = self.db_manager.sequences_table
-        seq_tax_table  = self.db_manager.seq_tax_table
+        seq_tax_table = self.db_manager.seq_tax_table
 
-        with self.db_manager.get_session() as session:
-            # Ensure no unmarked duplicates remain
-            result = session.execute(text(f"""
-                SELECT COUNT(*) FROM (
-                    SELECT s.sequence, s.barcode, st.tax_id, COUNT(*) as cnt
-                    FROM {sequences_table} s
-                    INNER JOIN {seq_tax_table} st ON s.seq_id = st.seq_id
-                    WHERE s.barcode_status != 'Duplicate'
-                    GROUP BY s.sequence, s.barcode, st.tax_id
-                    HAVING COUNT(*) > 1
-                ) AS subquery
-            """))
-            remaining_duplicates = result.scalar()
+        def count_marked_duplicates():
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    SELECT COUNT(*) FROM {sequences_table}
+                    WHERE barcode_status = 'Duplicate'
+                """))
+                return result.scalar()
 
-            # Count sequences marked as duplicates
-            result = session.execute(text(f"""
-                SELECT COUNT(*) FROM {sequences_table}
+        def count_orphaned_relations():
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    SELECT COUNT(*) FROM {seq_tax_table} st
+                    LEFT JOIN {sequences_table} s ON st.seq_id = s.seq_id
+                    WHERE s.seq_id IS NULL
+                """))
+                return result.scalar()
+
+        marked_duplicates = self.db_manager._execute_with_retry(
+            "dedup_sequences_verify_marked",
+            count_marked_duplicates,
+        )
+        orphaned_relations = self.db_manager._execute_with_retry(
+            "dedup_sequences_verify_orphans",
+            count_orphaned_relations,
+        )
+
+        logger.info(
+            "Integrity check: %s unmarked duplicates remaining, %s sequences flagged as duplicates, %s orphaned relations",
+            remaining_duplicates,
+            marked_duplicates,
+            orphaned_relations,
+        )
+
+        if remaining_duplicates == 0 and orphaned_relations == 0:
+            logger.info("✓ Integrity verification passed.")
+            return True
+
+        logger.warning(
+            "⚠ Integrity issues detected: %s unmarked duplicates, %s orphaned relations.",
+            remaining_duplicates,
+            orphaned_relations,
+        )
+        return False
+
+    def _get_top_duplicated_tax_ids_streaming(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get top duplicated tax_ids using batched streaming to avoid temp_file_limit.
+        Fetches duplicate seq_ids in batches, then aggregates in Python.
+        """
+        sequences_table = self.db_manager.sequences_table
+        seq_tax_table = self.db_manager.seq_tax_table
+
+        # Count duplicates per tax_id using batched approach
+        tax_id_counts: Dict[str, int] = {}
+        batch_size = self.tax_id_batch_size * 10
+        offset = 0
+
+        while True:
+            # Fetch duplicate seq_ids in batches
+            seq_id_query = f"""
+                SELECT seq_id
+                FROM {sequences_table}
                 WHERE barcode_status = 'Duplicate'
-            """))
-            marked_duplicates = result.scalar()
+                LIMIT :limit OFFSET :offset
+            """
 
-            # Check for orphaned seq_tax rows
-            result = session.execute(text(f"""
-                SELECT COUNT(*) FROM {seq_tax_table} st
-                LEFT JOIN {sequences_table} s ON st.seq_id = s.seq_id
-                WHERE s.seq_id IS NULL
-            """))
-            orphaned_relations = result.scalar()
+            def fetch_seq_ids():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(
+                        text(seq_id_query),
+                        {"limit": batch_size, "offset": offset}
+                    )
+                    return [row[0] for row in result]
 
-            logger.info(f"Integrity check: {remaining_duplicates} unmarked duplicates remaining, "
-                       f"{marked_duplicates} sequences flagged as duplicates, "
-                       f"{orphaned_relations} orphaned relations")
+            try:
+                seq_ids = self.db_manager._execute_with_retry(
+                    f"dedup_summary_seq_ids_offset_{offset}",
+                    fetch_seq_ids
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch seq_ids for summary at offset {offset}: {e}")
+                break
 
-            if remaining_duplicates == 0 and orphaned_relations == 0:
-                logger.info("✓ Integrity verification passed.")
-                return True
+            if not seq_ids:
+                break
+
+            # Fetch tax_ids for these seq_ids
+            if self.db_manager.db_type == "postgresql":
+                tax_query = f"""
+                    SELECT tax_id FROM {seq_tax_table}
+                    WHERE seq_id = ANY(:seq_ids)
+                """
+                tax_params = {"seq_ids": seq_ids}
             else:
-                logger.warning(f"⚠ Integrity issues detected: "
-                               f"{remaining_duplicates} unmarked duplicates, "
-                               f"{orphaned_relations} orphaned relations.")
-                return False
+                placeholders = ", ".join([f":sid{i}" for i in range(len(seq_ids))])
+                tax_query = f"""
+                    SELECT tax_id FROM {seq_tax_table}
+                    WHERE seq_id IN ({placeholders})
+                """
+                tax_params = {f"sid{i}": sid for i, sid in enumerate(seq_ids)}
+
+            def fetch_tax_ids():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(text(tax_query), tax_params)
+                    return [row[0] for row in result]
+
+            try:
+                tax_ids = self.db_manager._execute_with_retry(
+                    f"dedup_summary_tax_ids_offset_{offset}",
+                    fetch_tax_ids
+                )
+                for tax_id in tax_ids:
+                    tax_id_counts[tax_id] = tax_id_counts.get(tax_id, 0) + 1
+            except Exception as e:
+                logger.warning(f"Failed to fetch tax_ids for summary at offset {offset}: {e}")
+
+            offset += batch_size
+
+        # Sort and return top N
+        sorted_counts = sorted(tax_id_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+        return [{"tax_id": tax_id, "duplicate_count": count} for tax_id, count in sorted_counts]
 
     def get_deduplication_summary(self) -> dict:
         """Build a detailed deduplication summary."""
         summary = {}
 
         sequences_table = self.db_manager.sequences_table
-        seq_tax_table  = self.db_manager.seq_tax_table
 
-        with self.db_manager.get_session() as session:
-            # Stats per barcode_status
-            result = session.execute(text(f"""
-                SELECT barcode_status, COUNT(*) as count
-                FROM {sequences_table}
-                GROUP BY barcode_status
-                ORDER BY count DESC
-            """))
-            summary['sequences_by_status'] = {row[0]: row[1] for row in result}
+        def build_basic_summary():
+            summary_local = {}
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    SELECT barcode_status, COUNT(*) as count
+                    FROM {sequences_table}
+                    GROUP BY barcode_status
+                    ORDER BY count DESC
+                """))
+                summary_local["sequences_by_status"] = {row[0]: row[1] for row in result}
 
-            # Stats per barcode
-            result = session.execute(text(f"""
-                SELECT barcode, COUNT(*) as count
-                FROM {sequences_table}
-                WHERE barcode_status = 'Duplicate'
-                GROUP BY barcode
-                ORDER BY count DESC
-            """))
-            summary['duplicates_by_barcode'] = {row[0]: row[1] for row in result}
+                result = session.execute(text(f"""
+                    SELECT barcode, COUNT(*) as count
+                    FROM {sequences_table}
+                    WHERE barcode_status = 'Duplicate'
+                    GROUP BY barcode
+                    ORDER BY count DESC
+                """))
+                summary_local["duplicates_by_barcode"] = {row[0]: row[1] for row in result}
 
-            # Top 10 tax IDs with most duplicates
-            result = session.execute(text(f"""
-                SELECT st.tax_id, COUNT(*) as duplicate_count
-                FROM {sequences_table} s
-                INNER JOIN {seq_tax_table} st ON s.seq_id = st.seq_id
-                WHERE s.barcode_status = 'Duplicate'
-                GROUP BY st.tax_id
-                ORDER BY duplicate_count DESC
-                LIMIT 10
-            """))
-            summary['top_duplicated_tax_ids'] = [
-                {'tax_id': row[0], 'duplicate_count': row[1]}
-                for row in result
-            ]
+            return summary_local
+
+        summary.update(self.db_manager._execute_with_retry(
+            "dedup_sequences_summary",
+            build_basic_summary,
+        ))
+
+        # Get top duplicated tax_ids using streaming approach to avoid temp_file_limit
+        logger.info("Computing top duplicated tax_ids (streaming)...")
+        summary["top_duplicated_tax_ids"] = self._get_top_duplicated_tax_ids_streaming(limit=10)
 
         return summary
 
@@ -295,84 +608,80 @@ class SequenceDeduplicator:
         logger.info("Running database optimization (ANALYZE)...")
 
         if self.db_manager.db_type == "sqlite":
-            with self.db_manager.get_session() as session:
-                session.execute(text("ANALYZE"))
-                session.commit()
+            def analyze_op():
+                with self.db_manager.get_session() as session:
+                    session.execute(text("ANALYZE"))
+                    session.commit()
+
+            self.db_manager._execute_with_retry("dedup_sequences_analyze", analyze_op)
         elif self.db_manager.db_type == "postgresql":
-            # PostgreSQL requires AUTOCOMMIT for ANALYZE
             with self.db_manager.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                 conn.execute(text("ANALYZE"))
 
         logger.info("Database optimization completed.")
-    
+
     def deduplicate_sequences(self):
         """Full end-to-end deduplication workflow."""
         start_time = time.time()
         logger.info("Starting sequence deduplication")
 
         try:
-            with self.db_manager.get_session() as session:
-                # Use ORM query instead of raw SQL
-                self.stats['initial_sequence_count'] = session.query(func.count(Sequence.seq_id)).scalar()
+            def fetch_initial_count():
+                with self.db_manager.get_session() as session:
+                    return session.query(func.count(Sequence.seq_id)).scalar()
+
+            self.stats["initial_sequence_count"] = self.db_manager._execute_with_retry(
+                "dedup_sequences_initial_count",
+                fetch_initial_count,
+            )
             logger.info(f"Initial sequence count: {self.stats['initial_sequence_count']}")
 
-            # 0. Prepare indexes
-            self.setup_database()
+            if self.create_indexes:
+                self.setup_database()
+            else:
+                logger.info("Skipping index creation for deduplication (deduplication.create_indexes=false)")
 
-            # 1. Find duplicates
-            duplicate_groups = self.find_duplicate_sequences()
+            self.mark_duplicate_sequences()
+            if self.skip_verify_integrity:
+                logger.info("Skipping integrity verification (deduplication.skip_verify_integrity=true)")
+            else:
+                self.verify_integrity()
 
-            if not duplicate_groups:
-                logger.info("No duplicates detected.")
-                self.stats['processing_time'] = time.time() - start_time
-                return
+            def fetch_final_stats():
+                with self.db_manager.get_session() as session:
+                    final_count = session.query(func.count(Sequence.seq_id)).scalar()
+                    unique_kept = session.query(
+                        func.count(Sequence.seq_id)
+                    ).filter(
+                        Sequence.barcode_status != "Duplicate"
+                    ).scalar()
+                    return final_count, unique_kept
 
-            # 2. Mark duplicates
-            self.mark_duplicate_sequences(duplicate_groups)
+            final_count, unique_kept = self.db_manager._execute_with_retry(
+                "dedup_sequences_final_stats",
+                fetch_final_stats,
+            )
+            self.stats["final_sequence_count"] = final_count
+            self.stats["unique_sequences_kept"] = unique_kept
 
-            # 3. Verify integrity
-            integrity_ok = self.verify_integrity()
-
-            # 4. Update final stats
-            with self.db_manager.get_session() as session:
-                # Use ORM queries instead of raw SQL
-                self.stats['final_sequence_count'] = session.query(func.count(Sequence.seq_id)).scalar()
-
-                # Count unique (non-duplicate) sequences
-                self.stats['unique_sequences_kept'] = session.query(
-                    func.count(Sequence.seq_id)
-                ).filter(
-                    Sequence.barcode_status != 'Duplicate'
-                ).scalar()
-
-            # 5. Optimize database
             self.optimize_database()
 
         except Exception as e:
             logger.error(f"Error during deduplication: {e}", exc_info=True)
             raise
         finally:
-            self.stats['processing_time'] = time.time() - start_time
+            self.stats["processing_time"] = time.time() - start_time
             logger.info(f"Deduplication finished in {self.stats['processing_time']:.2f}s")
-            logger.info(f"Sequences: {self.stats['initial_sequence_count']} total, "
-                       f"{self.stats['unique_sequences_kept']} unique, "
-                       f"{self.stats['duplicates_marked']} marked as duplicates")
+            logger.info(
+                "Sequences: %s total, %s unique, %s marked as duplicates",
+                self.stats["initial_sequence_count"],
+                self.stats["unique_sequences_kept"],
+                self.stats["duplicates_marked"],
+            )
+
 
 def write_report(stats: dict, summary: dict, path: str, db_path: str):
-    """
-    Write a JSON report summarizing the sequence deduplication.
-
-    Parameters
-    ----------
-    stats : dict
-        Statistics returned by SequenceDeduplicator.
-    summary : dict
-        Detailed deduplication summary.
-    path : str
-        Output path for the JSON report.
-    db_path : str
-        Database path (for context).
-    """
+    """Write a JSON report summarizing the sequence deduplication."""
     report = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "database": os.path.abspath(db_path),
@@ -384,10 +693,9 @@ def write_report(stats: dict, summary: dict, path: str, db_path: str):
             "duplicates_marked": stats.get("duplicates_marked"),
             "processing_time_sec": round(stats.get("processing_time", 0), 3),
         },
-        "detailed_summary": summary
+        "detailed_summary": summary,
     }
 
-    # Ensure parent directory exists
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     with open(path, "w", encoding="utf-8") as fh:
@@ -395,62 +703,38 @@ def write_report(stats: dict, summary: dict, path: str, db_path: str):
 
     logger.info(f"Deduplication report written to: {path}")
 
+
 def main():
     """Entry point (Snakemake or standalone)."""
     try:
-        if 'snakemake' in globals():
+        if "snakemake" in globals():
             db_path = snakemake.params.db
             output_report = snakemake.output.report
             config = snakemake.config
             log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
             file_handler = logging.FileHandler(log_file, mode="w")
-            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
             logger.addHandler(file_handler)
         else:
             logger.warning("Test mode - use Snakemake for production runs")
             db_path = "test_database.sqlite"
             output_report = "sequence_deduplication_report.json"
-            config = {'database': {'path': db_path}}
+            config = {"database": {"path": db_path}}
 
-        # Initialize database manager
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
         db_manager = get_database_manager(config)
-
-        deduplicator = SequenceDeduplicator(db_manager)
+        deduplicator = SequenceDeduplicator(db_manager, config=config)
         deduplicator.deduplicate_sequences()
 
-        # Generate detailed summary
         summary = deduplicator.get_deduplication_summary()
-
-        print(f"\n{'='*60}")
-        print("SEQUENCE DEDUPLICATION SUMMARY")
-        print(f"{'='*60}")
-        print(f"Initial sequences:       {deduplicator.stats['initial_sequence_count']}")
-        print(f"Final sequences:         {deduplicator.stats['final_sequence_count']}")
-        print(f"Unique sequences kept:   {deduplicator.stats['unique_sequences_kept']}")
-        print(f"Duplicate groups:        {deduplicator.stats['duplicate_groups']}")
-        print(f"Duplicates flagged:      {deduplicator.stats['duplicates_marked']}")
-        print(f"Processing time:         {deduplicator.stats['processing_time']:.2f}s")
-        print(f"{'='*60}")
-
-        # Display additional stats
-        if summary.get('sequences_by_status'):
-            print("\nDistribution by barcode_status:")
-            for status, count in summary['sequences_by_status'].items():
-                print(f"  {status}: {count}")
-
-        if summary.get('duplicates_by_barcode'):
-            print("\nDuplicates by barcode:")
-            for barcode, count in summary['duplicates_by_barcode'].items():
-                print(f"  {barcode}: {count}")
-
         write_report(deduplicator.stats, summary, output_report, db_path)
 
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

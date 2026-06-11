@@ -53,7 +53,7 @@ class CoLAPIClient:
     """Catalogue of Life API client with simple rate limiting."""
     
     def __init__(self, max_requests_per_second: int = 100, timeout: int = 30):
-        self.base_url = "https://api.checklistbank.org/dataset/3LR/match/nameusage"
+        self.base_url = "https://api.checklistbank.org/dataset/3/match/nameusage"
         self.session = requests.Session()
         
         # Session configuration
@@ -270,23 +270,29 @@ class CoLProcessor:
             ORDER BY t.tax_id
         """)
 
+        def fetch_rows():
+            with self.db_manager.get_session() as session:
+                result = session.execute(query, {"backbone": backbone, "status": status})
+                return list(result)
+
+        rows = self.db_manager._execute_with_retry(
+            "col_match_get_pending_taxonomies",
+            fetch_rows
+        )
+
         taxonomies = []
-
-        with self.db_manager.get_session() as session:
-            result = session.execute(query, {"backbone": backbone, "status": status})
-
-            for row in result:
-                taxonomy = TaxonomyRecord(
-                    tax_id=row[0],
-                    kingdom=row[1],
-                    phylum=row[2],
-                    class_=row[3],
-                    order_=row[4],
-                    family=row[5],
-                    genus=row[6],
-                    species=row[7]
-                )
-                taxonomies.append(taxonomy)
+        for row in rows:
+            taxonomy = TaxonomyRecord(
+                tax_id=row[0],
+                kingdom=row[1],
+                phylum=row[2],
+                class_=row[3],
+                order_=row[4],
+                family=row[5],
+                genus=row[6],
+                species=row[7]
+            )
+            taxonomies.append(taxonomy)
 
         logger.info(f"Retrieved {len(taxonomies)} taxonomies for CoL matching")
         return taxonomies
@@ -325,32 +331,46 @@ class CoLProcessor:
         if not successful_matches:
             return 0
 
-        try:
+        def update_op():
+            # Build taxonomy payload once to avoid per-row get_or_create calls
+            taxonomy_data = []
+            taxonomy_tuple_by_original = {}
+            for result in successful_matches:
+                col_taxonomy = result.col_taxonomy or {}
+                tax_values = {
+                    'kingdom': col_taxonomy.get('kingdom'),
+                    'phylum': col_taxonomy.get('phylum'),
+                    'class_': col_taxonomy.get('class_'),
+                    'order_': col_taxonomy.get('order_'),
+                    'family': col_taxonomy.get('family'),
+                    'genus': col_taxonomy.get('genus'),
+                    'species': col_taxonomy.get('species')
+                }
+                taxonomy_data.append(tax_values)
+                taxonomy_tuple_by_original[result.original_tax_id] = (
+                    tax_values['kingdom'],
+                    tax_values['phylum'],
+                    tax_values['class_'],
+                    tax_values['order_'],
+                    tax_values['family'],
+                    tax_values['genus'],
+                    tax_values['species']
+                )
+
+            tax_id_map_by_tuple = self.db_manager.bulk_insert_taxonomies(taxonomy_data)
+            tax_id_map = {
+                original_tax_id: tax_id_map_by_tuple.get(tax_tuple)
+                for original_tax_id, tax_tuple in taxonomy_tuple_by_original.items()
+            }
+
+            # Update existing relations
+            original_ids = [tid for tid in tax_id_map.keys() if tid]
+            if not original_ids:
+                return 0
+
+            seq_tax_table = self._get_table('seq_tax')
+
             with self.db_manager.get_session() as session:
-                # Mapper les IDs
-                tax_id_map = {}
-                for result in successful_matches:
-                    col_taxonomy = result.col_taxonomy
-                    tax_values = {
-                        'kingdom': col_taxonomy.get('kingdom'),
-                        'phylum': col_taxonomy.get('phylum'),
-                        'class_': col_taxonomy.get('class_'),
-                        'order_': col_taxonomy.get('order_'),
-                        'family': col_taxonomy.get('family'),
-                        'genus': col_taxonomy.get('genus'),
-                        'species': col_taxonomy.get('species')
-                    }
-
-                    # Use the helper from db_manager
-                    new_tax_id = self.db_manager.get_or_create_taxonomy(tax_values, result.original_tax_id)
-                    tax_id_map[result.original_tax_id] = new_tax_id
-
-                # Update existing relations
-                original_ids = list(tax_id_map.keys())
-
-                # Prepare updates
-                seq_tax_table = self._get_table('seq_tax')
-
                 if self.db_manager.db_type == "postgresql":
                     result = session.execute(text(f"""
                         SELECT seq_id, tax_id FROM {seq_tax_table}
@@ -380,17 +400,29 @@ class CoLProcessor:
                 if col_inserts:
                     self.db_manager.bulk_insert_seq_tax(col_inserts)
 
-                # Mark legacy relations as correct
-                seq_tax_table = self._get_table('seq_tax')
-                for tid in original_ids:
+                # Mark legacy relations as correct in one update
+                if self.db_manager.db_type == "postgresql":
                     session.execute(text(f"""
                         UPDATE {seq_tax_table} SET status = 'Correct'
-                        WHERE tax_id = :tax_id AND backbone = 'Raw'
-                    """), {"tax_id": tid})
+                        WHERE tax_id = ANY(:tax_ids) AND backbone = 'Raw'
+                    """), {"tax_ids": original_ids})
+                else:
+                    placeholders = ','.join([f':id{i}' for i in range(len(original_ids))])
+                    params = {f'id{i}': tax_id for i, tax_id in enumerate(original_ids)}
+                    session.execute(text(f"""
+                        UPDATE {seq_tax_table} SET status = 'Correct'
+                        WHERE tax_id IN ({placeholders}) AND backbone = 'Raw'
+                    """), params)
 
                 session.commit()
-                return len(successful_matches)
 
+            return len(successful_matches)
+
+        try:
+            return self.db_manager._execute_with_retry(
+                "col_match_update_database",
+                update_op
+            )
         except Exception as e:
             logger.error(f"Database update failed: {e}")
             raise
@@ -398,16 +430,23 @@ class CoLProcessor:
     def mark_failed_taxonomies(self):
         """Mark taxonomies that never matched as Failed."""
         seq_tax_table = self._get_table('seq_tax')
-        with self.db_manager.get_session() as session:
-            result = session.execute(text(f"""
-                UPDATE {seq_tax_table}
-                SET status = 'Failed'
-                WHERE backbone = 'Raw' AND status = 'Pending'
-            """))
-            failed_count = result.rowcount
-            session.commit()
-            logger.info(f"Marked {failed_count} taxonomies as Failed")
-            return failed_count
+        def update_op():
+            with self.db_manager.get_session() as session:
+                result = session.execute(text(f"""
+                    UPDATE {seq_tax_table}
+                    SET status = 'Failed'
+                    WHERE backbone = 'Raw' AND status = 'Pending'
+                """))
+                failed_count = result.rowcount
+                session.commit()
+                return failed_count
+
+        failed_count = self.db_manager._execute_with_retry(
+            "col_match_mark_failed",
+            update_op
+        )
+        logger.info(f"Marked {failed_count} taxonomies as Failed")
+        return failed_count
 
     def remove_duplicate_taxonomies(self):
         """Remove duplicate taxonomies from the taxonomy table."""
@@ -430,50 +469,59 @@ class CoLProcessor:
             HAVING COUNT(*) > 1
         """)
 
-        with self.db_manager.get_session() as session:
-            result = session.execute(query)
-            duplicates = result.fetchall()
+        def dedupe_op():
+            with self.db_manager.get_session() as session:
+                result = session.execute(query)
+                duplicates = result.fetchall()
 
-            if not duplicates:
-                logger.info("No duplicate taxonomies found")
-                return 0
+                if not duplicates:
+                    return 0
 
-            removed_count = 0
-            for dup in duplicates:
-                keep_id = dup[7]  # keep_id (UUID string)
-                all_ids = [x.strip() for x in dup[8].split(',')]  # all_ids (UUID strings)
-                remove_ids = [x for x in all_ids if x != keep_id]
+                removed_count = 0
+                for dup in duplicates:
+                    keep_id = dup[7]  # keep_id (UUID string)
+                    all_ids = [x.strip() for x in dup[8].split(',')]  # all_ids (UUID strings)
+                    remove_ids = [x for x in all_ids if x != keep_id]
 
-                if remove_ids:
-                    # Update seq_tax entries
-                    if self.db_manager.db_type == "postgresql":
-                        session.execute(text(f"""
-                            UPDATE {seq_tax_table} SET tax_id = :keep_id
-                            WHERE tax_id = ANY(:remove_ids)
-                        """), {"keep_id": keep_id, "remove_ids": remove_ids})
+                    if remove_ids:
+                        # Update seq_tax entries
+                        if self.db_manager.db_type == "postgresql":
+                            session.execute(text(f"""
+                                UPDATE {seq_tax_table} SET tax_id = :keep_id
+                                WHERE tax_id = ANY(:remove_ids)
+                            """), {"keep_id": keep_id, "remove_ids": remove_ids})
 
-                        session.execute(text(f"""
-                            DELETE FROM {taxonomy_table} WHERE tax_id = ANY(:remove_ids)
-                        """), {"remove_ids": remove_ids})
-                    else:
-                        placeholders = ','.join([f':id{i}' for i in range(len(remove_ids))])
-                        params = {f'id{i}': rid for i, rid in enumerate(remove_ids)}
-                        params['keep_id'] = keep_id
+                            session.execute(text(f"""
+                                DELETE FROM {taxonomy_table} WHERE tax_id = ANY(:remove_ids)
+                            """), {"remove_ids": remove_ids})
+                        else:
+                            placeholders = ','.join([f':id{i}' for i in range(len(remove_ids))])
+                            params = {f'id{i}': rid for i, rid in enumerate(remove_ids)}
+                            params['keep_id'] = keep_id
 
-                        session.execute(text(f"""
-                            UPDATE {seq_tax_table} SET tax_id = :keep_id
-                            WHERE tax_id IN ({placeholders})
-                        """), params)
+                            session.execute(text(f"""
+                                UPDATE {seq_tax_table} SET tax_id = :keep_id
+                                WHERE tax_id IN ({placeholders})
+                            """), params)
 
-                        session.execute(text(f"""
-                            DELETE FROM {taxonomy_table} WHERE tax_id IN ({placeholders})
-                        """), {f'id{i}': rid for i, rid in enumerate(remove_ids)})
+                            session.execute(text(f"""
+                                DELETE FROM {taxonomy_table} WHERE tax_id IN ({placeholders})
+                            """), {f'id{i}': rid for i, rid in enumerate(remove_ids)})
 
-                    removed_count += len(remove_ids)
+                        removed_count += len(remove_ids)
 
-            session.commit()
+                session.commit()
+                return removed_count
+
+        removed_count = self.db_manager._execute_with_retry(
+            "col_match_remove_duplicates",
+            dedupe_op
+        )
+        if removed_count == 0:
+            logger.info("No duplicate taxonomies found")
+        else:
             logger.info(f"Removed {removed_count} duplicate taxonomies")
-            return removed_count
+        return removed_count
 
     def run(self, batch_size: int = 100):
         """Execute the main processing loop."""

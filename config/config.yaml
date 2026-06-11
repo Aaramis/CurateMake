@@ -1,7 +1,6 @@
-# Pipeline configuration
-
 # Compute resources
-itsx_cpu: 1200   # threads assigned to ITSx
+itsx_cpu: 1200
+itsx_deterministic: false  # Set to true for reproducible results (slower, single-threaded)
 
 
 # Database configuration
@@ -12,58 +11,67 @@ database:
   # SQLite settings (development, datasets < 1M sequences)
   sqlite:
     path: "data/db"
-    name: "its.db"
+    name: "its_mini_database.db"
 
-  # PostgreSQL settings (production, datasets > 1M sequences)
-  postgresql:
-    host: "{{ env.POSTGRES_HOST }}"
-    port: "{{ env.POSTGRES_PORT }}"
-    user: "{{ env.POSTGRES_USER }}"
-    password: "{{ env.POSTGRES_PASSWORD }}"
-    database: "{{ env.POSTGRES_DB }}"
-    schema: "its_curate"
-    pool_size: 10
-    max_overflow: 20
-    echo: false
+  # PostgreSQL settings (production, datasets > 1M sequences).
+  # Uncomment this block AND provide credentials via .env (POSTGRES_HOST, POSTGRES_PORT,
+  # POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB) to use PostgreSQL/YugabyteDB.
+  # postgresql:
+  #   host: "{{ env.POSTGRES_HOST }}"
+  #   port: "{{ env.POSTGRES_PORT }}"
+  #   user: "{{ env.POSTGRES_USER }}"
+  #   password: "{{ env.POSTGRES_PASSWORD }}"
+  #   database: "{{ env.POSTGRES_DB }}"
+  #   schema: "its_curate"
+  #   pool_size: 10
+  #   max_overflow: 20
+  #   echo: false
 
+  # Retry configuration for distributed databases (e.g., YugabyteDB)
+  # db_manager will automatically retry transient errors
   writer_retry:
-    max_attempts: 5
-    initial_delay_seconds: 5
-    backoff_factor: 2.0
-
+    max_attempts: 100  # High value for distributed DBs with transient errors
 
   # Common settings
   backup_retention_days: 30
   vacuum_threshold_mb: 100
 
 
+# Database formatting configuration
+# These parameters control ALL database operations through db_manager
+database_formatting:
+  # Universal batch size for bulk inserts and fetch operations
+  # Used by: bulk_insert_sequences, bulk_insert_taxonomies, bulk_insert_seq_tax
+  # Adjust based on your database performance (lower for slower networks)
+  batch_size: 10000
+
+  # Chunk size for complex taxonomy queries with multiple OR conditions
+  # Used for: fetching tax_ids for unique taxonomies
+  # Lower values reduce query complexity and avoid RPC timeouts
+  taxonomy_fetch_chunk_size: 10
+
 # Source datasets (adjust paths as needed)
 databases:
   unite:
-    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/UNITE/UNITE_public_19.02.2025.fasta.gz"
-    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/UNITE/UNITE_large_test.fasta.gz"
-    
+    path: "data/raw/UNITE/mini_UNITE_public.fasta.gz"
+
   bold:
-    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/BOLD/BOLD_Public.22-Aug-2025.tar.gz"
-    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/BOLD/BOLD_small.tar.gz"
-  
+    path: "data/raw/BOLD/mini_BOLD_Public.tar.gz"
+
   planits:
-    path: "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/PLANITS/PLANiTS_29-03-2020.zip"
-    # path: "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/PLANITS/PLANITS_small.zip"
-  
+    path: "data/raw/PLANITS/mini_PLANiTS.zip"
+
   caledna:
     files:
-      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/CALeDNA/PITS_fasta_and_taxonomy.zip"
-      - "/home/agardette/augmentation_taxonomie/augmentation_taxonomie/7.CurateMakeAll/data/raw/CALeDNA/FITS_fasta_and_taxonomy.zip"
-      # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/FITS_fasta_and_taxonomy_small.zip"
-      # - "/home/agardette/augmentation_taxonomie/5.mvp_snakemake/data/raw/CALeDNA/PITS_fasta_and_taxonomy_small.zip"
+      - "data/raw/CALeDNA/mini_PITS_fasta_and_taxonomy.zip"
+      - "data/raw/CALeDNA/mini_FITS_fasta_and_taxonomy.zip"
 
-caledna_processing:
-  batch_size: 5000
-  writer_retry:
-    max_attempts: 3
-    initial_delay_seconds: 5
-    backoff_factor: 2.0
+  # PERSONAL — user-provided custom sequences.
+  # Expected FASTA header format (taxonomy embedded; missing ranks allowed):
+  #   >ID;barcode=ITS;kingdom=Fungi;phylum=Basidiomycota;class=Agaricomycetes;order=Russulales;family=Russulaceae;genus=Russula;species=Russula_abietina
+  # Use "path" for a single file, or "files" for several. See docs/personal-database.md.
+  personal:
+    path: "data/raw/PERSONAL/personal_test.fasta"
 
 
 # Logging
@@ -72,23 +80,61 @@ logging:
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   file_retention_days: 7
 
+
 # Benchmarking
 benchmarking:
   enabled: true
   output_dir: "benchmarks"
   generate_report: true
 
+
+# Sequence validation rules
 sequence_validation:
   min_length: 50
   max_n_fraction: 0.5
   valid_chars: "ACGTURYSWKMBDHVN-"
 
+
+# Deduplication configuration
+deduplication:
+  # Create indexes before deduplication (improves query performance)
+  create_indexes: true
+
+  # Skip integrity verification after deduplication
+  # Set to true to avoid temp_file_limit errors on large datasets (YugabyteDB)
+  skip_verify_integrity: true
+
+  # Tax ID batch size for processing (reduces temp file usage in YugabyteDB)
+  # Each batch fetches sequences for N tax_ids at once
+  # Lower values = more queries but less DB memory/temp file usage
+  # Higher values = fewer queries but more DB memory/temp file usage
+  # Recommended: 50-200 for YugabyteDB, 500-1000 for local PostgreSQL
+  tax_id_batch_size: 100
+
+  # Logging frequency (purely informational)
+  barcode_log_every: 20
+
+
+# Catalogue of Life API configuration
 CoL_api:
   max_requests_per_second: 1000
   max_workers: 32
   batch_size: 1000
 
+
+# Multiple Sequence Alignment (MSA) configuration
 msa:
+  # Deterministic mode (ported from 6.CurateMake): when true, MAFFT uses a fully
+  # reproducible invocation (FFT-NS-2, single thread, input order preserved) and
+  # sequences are sorted by content before alignment. Default false = production
+  # behaviour (--auto, multithreaded) matching the published pipeline.
+  deterministic: false
+  # Batch size for sequence extraction (uses database_formatting.batch_size if not set)
+  # batch_size: 10000
+
+  # Whether to create indexes before extraction (can timeout on YugabyteDB)
+  create_indexes: false
+
   min_seq_threshold: 20
   max_seq_threshold: 1000          # Nombre maximum de séquences par MSA
   large_task_threshold: 2000       # Seuil pour grandes tâches MSA (nécessitant traitement spécial)
@@ -96,24 +142,13 @@ msa:
   trimal_seq_overlap: 75    # Pourcentage minimum d'overlap pour conserver une séquence
   trimal_res_overlap: 0.5   # Pourcentage de sequence avec un résidu à cet endroit
   domain: "family" # Descente de order à family car MSA pas terrible à order
-  barcodes: ["ITS" ,"ITS1", "ITS2"]
+  barcodes: ["ITS", "ITS1", "ITS2"]
   hierarchy_levels: ["genus", "family", "order", "class", "phylum"]
   tax_columns: ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
   id_col: "seq_id"
   seq_col: "sequence"
   barcode_col: "barcode"
-  # max_thread_workers: 180 # * Nombre de threads a utiliser par Barcode
-  max_thread_workers: 50 # * Nombre de threads a utiliser par Barcode
-
-  # Configuration de la classification parallèle avec hmmscan
-  # hmmscan parallélise mieux avec 8-10 threads par processus
-  # ATTENTION: Réduites pour éviter les crashes OOM (Out Of Memory)
-  classification_max_workers: 20           # Nombre de processus hmmscan en parallèle (réduit de 14 à 6)
-  # classification_max_workers: 24           # Nombre de processus hmmscan en parallèle (réduit de 14 à 6)
-  classification_threads_per_worker: 4   # Threads par processus hmmscan
-  classification_batch_size: 5000        # Séquences par batch (réduit de 10000 à 5000)
-  classification_evalue_threshold: 1e-3  # E-value max to accept hmmscan assignment
-
+  max_thread_workers: 50 # Nombre de threads a utiliser par Barcode
   csv_path: "data/full.csv"
   msa_dir: "data/MSA"
   output_report: "reports/html/msa_analysis_report.html"
@@ -137,95 +172,61 @@ msa:
   classification_results_csv: "data/MSA/classification/msa_classification_assignments.csv"
   classification_stats_json: "data/MSA/classification/msa_classification_stats.json"
   assignment_integration_summary: "data/MSA/classification/msa_assignment_integration.json"
+  classification_max_workers: 20           # Nombre de processus hmmscan en parallèle
+  classification_threads_per_worker: 1   # Single-threaded for deterministic results
+  classification_batch_size: 5000        # Séquences par batch
+  classification_evalue_threshold: 1e-3  # E-value max to accept hmmscan assignment
+
 
 # SATIVA configuration
 sativa:
-  enabled: true
   input_msa_dir: "data/MSA"
   output_dir: "data/SATIVA"
-  logs_dir: "logs/sativa"
-  threads: 1
-  max_parallel_jobs: 120
-  mem_mb: 8000
-  max_seq_count: 20000
-  max_alignment_length: 30000
-  sativa_mode: "ultrafast"
-  rand_seed: 42
-  visualization_report: "reports/html/sativa_visualization_report.html"
-  confidence_threshold: 0.4
+  sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"  # Renamed from script_path
+  timeout_seconds: 21600
+  max_seq_count: 20000  # Renamed from max_seqs
+  max_alignment_length: 5000  # Renamed from max_len
+  sativa_mode: "ultrafast"  # Renamed from mode
+  confidence_threshold: 0.4  # Renamed from confidence
   taxonomy_code: "BOT"
-  sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"
-  extra_args: ""
+  threads: 1
+  rand_seed: 42
   barcodes: ["ITS", "ITS1", "ITS2"]
   tax_levels: ["family", "genus", "order", "species"]
-  retry_on_oom: false
-  timeout_seconds: 21600
-
+  max_parallel_jobs: 120
   cleanup_temp_files: true
   temp_retention_hours: 24
+  visualization_report: "reports/html/sativa_visualization_report.html"
 
-  integration:
-    enabled: true
-    create_backup: true
-    backup_dir: "data/db/backups"
-    skip_verification: false
-    only_successful: true
-    min_confidence: 0.0
 
+# SATIVA integration configuration
 sativa_integration:
   # CoL API configuration
   col_api:
     max_requests_per_second: 100
     timeout_per_request: 30
-    max_retries: 3
 
   # Cache configuration
   cache:
     enabled: true
     max_memory_entries: 100000
     file_cache_path: "cache/col_validation_cache.pkl"
-    save_interval_seconds: 300
 
   # Performance tuning
   performance:
     max_workers_files: 10
-    max_workers_col_api: 10
-    chunk_size: 10000
     bulk_insert_size: 5000
-
-  # Processing rules
-  rules:
-    process_validated: true
-    process_deletion_simple: false
-    process_deletion_multiple: true
-    process_substitution: true
-    process_completion: true
-    deletion_multiple_threshold: 2
 
   # Reporting
   reporting:
     export_json: true
-    export_csv_detailed: true
-    export_csv_warnings: true
-    max_sample_modifications: 1000
     output_dir: "data/processed"
 
   # Database
   database:
     create_warnings_table: true
-    backup_before_integration: false
+
 
 # Taxonomy sunburst report
 taxonomy_sunburst:
-  threshold: 50
-  min_sequences: 1
   output: "reports/html/sativa_taxonomy_report.html"
-  kingdom_colors:
-    Fungi: "#7570b3"
-    Plantae: "#1b9e77"
-    Animalia: "#d95f02"
-    Chromista: "#e7298a"
-    Bacteria: "#66a61e"
-    Protozoa: "#e6ab02"
-  unknown_color: "#CCCCCC"              # Couleur pour les taxons "Unknown"
-  gradient_intensity: 0.1                # Facteur d'éclaircissement par niveau (0-1)                                                                                                                                                                                                                       
