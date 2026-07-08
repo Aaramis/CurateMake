@@ -1,0 +1,44 @@
+CurateMake — Data & Documentation Licence
+=========================================
+
+The CurateMake repository is dual-licensed. This file covers the DATA and
+DOCUMENTATION; the SOURCE CODE is covered by the GNU General Public License
+v3.0 in `LICENSE`. The split matches the Zenodo data deposit accompanying the
+manuscript (https://doi.org/10.5281/zenodo.21264079).
+
+1. SCOPE
+   The following non-code material is released under the
+   Creative Commons Attribution-ShareAlike 4.0 International licence
+   (CC BY-SA 4.0): https://creativecommons.org/licenses/by-sa/4.0/
+
+     - Documentation      docs/**  (*.md), and this repository's README.md
+     - Bundled sample data data/**  (the mini source archives used by the
+                            demonstration / test runs)
+     - Any figures, tables, CSV/TSV/FASTA/JSON files distributed with the repo
+
+   All source-code files (*.py, *.sh, workflow rules, config templates) remain
+   under GPL-3.0 (see `LICENSE`).
+
+2. WHY CC BY-SA 4.0 (rather than CC BY 4.0)
+   Part of the bundled sample data is derived from BOLD and UNITE, whose public
+   data packages are themselves distributed under CC BY-SA 4.0. The ShareAlike
+   obligation therefore propagates to this derived material: any redistribution
+   or derivative must stay under CC BY-SA 4.0 and credit the original sources.
+
+3. ATTRIBUTION OF REDISTRIBUTED SOURCE DATA
+   The bundled sample archives under data/raw/ are derived from four public
+   reference databases, which must be attributed on reuse:
+
+     - UNITE   — Abarenkov et al.; public data under CC BY-SA 4.0
+     - BOLD    — Ratnasingham et al.; public data package under CC BY-SA 4.0
+     - PLANiTS — Banchi et al. 2020
+     - CALeDNA — Meyer et al. 2021
+
+   Each remains subject to the terms of use and citation requirements of its
+   original provider; consult each source for details.
+
+4. HOW TO CITE
+   When reusing data or documentation from this repository, please cite the
+   manuscript and the Zenodo record (see `CITATION.cff`).
+
+Copyright (c) 2026 Auguste Gardette, Eugeni Belda, Edi Prifti, Jean-Daniel Zucker.
