@@ -5,17 +5,27 @@ type: software
 authors:
   - given-names: Auguste
     family-names: Gardette
-    email: auguste.gardette@gmail.com
-    affiliation: "UMMISCO, Institut de Recherche pour le Développement (IRD), France"
-    # orcid: "https://orcid.org/0000-0000-0000-0000"   # TODO: add your ORCID iD
-  # TODO: add co-authors / supervisors in submission order, e.g.:
-  # - given-names: ""
-  #   family-names: ""
-  #   affiliation: ""
-  #   orcid: ""
+    email: auguste.gardette@ird.fr
+    orcid: "https://orcid.org/0009-0009-7635-8344"
+    affiliation: "UMMISCO, Institut de Recherche pour le Développement (IRD), Sorbonne University, Paris, France"
+  - given-names: Eugeni
+    family-names: Belda
+    orcid: "https://orcid.org/0000-0003-4307-5072"
+    affiliation: "UMMISCO, Institut de Recherche pour le Développement (IRD), Sorbonne University, Paris, France"
+  - given-names: Edi
+    family-names: Prifti
+    orcid: "https://orcid.org/0000-0001-8861-1305"
+    affiliation: "UMMISCO, Institut de Recherche pour le Développement (IRD), Sorbonne University, Paris, France"
+  - given-names: Jean-Daniel
+    family-names: Zucker
+    orcid: "https://orcid.org/0000-0002-5597-7922"
+    affiliation: "UMMISCO, Institut de Recherche pour le Développement (IRD), Sorbonne University, Paris, France"
 license: GPL-3.0-or-later
 repository-code: "https://github.com/Aaramis/CurateMake"
 url: "https://github.com/Aaramis/CurateMake"
+version: "1.0.0"
+date-released: "2026-07-08"
+# doi: added at the v1.0.1 release, once Zenodo has archived v1.0.0 and minted the DOI
 keywords:
   - ITS
   - metabarcoding
@@ -31,18 +41,26 @@ abstract: >-
   of Life, extracts barcode regions with ITSx, builds curated multiple-sequence
   alignments, validates taxonomic labels phylogenetically with SATIVA, and stores
   every record in a fully traceable relational database.
-# version: "1.0.0"                         # TODO: set at release
-# date-released: "2026-01-01"              # TODO: set at release
-# doi: "10.5281/zenodo.XXXXXXX"            # TODO: add the archived Zenodo DOI
 
-# Once the Methods in Ecology and Evolution paper is published, set it as the
-# preferred citation so that `cff` tooling and GitHub point users to the article.
-# preferred-citation:
-#   type: article
-#   title: ""
-#   authors:
-#     - given-names: Auguste
-#       family-names: Gardette
-#   journal: "Methods in Ecology and Evolution"
-#   year: 2026
-#   doi: ""
+# Once the Methods in Ecology and Evolution paper is published, this points users
+# and citation tooling to the article as the preferred citation.
+preferred-citation:
+  type: article
+  title: "CurateMake: an auditable workflow for multi-source ITS reference database harmonisation and phylogenetic validation"
+  authors:
+    - given-names: Auguste
+      family-names: Gardette
+      orcid: "https://orcid.org/0009-0009-7635-8344"
+    - given-names: Eugeni
+      family-names: Belda
+      orcid: "https://orcid.org/0000-0003-4307-5072"
+    - given-names: Edi
+      family-names: Prifti
+      orcid: "https://orcid.org/0000-0001-8861-1305"
+    - given-names: Jean-Daniel
+      family-names: Zucker
+      orcid: "https://orcid.org/0000-0002-5597-7922"
+  journal: "Methods in Ecology and Evolution"
+  year: 2026
+  notes: "Under review."
+  # doi: ""   # TODO: add the article DOI once accepted
