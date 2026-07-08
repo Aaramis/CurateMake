@@ -25,7 +25,7 @@ repository-code: "https://github.com/Aaramis/CurateMake"
 url: "https://github.com/Aaramis/CurateMake"
 version: "1.0.0"
 date-released: "2026-07-08"
-# doi: added at the v1.0.1 release, once Zenodo has archived v1.0.0 and minted the DOI
+doi: "10.5281/zenodo.21263905"   # Zenodo concept DOI (resolves to the latest archived version)
 keywords:
   - ITS
   - metabarcoding
