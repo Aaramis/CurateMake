@@ -37,8 +37,14 @@ def _sanitize_label(value: str) -> str:
 
 
 def _normalize_tax_value(value: str) -> str:
-    """Ensure taxonomy ranks are never empty to keep SATIVA Newick parsing happy."""
-    value = (value or "").strip()
+    """Ensure taxonomy ranks are never empty to keep SATIVA Newick parsing happy.
+
+    Spaces in taxon names were escaped as underscores in the MSA FASTA header
+    (so MAFFT/trimAl do not truncate them). Restore them here: the .tax file is
+    tab-separated and is not re-parsed as FASTA, so the full name (e.g.
+    "Russula azurea") is safe and needed for CoL validation / integration.
+    """
+    value = (value or "").strip().replace("_", " ")
     return value if value else _TAXON_PLACEHOLDER
 
 

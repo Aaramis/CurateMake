@@ -11,6 +11,8 @@ import sys
 import logging
 import json
 import time
+import re
+import threading
 import requests
 from requests.adapters import HTTPAdapter
 import os
@@ -50,171 +52,237 @@ class MatchResult:
     error_message: Optional[str] = None
 
 class CoLAPIClient:
-    """Catalogue of Life API client with simple rate limiting."""
-    
-    def __init__(self, max_requests_per_second: int = 100, timeout: int = 30):
-        self.base_url = "https://api.checklistbank.org/dataset/3/match/nameusage"
+    """ChecklistBank (Catalogue of Life) client using the `nameusage/search` endpoint.
+
+    Rate limiting is THREAD-SAFE (shared lock) and polite: a realistic default rate,
+    HTTP 429 handled with Retry-After/backoff, and a descriptive User-Agent. This
+    replaces the previous `/match/nameusage` client whose limiter was not thread-safe
+    and could not resolve synonyms (see README / SATIVA_modifications style notes).
+    """
+
+    HOST = "https://api.checklistbank.org"
+
+    def __init__(self, max_requests_per_second: float = 8.0, timeout: int = 30,
+                 contact: str = "https://github.com/Aaramis/CurateMake",
+                 dataset: str = "3LR"):
         self.session = requests.Session()
-        
-        # Session configuration
-        adapter = HTTPAdapter(
-            pool_connections=20,
-            pool_maxsize=20,
-            max_retries=3,
-            pool_block=False
-        )
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=3, pool_block=True)
         self.session.mount('http://', adapter)
         self.session.mount('https://', adapter)
-        self.session.headers.update({'User-Agent': 'BioinformaticsPipeline/1.0'})
-        
-        # Rate limiting
-        self.max_requests_per_second = max_requests_per_second
-        self.request_interval = 1.0 / max_requests_per_second if max_requests_per_second > 0 else 0
-        self.last_request_time = 0
+        self.session.headers.update({'User-Agent': f'CurateMake/1.0 (ITS reference DB curation; +{contact})'})
+
+        # Thread-safe rate limiting (capped to stay polite with the public API)
+        rps = max(0.5, min(float(max_requests_per_second or 8), 15.0))
+        self.request_interval = 1.0 / rps
+        self._lock = threading.Lock()
+        self._last_request = 0.0
         self.timeout = timeout
-        
+
         # Metrics
         self.api_calls = 0
         self.failed_calls = 0
 
-    def rate_limit(self):
-        """Apply a delay between API calls to respect the rate limit."""
-        if self.request_interval <= 0:
-            return
-            
-        current_time = time.time()
-        time_since_last_request = current_time - self.last_request_time
-        
-        if time_since_last_request < self.request_interval:
-            sleep_time = self.request_interval - time_since_last_request
-            time.sleep(sleep_time)
-        
-        self.last_request_time = time.time()
+        # REPRODUCIBILITY: resolve and pin a specific, DOI'd CoL release. `dataset` may be
+        # "3LR" (latest COL release, resolved & pinned at run start), a numeric release key,
+        # or "3" (the live, moving COL project — NOT reproducible). All matching queries then
+        # hit this fixed snapshot; its version + DOI are recorded in provenance.
+        self.provenance = self._resolve_dataset(str(dataset))
+        self.dataset_key = self.provenance["dataset_key"]
 
-    def query_taxon(self, params: Dict[str, str]) -> Optional[Dict]:
-        """Send a request to the CoL API."""
-        try:
-            self.rate_limit()
-            response = self.session.get(self.base_url, params=params, timeout=self.timeout)
-            self.api_calls += 1
-            
-            if response.status_code != 200:
-                logger.warning(f"API error {response.status_code} for params: {params}")
-                self.failed_calls += 1
+    def _resolve_dataset(self, dataset: str) -> Dict[str, Any]:
+        meta = self._get(f"dataset/{dataset}") or {}
+        key = meta.get("key")
+        if not key:  # resolution failed -> fall back but flag it
+            key = dataset if str(dataset).isdigit() else 3
+            logger.warning(f"Could not resolve CoL dataset '{dataset}'; falling back to key {key} (provenance unknown)")
+        prov = {
+            "requested": dataset,
+            "dataset_key": key,
+            "alias": meta.get("alias"),
+            "version": meta.get("version"),
+            "issued": meta.get("issued"),
+            "doi": meta.get("doi"),
+            "title": meta.get("title"),
+            "resolved_at": datetime.now().isoformat(),
+            "api_host": self.HOST,
+        }
+        logger.info("CoL source pinned: %s (%s, issued %s) DOI=%s dataset_key=%s",
+                    prov.get("alias"), prov.get("version"), prov.get("issued"), prov.get("doi"), key)
+        return prov
+
+    def _throttle(self):
+        """Serialize + space out requests across all threads."""
+        with self._lock:
+            wait = self.request_interval - (time.time() - self._last_request)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_request = time.time()
+
+    def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Optional[Dict]:
+        for attempt in range(4):
+            self._throttle()
+            try:
+                r = self.session.get(f"{self.HOST}/{path}", params=params or {}, timeout=self.timeout)
+                with self._lock:
+                    self.api_calls += 1
+                if r.status_code == 200:
+                    return r.json()
+                if r.status_code == 429:  # rate limited -> respect Retry-After then retry
+                    retry = r.headers.get("Retry-After")
+                    time.sleep(min(float(retry) if retry else 2 ** attempt, 30) + 0.5)
+                    continue
+                logger.warning(f"CoL API error {r.status_code} for {path} params: {params}")
+                with self._lock:
+                    self.failed_calls += 1
                 return None
-            
-            data = response.json()
-            
-            if data.get("match") and "usage" in data:
-                return data["usage"]
-            
-            return None
-            
-        except requests.RequestException as e:
-            logger.warning(f"Request failed for params {params}: {e}")
+            except requests.RequestException as e:
+                logger.warning(f"CoL request failed for {path} {params}: {e}")
+                time.sleep(2 ** attempt)
+        with self._lock:
             self.failed_calls += 1
-            return None
+        return None
+
+    def search(self, name: str, match_type: str = "EXACT", limit: int = 20) -> List[Dict]:
+        """Search the pinned CoL release name index. type=EXACT avoids cross-kingdom epithet
+        noise and returns the synonym's accepted usage in the SAME response."""
+        d = self._get(f"dataset/{self.dataset_key}/nameusage/search",
+                       {"q": name, "type": match_type, "content": "SCIENTIFIC_NAME", "limit": limit})
+        return (d or {}).get("result", []) if d else []
 
     def close(self):
         """Close the HTTP session."""
         self.session.close()
 
+_PROVISIONAL_WORDS = {
+    "sp.", "sp", "cf.", "cf", "aff.", "aff", "spp", "spp.", "uncultured", "unidentified",
+    "unknown", "unclassified", "environmental", "metagenome", "endophyte", "sample",
+    "isolate", "clone", "voucher", "bacterium", "genomosp", "incertae",
+}
+# CoL rank name -> our TaxonomyRecord field
+_RANK_KEY = {"domain": "kingdom", "kingdom": "kingdom", "phylum": "phylum",
+             "class": "class_", "order": "order_", "family": "family",
+             "genus": "genus", "species": "species"}
+
+
 class TaxonomyMatcher:
-    """Encapsulates taxonomy matching logic."""
-    
+    """Taxonomy matching against CoL using the EXACT-search strategy.
+
+    Empirically the best strategy (see 15.CoL_logic_test): `/nameusage/search` with
+    `type=EXACT&content=SCIENTIFIC_NAME` (name only, no context in the query) returns
+    the exact usage AND — for a synonym — its accepted name in ONE call, without the
+    cross-kingdom epithet noise of fuzzy search. Homonyms are disambiguated by filtering
+    the (few, exact) results on the expected kingdom. Misspellings fall back to a FUZZY
+    search constrained to the same genus. Downstream ranks are the same class_/order_ keys
+    the DB layer expects.
+    """
+
+    LEVELS = ["species", "genus", "family", "order_", "class_", "phylum", "kingdom"]
+
     def __init__(self, api_client: CoLAPIClient):
         self.api_client = api_client
-        self.taxonomy_levels = ["species", "genus", "family", "order_", "class_", "phylum", "kingdom"]
 
-    def clean_taxonomy(self, taxonomy: TaxonomyRecord) -> Dict[str, Optional[str]]:
-        """Clean and normalize taxonomy data before querying the API."""
-        cleaned = {}
-        
-        for level in self.taxonomy_levels:
-            value = getattr(taxonomy, level, None)
-            
-            if value:
-                cleaned_value = value.replace('_', ' ').strip()
-                if any(term in cleaned_value.lower() for term in ['unknown', 'n/a', 'null', 'none', 'na']):
-                    cleaned_value = None
-                elif cleaned_value.endswith(' sp'):
-                    cleaned_value = cleaned_value[:-3].strip()
-                
-                cleaned[level] = cleaned_value if cleaned_value else None
-            else:
-                cleaned[level] = None
-        
-        return cleaned
+    @staticmethod
+    def _clean(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        v = str(value).strip()
+        if v.lower() in ('', 'na', 'n/a', 'null', 'none', 'unknown', 'unclassified', 'unidentified'):
+            return None
+        v = re.sub(r"\s*\(.*", "", v)          # drop author citation, e.g. "(Schaeff.) Pers."
+        v = v.replace('_', ' ').strip()
+        return v or None
 
-    def match_taxonomy(self, taxonomy: TaxonomyRecord) -> MatchResult:
-        """Match a single taxonomy against CoL."""
-        try:
-            cleaned_tax = self.clean_taxonomy(taxonomy)
-            col_taxonomy = self._hierarchical_match(cleaned_tax)
-            
-            return MatchResult(
-                original_tax_id=taxonomy.tax_id,
-                col_taxonomy=col_taxonomy,
-                success=col_taxonomy is not None
-            )
-            
-        except Exception as e:
-            logger.error(f"Error matching taxonomy {taxonomy.tax_id}: {e}")
-            return MatchResult(
-                original_tax_id=taxonomy.tax_id,
-                success=False,
-                error_message=str(e)
-            )
+    @staticmethod
+    def _is_provisional(name: Optional[str]) -> bool:
+        if not name:
+            return True
+        words = [w.strip(".,;:") for w in name.lower().split()]
+        if any(w in _PROVISIONAL_WORDS for w in words):
+            return True
+        if len(words) >= 2:                     # strain-code epithet, e.g. "sp. F123"
+            ep = words[1]
+            if ep and sum(c.isdigit() for c in ep) / len(ep) > 0.4:
+                return True
+        return False
 
-    def _hierarchical_match(self, cleaned_tax: Dict[str, Optional[str]]) -> Optional[Dict[str, str]]:
-        """Perform hierarchical matching starting from the most specific rank."""
-        for i, level in enumerate(self.taxonomy_levels):
-            if not cleaned_tax.get(level):
-                continue
-            
-            q_name = cleaned_tax[level]
-            params = {"q": q_name, "fuzzy": "true"}
-            
-            # Add surrounding taxonomic context
-            for context_level in self.taxonomy_levels[i+1:]:
-                if cleaned_tax.get(context_level):
-                    api_param = context_level.replace('_', '')
-                    params[api_param] = cleaned_tax[context_level]
-            
-            usage = self.api_client.query_taxon(params)
-            if usage:
-                classification = self._extract_classification(usage)
-                if classification:
-                    # Fill in more specific ranks with original data
-                    self._fill_missing_levels(classification, cleaned_tax, i)
-                    return classification
-        
+    @staticmethod
+    def _kingdom_of(classification: List[Dict]) -> Optional[str]:
+        for c in classification or []:
+            if c.get("rank") == "kingdom":
+                return c.get("name")
         return None
 
-    def _extract_classification(self, usage: Dict) -> Dict[str, str]:
-        """Extract the classification dictionary from an API response."""
-        classification = {}
-        
-        # Extraire de la classification
-        if "classification" in usage:
-            for taxon in usage["classification"]:
-                if taxon.get('rank') and taxon.get('name'):
-                    rank = taxon['rank'].lower().replace('class', 'class_').replace('order', 'order_')
-                    classification[rank] = taxon['name']
+    def _pick(self, results: List[Dict], expected_kingdom: Optional[str],
+              require_genus: Optional[str] = None) -> Optional[Dict]:
+        """Filter exact/fuzzy results by kingdom (homonyms) and optional genus (typo guard),
+        preferring an accepted usage."""
+        cand = results
+        if expected_kingdom:
+            kf = [r for r in cand
+                  if (self._kingdom_of(r.get("classification")) or "").lower() == expected_kingdom.lower()]
+            if kf:
+                cand = kf
+        if require_genus:
+            cand = [r for r in cand if any(
+                c.get("rank") == "genus" and (c.get("name", "").lower() == require_genus.lower())
+                for c in r.get("classification", []))]
+        if not cand:
+            return None
+        accepted = [r for r in cand if r.get("usage", {}).get("status") == "accepted"]
+        return accepted[0] if accepted else cand[0]
 
-        # Add the primary taxon
-        if usage.get("rank") and usage.get("name"):
-            rank = usage["rank"].lower().replace('class', 'class_').replace('order', 'order_')
-            classification[rank] = usage["name"]
+    def _resolve(self, result: Dict) -> Dict[str, str]:
+        """Build a {kingdom..species} dict from a chosen result, resolving synonym->accepted."""
+        usage = result.get("usage", {})
+        tax: Dict[str, str] = {}
+        # higher lineage (for a synonym, CoL's classification is the ACCEPTED placement)
+        for c in result.get("classification", []):
+            rank = (c.get("rank") or "").lower()
+            key = _RANK_KEY.get(rank)
+            if key and c.get("name"):
+                tax[key] = c["name"]
+        # deepest accepted name
+        if usage.get("status") == "synonym":
+            acc_name = usage.get("accepted", {}).get("name", {})
+        else:
+            acc_name = usage.get("name", {})
+        if isinstance(acc_name, dict):
+            key = _RANK_KEY.get((acc_name.get("rank") or "").lower())
+            if key and acc_name.get("scientificName"):
+                tax[key] = acc_name["scientificName"]
+        return tax
 
-        return classification
+    def match_taxonomy(self, taxonomy: TaxonomyRecord) -> MatchResult:
+        """Match a single taxonomy against CoL with the EXACT-first strategy."""
+        try:
+            cleaned = {lvl: self._clean(getattr(taxonomy, lvl, None)) for lvl in self.LEVELS}
+            exp_kingdom = cleaned.get("kingdom")
+            # a provisional species (sp., cf., strain code...) must not be matched as a species
+            if cleaned.get("species") and self._is_provisional(cleaned["species"]):
+                cleaned["species"] = None
 
-    def _fill_missing_levels(self, classification: Dict[str, str], original_tax: Dict[str, Optional[str]], found_index: int):
-        """Fill missing levels using the original taxonomy data."""
-        for idx in range(found_index):
-            specific_level = self.taxonomy_levels[idx]
-            if original_tax.get(specific_level) and specific_level not in classification:
-                classification[specific_level] = original_tax[specific_level]
+            for lvl in self.LEVELS:                       # deepest -> shallowest
+                q = cleaned.get(lvl)
+                if not q or self._is_provisional(q):
+                    continue
+                hit = self._pick(self.api_client.search(q, "EXACT"), exp_kingdom)
+                if hit is None and lvl in ("species", "genus"):
+                    # typo fallback: fuzzy, but constrained to the same genus to avoid noise
+                    hit = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
+                                     require_genus=cleaned.get("genus"))
+                if hit is not None:
+                    tax = self._resolve(hit)
+                    # keep original, more-specific ranks CoL did not return
+                    for r in self.LEVELS:
+                        if cleaned.get(r) and r not in tax:
+                            tax[r] = cleaned[r]
+                    return MatchResult(original_tax_id=taxonomy.tax_id, col_taxonomy=tax, success=bool(tax))
+
+            return MatchResult(original_tax_id=taxonomy.tax_id, success=False)
+
+        except Exception as e:
+            logger.error(f"Error matching taxonomy {taxonomy.tax_id}: {e}")
+            return MatchResult(original_tax_id=taxonomy.tax_id, success=False, error_message=str(e))
 
 class CoLProcessor:
     """High-level processor for CoL matching."""
@@ -223,21 +291,25 @@ class CoLProcessor:
         self.db_manager = db_manager
         self.config = config
 
-        # API configuration
+        # API configuration (polite defaults for the public ChecklistBank API)
         api_config = config.get('CoL_api', {})
-        max_requests = api_config.get('max_requests_per_second', 1000)
-        max_workers=min(20, os.cpu_count() * 5)
+        max_requests = api_config.get('max_requests_per_second', 8)
+        max_workers = max(1, min(int(api_config.get('max_workers', 8)), 8))
+        # CoL release to pin for reproducibility ("3LR" = latest release, resolved at run start)
+        dataset = str(api_config.get('dataset', '3LR'))
 
-        self.api_client = CoLAPIClient(max_requests_per_second=max_requests)
+        self.api_client = CoLAPIClient(max_requests_per_second=max_requests, dataset=dataset)
         self.matcher = TaxonomyMatcher(self.api_client)
         self.max_workers = max_workers
 
-        # Report metadata
+        # Report metadata — records the exact CoL release (version + DOI) used, so the run
+        # is reproducible and citable (addresses reviewer note on CoL provenance).
         self.report = {
             "run_summary": {},
             "parameters": {
                 "max_requests_per_second": max_requests,
                 "max_workers": max_workers,
+                "col_source": self.api_client.provenance,
                 **config
             },
             "statistics": {}

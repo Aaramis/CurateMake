@@ -6,9 +6,9 @@ channels:
 dependencies:
   - python=3.10
   - pandas=2.0.3
-  - mafft
-  - hmmer
-  - trimal
+  - mafft=7.526
+  - hmmer=3.4
+  - trimal=1.5.1
   - sqlalchemy=2.0
   - psycopg2=2.9
   - matplotlib

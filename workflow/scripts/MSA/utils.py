@@ -22,7 +22,12 @@ def create_fasta_header(row: pd.Series, tax_columns: List[str], id_col: str = "s
     for col_name in tax_columns:
         # Ensure column exists and value is not NaN
         if col_name in row and pd.notna(row[col_name]):
-            value = row[col_name]
+            # Escape spaces: MAFFT/trimAl truncate FASTA headers at the first
+            # whitespace, which would otherwise drop the species epithet
+            # (e.g. "species=Russula azurea" -> "species=Russula"). Underscores
+            # are restored to spaces when the taxonomy is read back
+            # (see decode_header_tax_value / SATIVA integration).
+            value = str(row[col_name]).replace(" ", "_")
             # Append as column=value
             taxonomy_parts.append(f"{col_name}={value}")
 

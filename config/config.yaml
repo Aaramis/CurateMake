@@ -116,9 +116,17 @@ deduplication:
 
 
 # Catalogue of Life API configuration
+# Polite settings for the public ChecklistBank API (thread-safe rate limiting +
+# 429 handling in col_taxonomic_matcher.py). Do not raise these aggressively.
 CoL_api:
-  max_requests_per_second: 1000
-  max_workers: 32
+  # Reproductibilité : release CoL à épingler. "3LR" = dernière release de CoL, résolue
+  # au démarrage du run et figée pour tout le run ; sa version + DOI sont enregistrés dans
+  # data/processed/col_matching_report.json (col_source). Mettre une clé de release précise
+  # (ex. 315777 = COL26.7, DOI 10.48580/dgyhw) pour rejouer exactement la même version.
+  # "3" = projet CoL vivant (NON reproductible) — déconseillé.
+  dataset: "3LR"
+  max_requests_per_second: 8   # débit poli (le client plafonne à 15/s de toute façon)
+  max_workers: 8               # nb de requêtes concurrentes (plafonné à 8 côté code)
   batch_size: 1000
 
 
@@ -148,7 +156,7 @@ msa:
   id_col: "seq_id"
   seq_col: "sequence"
   barcode_col: "barcode"
-  max_thread_workers: 50 # Nombre de threads a utiliser par Barcode
+  max_thread_workers: 40 # Nombre de threads a utiliser par Barcode
   csv_path: "data/full.csv"
   msa_dir: "data/MSA"
   output_report: "reports/html/msa_analysis_report.html"
@@ -203,7 +211,11 @@ sativa:
 sativa_integration:
   # CoL API configuration
   col_api:
-    max_requests_per_second: 100
+    # Post-SATIVA CoL re-validation. Uses the SAME corrected client as harmonize_taxo
+    # (col_taxonomic_matcher): EXACT search + synonym resolution + thread-safe polite rate
+    # limiting + pinned DOI'd release. Keep the rate polite (client caps at 15/s).
+    dataset: "3LR"               # release CoL épinglée (voir CoL_api.dataset)
+    max_requests_per_second: 8
     timeout_per_request: 30
 
   # Cache configuration

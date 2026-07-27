@@ -30,9 +30,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 import pickle
 
-# Add utils to path
+# Add utils + sibling scripts to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from db_manager import get_database_manager
+# Reuse the single corrected CoL client/matcher (EXACT-search strategy, synonym resolution,
+# thread-safe polite rate limiting, pinned DOI'd release + provenance). One source of truth
+# for CoL logic across the pipeline (see col_taxonomic_matcher.py).
+from col_taxonomic_matcher import CoLAPIClient, TaxonomyMatcher, TaxonomyRecord
 
 # Configure logging
 logging.basicConfig(
@@ -117,7 +122,14 @@ class CoLValidator:
 
     def __init__(self, max_requests_per_second: int = 100,
                  timeout: int = 30, cache_enabled: bool = True,
-                 cache_file: Optional[Path] = None, max_memory_cache: int = 100000):
+                 cache_file: Optional[Path] = None, max_memory_cache: int = 100000,
+                 dataset: str = "3LR"):
+        # Shared corrected CoL client + matcher (EXACT-search, synonym resolution, pinned
+        # DOI'd release, thread-safe polite rate limiting). Replaces the old /match+fuzzy path.
+        self._api = CoLAPIClient(max_requests_per_second=max_requests_per_second,
+                                 timeout=timeout, dataset=dataset)
+        self._matcher = TaxonomyMatcher(self._api)
+        self.provenance = self._api.provenance
         self.base_url = "https://api.checklistbank.org/dataset/3LR/match/nameusage"
         self.session = requests.Session()
 
@@ -334,10 +346,18 @@ class CoLValidator:
         if cached:
             return cached
 
-        # Query CoL API
-        usage = self._query_col_api(taxonomy)
+        # Query CoL via the shared corrected matcher (EXACT search + synonym resolution)
+        rec = TaxonomyRecord(
+            tax_id=0,
+            kingdom=taxonomy.get('kingdom'), phylum=taxonomy.get('phylum'),
+            class_=taxonomy.get('class_'), order_=taxonomy.get('order_'),
+            family=taxonomy.get('family'), genus=taxonomy.get('genus'),
+            species=taxonomy.get('species'))
+        match = self._matcher.match_taxonomy(rec)
+        self.stats['api_calls'] = self._api.api_calls
+        self.stats['failed_calls'] = self._api.failed_calls
 
-        if not usage:
+        if not match.success or not match.col_taxonomy:
             # No match found
             result = CoLValidationResult(
                 success=False,
@@ -345,8 +365,7 @@ class CoLValidator:
                 col_taxonomy=None
             )
         else:
-            # Extract taxonomy from response
-            col_taxonomy = self._extract_classification_from_usage(usage)
+            col_taxonomy = match.col_taxonomy
 
             # Compare with input taxonomy
             if self._taxonomies_match(taxonomy, col_taxonomy):
@@ -370,9 +389,10 @@ class CoLValidator:
         return result
 
     def close(self):
-        """Close session and save cache"""
+        """Close sessions and save cache"""
         self.save_cache()
         self.session.close()
+        self._api.close()
 
 
 # ============================================================================
@@ -1496,8 +1516,10 @@ def main(snakemake):
         timeout=col_config['timeout_per_request'],
         cache_enabled=cache_config['enabled'],
         cache_file=Path(cache_config['file_cache_path']),
-        max_memory_cache=cache_config['max_memory_entries']
+        max_memory_cache=cache_config['max_memory_entries'],
+        dataset=col_config.get('dataset', '3LR')
     )
+    logger.info("CoL source (integration): %s", col_validator.provenance)
 
     # Scan for .mis files
     mis_files = scan_sativa_output_directory(sativa_dir, barcodes, tax_levels)

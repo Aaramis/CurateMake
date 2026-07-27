@@ -413,12 +413,26 @@ class LeaveOneTest:
                 placements += jp.get_placement()
                 
             config.log.debug("Loaded %d placements from %s\n", len(placements), jplace_fmask)
-        else:        
+        elif os.environ.get("CURATEMAKE_SATIVA_L1O", "epang").lower() == "raxml":
+            # Repli optionnel sur le leave-one-out RAxML historique (`-f O`)
+            # via CURATEMAKE_SATIVA_L1O=raxml. Non recommandé : ne passe pas à
+            # l'échelle (timeout au-delà de ~1500-2000 séquences).
             jp = self.raxml.run_epa(job_name, self.refalign_fname, self.reftree_fname, self.optmod_fname, mode="l1o_seq")
             placements = jp.get_placement()
             if self.cfg.output_interim_files:
                 out_jplace_fname = self.cfg.out_fname("%NAME%.l1out_seq.jplace")
                 self.raxml.copy_epa_jplace(job_name, out_jplace_fname, move=True, mode="l1o_seq")
+        else:
+            # PAR DÉFAUT : leave-one-out via EPA-ng (k-fold). ~8x plus rapide et passe
+            # à l'échelle là où RAxML -f O timeout. La classification/décision en aval
+            # reste 100% SATIVA (voir README_MODIFICATIONS.md).
+            from epac.epang_l1o import run_epang_l1o
+            folds = int(os.environ.get("CURATEMAKE_EPANG_FOLDS", "5"))
+            placements = run_epang_l1o(
+                self.refjson.jdata["tree"], self.refalign_fname, self.reftree_fname,
+                self.cfg.raxml_outdir,
+                os.path.join(self.cfg.raxml_outdir, "epang_" + job_name),
+                folds=folds, threads=self.cfg.num_threads, log=self.cfg.log)
         
         seq_count = 0
         l1out_ass = {}
@@ -548,7 +562,24 @@ class LeaveOneTest:
 
         reftree.write(outfile=reftree_fname)
 
-        # IMPORTANT: don't load the model, since it's invalid for the pruned true !!! 
+        if os.environ.get("CURATEMAKE_SATIVA_L1O", "epang").lower() != "raxml":
+            # PAR DÉFAUT : confirmation (passe 2) via EPA-ng, comme la passe 1. Le jplace
+            # produit est auto-cohérent (arbre {N} + placements) -> consommable directement
+            # par EpaJsonParser ; SATIVA reconstruit le bid_tax_map à partir de cet arbre.
+            # Supprime le RAxML -f v (fragile sur les petits arbres élagués) + petit gain de
+            # temps. Repli RAxML via CURATEMAKE_SATIVA_L1O=raxml.
+            from epac.epang_l1o import run_epang_final
+            jplace = run_epang_final(
+                reftree_fname, self.refalign_fname, self.cfg.raxml_outdir,
+                os.path.join(self.cfg.raxml_outdir, "epang_" + job_name),
+                threads=self.cfg.num_threads, log=self.cfg.log)
+            epa_result = EpaJsonParser(jplace)
+            if self.cfg.output_interim_files:
+                import shutil
+                shutil.copy(jplace, self.cfg.out_fname("%NAME%.final_epa.jplace"))
+            return epa_result
+
+        # IMPORTANT: don't load the model, since it's invalid for the pruned true !!!
         optmod_fname=""
         epa_result = self.raxml.run_epa(job_name, self.refalign_fname, reftree_fname, optmod_fname)
 
@@ -578,7 +609,19 @@ class LeaveOneTest:
             config.log.info("Leave-one-out test identified %d suspicious sequences; running final EPA test to check them...\n", len(self.mislabels))
             if self.cfg.debug:
                 self.write_mislabels(final=False)
-            self.run_final_epa_test()
+            # The final EPA confirmation step still uses RAxML (-f v) on a mislabel-pruned
+            # tree, which can fail on small/degenerate pruned trees (e.g. species-level groups
+            # where most sequences are flagged). Failing there must NOT kill the whole group:
+            # fall back to the (already reliable) leave-one-out mislabels.
+            l1out_mislabels = list(self.mislabels)
+            try:
+                self.run_final_epa_test()
+            except SystemExit as e:   # SATIVA calls exit_fatal_error() internally
+                config.log.warning("Final EPA confirmation step exited (%s); keeping leave-one-out mislabels.\n", e)
+                self.mislabels = l1out_mislabels
+            except Exception as e:
+                config.log.warning("Final EPA confirmation step failed (%s); keeping leave-one-out mislabels.\n", e)
+                self.mislabels = l1out_mislabels
 
         self.filter_mislabels()
         self.sort_mislabels()
