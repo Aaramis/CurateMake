@@ -158,41 +158,47 @@ class SequenceDeduplicator:
             params = {"barcode": barcode}
 
         # Step 1: Fetch seq_ids for this barcode in batches (no JOIN)
-        # We use OFFSET/LIMIT to stream through seq_ids without loading all at once
+        # Keyset pagination (WHERE seq_id > :last ORDER BY seq_id): deterministic across
+        # separate transactions/pages — required on distributed backends (YugabyteDB),
+        # where OFFSET without a stable ORDER BY can skip or duplicate rows between pages.
+        # Marking is deferred to Step 4, so the keyset walk sees a stable snapshot.
         seq_id_batch_size = self.tax_id_batch_size * 10  # Larger batches for seq_ids
-        offset = 0
+        last_seq_id = None
         all_rows = []
 
         while True:
+            keyset_filter = "" if last_seq_id is None else "AND seq_id > :last_seq_id"
             seq_id_query = f"""
                 SELECT seq_id
                 FROM {sequences_table}
                 WHERE barcode_status != 'Duplicate'
                   AND {barcode_filter}
-                LIMIT :limit OFFSET :offset
+                  {keyset_filter}
+                ORDER BY seq_id
+                LIMIT :limit
             """
 
-            def fetch_seq_ids():
+            def fetch_seq_ids(_last=last_seq_id):
+                query_params = {**params, "limit": seq_id_batch_size}
+                if _last is not None:
+                    query_params["last_seq_id"] = _last
                 with self.db_manager.get_session() as session:
-                    result = session.execute(
-                        text(seq_id_query),
-                        {**params, "limit": seq_id_batch_size, "offset": offset}
-                    )
+                    result = session.execute(text(seq_id_query), query_params)
                     return [row[0] for row in result]
 
             try:
                 seq_ids = self.db_manager._execute_with_retry(
-                    f"dedup_fetch_seq_ids_{barcode}_offset_{offset}",
+                    f"dedup_fetch_seq_ids_{barcode}_after_{last_seq_id}",
                     fetch_seq_ids
                 )
             except Exception as e:
-                logger.error(f"Failed to fetch seq_ids at offset {offset}: {e}")
+                logger.error(f"Failed to fetch seq_ids after {last_seq_id}: {e}")
                 break
 
             if not seq_ids:
                 break
 
-            logger.info(f"Fetching data for {len(seq_ids)} sequences (offset {offset}) for barcode {barcode}...")
+            logger.info(f"Fetching data for {len(seq_ids)} sequences (after seq_id {last_seq_id}) for barcode {barcode}...")
 
             # Step 2: Fetch sequences and tax_ids for this batch of seq_ids
             if self.db_manager.db_type == "postgresql":
@@ -217,14 +223,17 @@ class SequenceDeduplicator:
 
             try:
                 rows = self.db_manager._execute_with_retry(
-                    f"dedup_fetch_data_{barcode}_offset_{offset}",
+                    f"dedup_fetch_data_{barcode}_after_{last_seq_id}",
                     fetch_sequences
                 )
                 all_rows.extend(rows)
             except Exception as e:
-                logger.error(f"Failed to fetch data for seq_id batch at offset {offset}: {e}")
+                logger.error(f"Failed to fetch data for seq_id batch after {last_seq_id}: {e}")
 
-            offset += seq_id_batch_size
+            # Advance the keyset cursor. Short page => last page reached.
+            last_seq_id = seq_ids[-1]
+            if len(seq_ids) < seq_id_batch_size:
+                break
 
         if not all_rows:
             logger.info(f"No sequences found for barcode {barcode}")

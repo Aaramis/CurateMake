@@ -322,6 +322,15 @@ def get_engine(db_type: str = "sqlite", echo: bool = False, **kwargs):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
+            # synchronous=NORMAL is the recommended pairing with WAL: durable across app
+            # crashes, avoids an fsync on every commit (major speedup for the many small
+            # transactions of the SATIVA integration). busy_timeout makes concurrent writers
+            # WAIT for the lock instead of erroring immediately (SQLite is single-writer),
+            # which removes the retry churn under multi-threaded file processing.
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=60000")
+            cursor.execute("PRAGMA temp_store=MEMORY")
+            cursor.execute("PRAGMA cache_size=-131072")  # ~128 MB page cache
             cursor.close()
 
         logger.info(f"Created SQLite engine: {path}")

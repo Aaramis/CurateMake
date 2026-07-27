@@ -15,7 +15,7 @@ ITSX_FASTA_FILES = [
 
 
 def get_itsx_barcodes(wildcards):
-    """Récupère dynamiquement la liste des barcodes depuis data/ITSx/"""
+    """Dynamically retrieve the list of barcodes from data/ITSx/"""
     itsx_dir = Path("data/ITSx")
     if itsx_dir.exists():
         barcodes = [d.name for d in itsx_dir.iterdir() if d.is_dir()]
@@ -25,7 +25,7 @@ def get_itsx_barcodes(wildcards):
 
 rule deduplicate_sequences_pre_itsx:
     """
-    Déduplication des séquences avant le traitement ITSx
+    Deduplication of sequences before ITSx processing
     """
     input:
         col_summary="data/processed/col_matching_report.json"
@@ -63,7 +63,7 @@ rule prepare_itsx:
 
 rule run_itsx_barcode:
     """
-    Exécute ITSx pour un barcode spécifique (parallélisation native)
+    Run ITSx for a specific barcode (native parallelisation)
     """
     input:
         report="data/processed/itsx_prepare_report.json",
@@ -96,7 +96,7 @@ rule run_itsx_barcode:
             -o {params.output_dir}/{wildcards.barcode} \
             >> {log} 2>&1
 
-        # Nettoyer le répertoire temporaire
+        # Clean up the temporary directory
         rm -rf {params.temp_dir}
 
         touch {output.done}
@@ -104,7 +104,7 @@ rule run_itsx_barcode:
 
 rule run_itsx_all:
     """
-    Attend que tous les barcodes ITSx soient traités
+    Wait until all ITSx barcodes are processed
     """
     input:
         lambda wildcards: expand(
@@ -118,8 +118,8 @@ rule run_itsx_all:
 
 rule process_barcode_itsx:
     """
-    Traite un barcode ITSx individuellement (parallélisation Snakemake native)
-    Démarre dès que son barcode ITSx est terminé
+    Process a single ITSx barcode (native Snakemake parallelisation)
+    Starts as soon as its ITSx barcode is finished
     """
     input:
         itsx_done="data/processed/itsx_run_{barcode}.done",
@@ -141,7 +141,7 @@ rule process_barcode_itsx:
 
 rule aggregate_itsx_results:
     """
-    Agrège tous les rapports individuels de barcodes en un rapport final
+    Aggregate all per-barcode reports into a final report
     """
     input:
         lambda wildcards: expand(
@@ -161,7 +161,7 @@ rule aggregate_itsx_results:
 
 rule deduplicate_sequences_post_itsx:
     """
-    Déduplication des séquences après le traitement ITSx
+    Deduplication of sequences after ITSx processing
     """
     input:
         itsx_report="data/processed/itsx_process.json",

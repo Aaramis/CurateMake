@@ -25,6 +25,15 @@ from sqlalchemy.exc import OperationalError
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Shared taxonomy normaliser (single source of truth for placeholder/species cleaning)
+for _u in (Path(__file__).resolve().parent / "utils",
+           Path.cwd() / "workflow" / "scripts" / "utils"):
+    if (_u / "taxonomy_normalize.py").exists():
+        if str(_u) not in sys.path:
+            sys.path.insert(0, str(_u))
+        break
+from taxonomy_normalize import clean_rank, clean_species, is_domain
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -215,21 +224,29 @@ class CALeDNAParser:
             if not taxonomy_str or taxonomy_str.strip() == '':
                 return {rank: None for rank in ranks}
             
-            # Split on semicolons
+            # Split on semicolons. CALeDNA lineages are fixed 7-field and positional,
+            # with missing intermediate ranks kept as NA in place (never omitted), so
+            # positional mapping is safe. Guard against an unexpected layout.
             tax_parts = [part.strip() for part in taxonomy_str.split(';')]
-            
-            # Map onto taxonomy ranks
+            if len(tax_parts) != len(ranks):
+                logger.warning(
+                    f"CALeDNA lineage has {len(tax_parts)} fields (expected {len(ranks)}), "
+                    f"positional mapping may be off: {taxonomy_str[:120]!r}"
+                )
+
+            # Map onto taxonomy ranks. Field 0 is a DOMAIN (always "Eukaryota"), not a
+            # kingdom; storing a domain there is inconsistent with the other sources and
+            # is a no-op for CoL's kingdom-based disambiguation, so we leave kingdom empty
+            # and let the CoL harmonisation fill the real kingdom from genus/species.
             for i, rank in enumerate(ranks):
-                if i < len(tax_parts):
-                    value = tax_parts[i].strip()
-                    # Clean empty or "NA" values
-                    if value and value.upper() not in ['', 'NA', 'UNKNOWN', 'UNIDENTIFIED']:
-                        taxonomy[rank] = value.replace('_', ' ')
-                    else:
-                        taxonomy[rank] = None
+                raw = tax_parts[i] if i < len(tax_parts) else None
+                if rank == 'kingdom':
+                    taxonomy[rank] = None if is_domain(raw) else clean_rank(raw)
+                elif rank == 'species':
+                    taxonomy[rank] = clean_species(raw)
                 else:
-                    taxonomy[rank] = None
-            
+                    taxonomy[rank] = clean_rank(raw)
+
             return taxonomy
             
         except Exception as e:
@@ -368,7 +385,7 @@ class CALeDNAParser:
         return results
 
     def db_writer_consumer(self, source_id: str, results_queue: Queue):
-        """Writer avec SQLAlchemy bulk inserts (source_id is UUID string)."""
+        """Writer using SQLAlchemy bulk inserts (source_id is UUID string)."""
         logger.info("Starting DB writer")
         batch = []
 

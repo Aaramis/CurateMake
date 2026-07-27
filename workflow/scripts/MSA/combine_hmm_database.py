@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Combine all individual HMM profiles for a barcode into a single hmmpress-ready database.
+Combine all individual HMM profiles for a barcode into a single combined HMM file
+(plain text, consumed directly by hmmsearch — no hmmpress index needed).
 """
 
 import argparse

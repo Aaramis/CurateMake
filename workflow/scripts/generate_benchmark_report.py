@@ -109,7 +109,7 @@ def create_gantt_timeline(df: pd.DataFrame) -> go.Figure:
     # Build a logical execution order based on modules
     module_order = ['database', 'format_databases', 'harmonize_taxo', 'itsx', 'msa', 'sativa', 'reports']
 
-    # Trier le DataFrame selon l'ordre des modules
+    # Sort the DataFrame by module order
     df['Module_Order'] = df['Module'].map({m: i for i, m in enumerate(module_order)})
     df_sorted = df.sort_values(['Module_Order', 'Time (s)'], ascending=[True, False])
 
@@ -611,12 +611,12 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
     module_standalone = output_path.parent / "benchmark_modules.html"
     module_fig.write_html(str(module_standalone), include_plotlyjs='cdn', config={'responsive': True})
 
-    # Top bottlenecks pour le tableau
+    # Top bottlenecks for the table
     top_bottlenecks_html = bottleneck_df.head(10)[
         ['Module', 'Rule', 'Time', 'Memory (MB)', 'Total I/O (MB)', 'Bottleneck_Score']
     ].to_html(index=False, classes='data-table', float_format=lambda x: f'{x:.1f}')
 
-    # Construire le HTML avec design moderne
+    # Build the HTML with a modern design
     html = f"""
 <!DOCTYPE html>
 <html lang="fr">

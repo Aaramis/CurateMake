@@ -1,6 +1,6 @@
 # workflow/rules/msa.smk
 """
-Rules Snakemake pour la création de MSA propre
+Snakemake rules for building clean MSAs
 """
 
 import os
@@ -30,6 +30,16 @@ CLASSIFICATION_BATCHES_JSON_DIR = config["msa"]["classification_batches_json_dir
 CLASSIFICATION_RESULTS = config["msa"]["classification_results_csv"]
 CLASSIFICATION_STATS = config["msa"]["classification_stats_json"]
 
+# Integration (mafft --add) — scattered per clade instead of one serial job.
+INTEGRATION_MANIFEST = config["msa"].get("integration_manifest", "data/MSA/integration/msa_integration_manifest.json")
+INTEGRATION_TASKS_DIR = config["msa"].get("integration_tasks_dir", "data/MSA/integration/tasks")
+INTEGRATION_RESULTS_DIR = config["msa"].get("integration_results_dir", "data/MSA/integration/results")
+# Few threads per clade so MANY clades run concurrently (the parallelism is at
+# the job level, not inside a single mafft --add).
+INTEGRATION_THREADS = int(config["msa"].get("integration_threads_per_clade", 2))
+# Integration method: "hmmalign" (fast, hmmalign --mapali) or "mafft" (mafft --add).
+INTEGRATION_METHOD = config["msa"].get("integration_method", "hmmalign")
+
 
 def _load_classification_manifest():
     manifest_path = checkpoints.msa_classification_manifest.get().output.manifest
@@ -53,6 +63,30 @@ def classification_batch_outputs(_wildcards):
     return [
         os.path.join(CLASSIFICATION_BATCHES_DIR, f"{batch['batch_id']}.csv")
         for batch in classification_batches()
+    ]
+
+
+def _load_integration_manifest():
+    manifest_path = checkpoints.msa_integration_manifest.get().output.manifest
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def integration_jobs():
+    return _load_integration_manifest().get("jobs", [])
+
+
+def integration_job_json(wildcards):
+    for job in integration_jobs():
+        if job["job_id"] == wildcards.job:
+            return job["json_path"]
+    raise ValueError(f"Integration job {wildcards.job} not found in integration manifest.")
+
+
+def integration_job_outputs(_wildcards):
+    return [
+        os.path.join(INTEGRATION_RESULTS_DIR, f"{job['job_id']}.json")
+        for job in integration_jobs()
     ]
 
 
@@ -472,27 +506,91 @@ rule msa_collect_assignments:
         """
 
 
-rule msa_integrate_assignments:
+checkpoint msa_integration_manifest:
     input:
         assignments=CLASSIFICATION_RESULTS,
         unprocessed=UNPROCESSED_CSV,
         manifest=MSA_MANIFEST
-    output:
-        summary=MSA_ASSIGNMENT_SUMMARY
     params:
         msa_dir=MSA_DIR,
         id_col=config["msa"]['id_col'],
+        tasks_dir=INTEGRATION_TASKS_DIR
+    output:
+        manifest=INTEGRATION_MANIFEST
+    log:
+        "logs/MSA/integration_manifest.log"
+    benchmark:
+        "benchmarks/msa/integration_manifest.benchmark.txt"
+    conda:
+        "../envs/msa.yaml"
+    shell:
+        """
+        python workflow/scripts/MSA/prepare_integration_tasks.py \
+            --assignments {input.assignments} \
+            --manifest {input.manifest} \
+            --msa-dir {params.msa_dir} \
+            --id-col {params.id_col} \
+            --output-manifest {output.manifest} \
+            --tasks-dir {params.tasks_dir} \
+            --log-file {log}
+        """
+
+
+rule msa_integrate_clade:
+    input:
+        task=integration_job_json,
+        unprocessed=UNPROCESSED_CSV,
+        manifest=INTEGRATION_MANIFEST
+    output:
+        result=os.path.join(INTEGRATION_RESULTS_DIR, "{job}.json")
+    params:
+        id_col=config["msa"]['id_col'],
         seq_col=config["msa"]['seq_col'],
-        tax_columns=config["msa"]['tax_columns'],
-        max_thread_workers=config["msa"]['max_thread_workers']
+        tax_columns=" ".join(config["msa"]['tax_columns']),
+        max_threads=INTEGRATION_THREADS,
+        method=INTEGRATION_METHOD
+    threads: INTEGRATION_THREADS
+    log:
+        "logs/MSA/integrate/{job}.log"
+    benchmark:
+        "benchmarks/msa/integrate/{job}.benchmark.txt"
+    conda:
+        "../envs/msa.yaml"
+    shell:
+        """
+        python workflow/scripts/MSA/integrate_clade_task.py \
+            --task-json {input.task} \
+            --unprocessed {input.unprocessed} \
+            --output-json {output.result} \
+            --id-col {params.id_col} \
+            --seq-col {params.seq_col} \
+            --tax-columns {params.tax_columns} \
+            --max-threads {params.max_threads} \
+            --method {params.method} \
+            --log-file {log}
+        """
+
+
+rule msa_integrate_assignments:
+    input:
+        results=integration_job_outputs,
+        manifest=INTEGRATION_MANIFEST
+    output:
+        summary=MSA_ASSIGNMENT_SUMMARY
     log:
         "logs/MSA/integrate_assignments.log"
     benchmark:
         "benchmarks/msa/integrate_assignments.benchmark.txt"
     conda:
         "../envs/msa.yaml"
-    script:
-        "../scripts/MSA/add_assignments_to_msa.py"
+    shell:
+        """
+        python workflow/scripts/MSA/collect_integration_results.py \
+            --result-jsons {input.results} \
+            --manifest {input.manifest} \
+            --output-summary {output.summary} \
+            --log-file {log}
+        """
 
 
 rule msa_classification_ready:
@@ -556,7 +654,7 @@ rule run_msa:
         "../scripts/MSA/run_msa.py"
 
 
-# Rule pour l'analyse et le reporting des MSA
+# Rule for MSA analysis and reporting
 rule analyze_msa_report:
     input:
         run_msa_report="data/processed/msa_run_report.json"

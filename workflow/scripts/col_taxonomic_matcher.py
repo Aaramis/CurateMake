@@ -71,8 +71,9 @@ class CoLAPIClient:
         self.session.mount('https://', adapter)
         self.session.headers.update({'User-Agent': f'CurateMake/1.0 (ITS reference DB curation; +{contact})'})
 
-        # Thread-safe rate limiting (capped to stay polite with the public API)
-        rps = max(0.5, min(float(max_requests_per_second or 8), 15.0))
+        # Thread-safe rate limiter. The cap is a safety ceiling against runaway loops;
+        # effective throughput is bounded by worker concurrency, not this rate.
+        rps = max(0.5, min(float(max_requests_per_second or 150), 500.0))
         self.request_interval = 1.0 / rps
         self._lock = threading.Lock()
         self._last_request = 0.0
@@ -167,13 +168,11 @@ _RANK_KEY = {"domain": "kingdom", "kingdom": "kingdom", "phylum": "phylum",
 class TaxonomyMatcher:
     """Taxonomy matching against CoL using the EXACT-search strategy.
 
-    Empirically the best strategy (see 15.CoL_logic_test): `/nameusage/search` with
-    `type=EXACT&content=SCIENTIFIC_NAME` (name only, no context in the query) returns
-    the exact usage AND — for a synonym — its accepted name in ONE call, without the
-    cross-kingdom epithet noise of fuzzy search. Homonyms are disambiguated by filtering
-    the (few, exact) results on the expected kingdom. Misspellings fall back to a FUZZY
-    search constrained to the same genus. Downstream ranks are the same class_/order_ keys
-    the DB layer expects.
+    `/nameusage/search` with `type=EXACT&content=SCIENTIFIC_NAME` (name only, no context
+    in the query) returns the exact usage AND — for a synonym — its accepted name in ONE
+    call. Homonyms are disambiguated by filtering the exact results on the expected
+    kingdom. Misspellings fall back to a FUZZY search constrained to the same genus.
+    Downstream ranks use the same class_/order_ keys the DB layer expects.
     """
 
     LEVELS = ["species", "genus", "family", "order_", "class_", "phylum", "kingdom"]
@@ -293,8 +292,10 @@ class CoLProcessor:
 
         # API configuration (polite defaults for the public ChecklistBank API)
         api_config = config.get('CoL_api', {})
-        max_requests = api_config.get('max_requests_per_second', 8)
-        max_workers = max(1, min(int(api_config.get('max_workers', 8)), 8))
+        max_requests = api_config.get('max_requests_per_second', 150)
+        # Concurrent CoL requests. ChecklistBank handles high concurrency well (~470 req/s,
+        # 0 errors), so allow a generous cap; the shared thread-safe limiter is the safety net.
+        max_workers = max(1, min(int(api_config.get('max_workers', 20)), 32))
         # CoL release to pin for reproducibility ("3LR" = latest release, resolved at run start)
         dataset = str(api_config.get('dataset', '3LR'))
 

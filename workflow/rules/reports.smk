@@ -1,6 +1,6 @@
 # workflow/rules/reports.smk
 """
-Rules Snakemake pour la génération de rapports HTML
+Snakemake rules for generating HTML reports
 """
 
 import os
@@ -8,7 +8,7 @@ import os
 
 rule sequence_flow_report:
     """
-    Génère un rapport visuel interactif du flux de séquences à travers le pipeline
+    Generate an interactive visual report of sequence flow through the pipeline
     """
     input:
         final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
@@ -28,19 +28,19 @@ rule sequence_flow_report:
     benchmark:
         "benchmarks/reports/sequence_flow_report.benchmark.txt"
     conda:
-        "../envs/sativa.yaml"  # Utilise l'environnement SATIVA qui contient plotly
+        "../envs/sativa.yaml"  # Uses the SATIVA environment, which includes plotly
     script:
         "../scripts/generate_sequence_flow_report.py"
 
 
 rule sativa_taxonomy_report:
     """
-    Génère un rapport taxonomique SATIVA détaillé avec comparaison 4-way et KPIs.
-    S'exécute après SATIVA integration.
+    Generate a detailed SATIVA taxonomy report with a 4-way comparison and KPIs.
+    Runs after SATIVA integration.
     """
     input:
         final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
-        db=get_db_path(),  # Utilise la fonction qui détecte automatiquement SQLite ou PostgreSQL
+        db=get_db_path(),  # Uses the helper that auto-detects SQLite or PostgreSQL
         sativa_report=config["sativa"]["visualization_report"]
     output:
         report="reports/html/sativa_taxonomy_report.html"
@@ -56,7 +56,7 @@ rule sativa_taxonomy_report:
 
 rule generate_reports_index:
     """
-    Génère un index HTML pour naviguer entre tous les rapports du pipeline
+    Generate an HTML index to navigate all pipeline reports
     """
     input:
         msa_report=config["msa"]["output_report"],

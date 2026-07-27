@@ -11,33 +11,33 @@ def get_db_lock():
     db_type = config.get("database", {}).get("type", "sqlite")
 
     if db_type == "sqlite":
-        return 1  # Séquentiel obligatoire (SQLite = un seul writer)
+        return 1  # Sequential required (SQLite = single writer)
     else:  # postgresql
-        return 999  # Parallélisme autorisé (PostgreSQL MVCC)
+        return 999  # Parallelism allowed (PostgreSQL MVCC)
 
 GLOBAL_DB_LOCK = get_db_lock()
 
 def has_database(name):
-    """Vérifie si une base simple (path) est configurée."""
+    """Check whether a simple (path) database is configured."""
     db_config = config.get("databases", {}).get(name, {})
     return bool(db_config.get("path"))
 
 def has_caledna_database():
-    """Vérifie si la base CALeDNA est configurée (liste de fichiers)."""
+    """Check whether the CALeDNA database is configured (list of files)."""
     db_config = config.get("databases", {}).get("caledna", {})
     return bool(db_config.get("files"))
 
 def get_caledna_files():
-    """Retourne la liste des fichiers CALeDNA depuis la config."""
+    """Return the list of CALeDNA files from the config."""
     return config.get("databases", {}).get("caledna", {}).get("files", [])
 
 def get_caledna_basenames():
-    """Retourne les noms de base des fichiers CALeDNA pour les wildcards."""
+    """Return the base names of the CALeDNA files for the wildcards."""
     files = get_caledna_files()
     return [os.path.splitext(os.path.basename(f))[0] for f in files]
 
 def has_personal_database():
-    """Vérifie si la base PERSONAL est configurée."""
+    """Check whether the PERSONAL database is configured."""
     personal_config = config.get("databases", {}).get("personal", {})
     return bool(personal_config.get("path") or personal_config.get("files"))
 
@@ -54,13 +54,13 @@ def get_personal_files():
     return []
 
 def get_personal_basenames():
-    """Retourne les noms de base des fichiers PERSONAL pour les wildcards."""
+    """Return the base names of the PERSONAL files for the wildcards."""
     files = get_personal_files()
     return [os.path.splitext(os.path.basename(f))[0] for f in files]
 
 
 def formatted_database_reports():
-    """Chemins des rapports formatés (bases configurées + CALeDNA + PERSONAL)."""
+    """Paths of the formatted reports (configured databases + CALeDNA + PERSONAL)."""
     reports = []
     if has_database("unite"):
         reports.append("data/processed/unite_formatted_report.json")
@@ -180,7 +180,7 @@ if has_caledna_database():
 
 if has_personal_database():
     # Rule PERSONAL - User-provided custom database
-    # Format attendu des headers FASTA:
+    # Expected FASTA header format:
     # >ID;barcode=ITS;kingdom=Fungi;phylum=X;class=X;order=X;family=X;genus=X;species=X
     rule format_personal_database:
         input:
@@ -205,7 +205,7 @@ if has_personal_database():
             "../scripts/format_personal.py"
 
 
-# Rule de déduplication des taxonomies
+# Taxonomy deduplication rule
 rule deduplicate_taxonomies:
     input:
         formatted = formatted_database_reports()

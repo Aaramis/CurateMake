@@ -414,18 +414,18 @@ class LeaveOneTest:
                 
             config.log.debug("Loaded %d placements from %s\n", len(placements), jplace_fmask)
         elif os.environ.get("CURATEMAKE_SATIVA_L1O", "epang").lower() == "raxml":
-            # Repli optionnel sur le leave-one-out RAxML historique (`-f O`)
-            # via CURATEMAKE_SATIVA_L1O=raxml. Non recommandé : ne passe pas à
-            # l'échelle (timeout au-delà de ~1500-2000 séquences).
+            # Optional fallback to the original RAxML leave-one-out (`-f O`) via
+            # CURATEMAKE_SATIVA_L1O=raxml. Not recommended: does not scale (times out
+            # beyond ~1500-2000 sequences).
             jp = self.raxml.run_epa(job_name, self.refalign_fname, self.reftree_fname, self.optmod_fname, mode="l1o_seq")
             placements = jp.get_placement()
             if self.cfg.output_interim_files:
                 out_jplace_fname = self.cfg.out_fname("%NAME%.l1out_seq.jplace")
                 self.raxml.copy_epa_jplace(job_name, out_jplace_fname, move=True, mode="l1o_seq")
         else:
-            # PAR DÉFAUT : leave-one-out via EPA-ng (k-fold). ~8x plus rapide et passe
-            # à l'échelle là où RAxML -f O timeout. La classification/décision en aval
-            # reste 100% SATIVA (voir README_MODIFICATIONS.md).
+            # DEFAULT: leave-one-out via EPA-ng (k-fold). ~8x faster and scales where
+            # RAxML -f O times out. Downstream classification/decision remains 100%
+            # SATIVA (see README_MODIFICATIONS.md).
             from epac.epang_l1o import run_epang_l1o
             folds = int(os.environ.get("CURATEMAKE_EPANG_FOLDS", "5"))
             placements = run_epang_l1o(
@@ -563,11 +563,11 @@ class LeaveOneTest:
         reftree.write(outfile=reftree_fname)
 
         if os.environ.get("CURATEMAKE_SATIVA_L1O", "epang").lower() != "raxml":
-            # PAR DÉFAUT : confirmation (passe 2) via EPA-ng, comme la passe 1. Le jplace
-            # produit est auto-cohérent (arbre {N} + placements) -> consommable directement
-            # par EpaJsonParser ; SATIVA reconstruit le bid_tax_map à partir de cet arbre.
-            # Supprime le RAxML -f v (fragile sur les petits arbres élagués) + petit gain de
-            # temps. Repli RAxML via CURATEMAKE_SATIVA_L1O=raxml.
+            # DEFAULT: confirmation (pass 2) via EPA-ng, like pass 1. The produced jplace
+            # is self-consistent (tree {N} + placements) -> consumed directly by
+            # EpaJsonParser; SATIVA rebuilds the bid_tax_map from that tree. Avoids RAxML
+            # -f v (fragile on small pruned trees) plus a small time gain. RAxML fallback
+            # via CURATEMAKE_SATIVA_L1O=raxml.
             from epac.epang_l1o import run_epang_final
             jplace = run_epang_final(
                 reftree_fname, self.refalign_fname, self.cfg.raxml_outdir,

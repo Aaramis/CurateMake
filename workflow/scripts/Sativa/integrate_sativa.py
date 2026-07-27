@@ -124,8 +124,8 @@ class CoLValidator:
                  timeout: int = 30, cache_enabled: bool = True,
                  cache_file: Optional[Path] = None, max_memory_cache: int = 100000,
                  dataset: str = "3LR"):
-        # Shared corrected CoL client + matcher (EXACT-search, synonym resolution, pinned
-        # DOI'd release, thread-safe polite rate limiting). Replaces the old /match+fuzzy path.
+        # Shared CoL client + matcher (EXACT-search, synonym resolution, pinned DOI'd
+        # release, thread-safe rate limiting).
         self._api = CoLAPIClient(max_requests_per_second=max_requests_per_second,
                                  timeout=timeout, dataset=dataset)
         self._matcher = TaxonomyMatcher(self._api)
@@ -849,6 +849,78 @@ class DatabaseIntegrator:
 
         return self.db_manager._execute_with_retry("sativa_check_seq_tax_exists", fetch_exists)
 
+    # ------------------------------------------------------------------ #
+    # BULK helpers (avoid the per-sequence N+1: one chunked query instead #
+    # of one query per sequence). Backend-aware: `= ANY(:ids)` on         #
+    # PostgreSQL/YugabyteDB (single param, no variable limit), `IN (...)`  #
+    # on SQLite. Chunked to keep queries under YugabyteDB RPC timeouts.   #
+    # ------------------------------------------------------------------ #
+    def _id_chunk_size(self) -> int:
+        return 900 if self.db_manager.db_type == "sqlite" else 2000
+
+    def _in_clause(self, column: str, chunk: List[str], prefix: str):
+        """Return (sql_fragment, params) for `column IN <chunk>`, backend-aware."""
+        if self.db_manager.db_type == "postgresql":
+            return f"{column} = ANY(:{prefix}ids)", {f"{prefix}ids": list(chunk)}
+        placeholders = ", ".join(f":{prefix}{i}" for i in range(len(chunk)))
+        return f"{column} IN ({placeholders})", {f"{prefix}{i}": v for i, v in enumerate(chunk)}
+
+    def _chunked_rows(self, seq_ids, sql_template: str, column: str, op_name: str,
+                      extra_params: Optional[Dict] = None):
+        """Run `sql_template` (with a `{clause}` placeholder) over chunks of seq_ids."""
+        from sqlalchemy import text
+        ids = list(seq_ids)
+        cs = self._id_chunk_size()
+        for i in range(0, len(ids), cs):
+            chunk = ids[i:i + cs]
+            clause, params = self._in_clause(column, chunk, "s")
+            if extra_params:
+                params = {**params, **extra_params}
+            sql = sql_template.format(clause=clause)
+
+            def run(sql=sql, params=params):
+                with self.db_manager.get_session() as session:
+                    return list(session.execute(text(sql), params))
+
+            for row in self.db_manager._execute_with_retry(f"{op_name}_{i}", run):
+                yield row
+
+    def bulk_get_original_tax_ids(self, seq_ids) -> Dict[str, str]:
+        """seq_id -> original tax_id (prefer backbone 'Raw', else any)."""
+        st = self._get_table('seq_tax')
+        raw, other = {}, {}
+        sql = f"SELECT seq_id, tax_id, backbone FROM {st} WHERE {{clause}}"
+        for seq_id, tax_id, backbone in self._chunked_rows(seq_ids, sql, "seq_id", "sativa_bulk_orig_tax"):
+            if backbone == 'Raw':
+                raw[seq_id] = tax_id
+            else:
+                other.setdefault(seq_id, tax_id)
+        for sid, tid in other.items():
+            raw.setdefault(sid, tid)
+        return raw
+
+    def bulk_get_col_taxonomy(self, seq_ids) -> Dict[str, Tuple[str, Dict[str, str]]]:
+        """seq_id -> (col_tax_id, taxonomy_dict) for sequences with a 'CoL' backbone."""
+        st = self._get_table('seq_tax')
+        tt = self._get_table('taxonomy')
+        sql = (f"SELECT st.seq_id, st.tax_id, t.kingdom, t.phylum, t.class_, t.order_, "
+               f"t.family, t.genus, t.species FROM {st} st JOIN {tt} t ON st.tax_id = t.tax_id "
+               f"WHERE {{clause}} AND st.backbone = 'CoL'")
+        out = {}
+        for r in self._chunked_rows(seq_ids, sql, "st.seq_id", "sativa_bulk_col_tax"):
+            out[r[0]] = (r[1], {
+                'kingdom': r[2] or '', 'phylum': r[3] or '', 'class_': r[4] or '',
+                'order_': r[5] or '', 'family': r[6] or '', 'genus': r[7] or '', 'species': r[8] or ''
+            })
+        return out
+
+    def bulk_get_existing_seq_tax(self, seq_ids, backbone: str) -> Set[Tuple[str, str]]:
+        """Set of (seq_id, tax_id) already linked under the given backbone."""
+        st = self._get_table('seq_tax')
+        sql = f"SELECT seq_id, tax_id FROM {st} WHERE {{clause}} AND backbone = :bb"
+        return {(r[0], r[1]) for r in self._chunked_rows(
+            seq_ids, sql, "seq_id", "sativa_bulk_existing", extra_params={"bb": backbone})}
+
     def decide_integration_action(self, modification: ModificationRecord,
                                    mod_type: ModificationType,
                                    existing_col_taxonomy: Optional[Dict[str, str]]) -> IntegrationAction:
@@ -949,7 +1021,7 @@ class DatabaseIntegrator:
 
         def update_op():
             with self.db_manager.get_session() as session:
-                # Debug: check what backbones exist for this sequence
+                # Fetch the backbones already linked to this sequence
                 all_backbones = session.execute(text(f"""
                     SELECT backbone FROM {seq_tax_table}
                     WHERE seq_id = :seq_id
@@ -1275,6 +1347,7 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
     warnings_batch = []
 
     # Parse .tax file and identify validated sequences
+    validated_seq_ids = []
     if tax_file and tax_file.exists():
         validated_seq_ids = parser.identify_validated_sequences(tax_file, modifications)
         stats['validated_sequences'] = len(validated_seq_ids)
@@ -1287,63 +1360,64 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
             len(validated_seq_ids)
         )
 
-        # Process validated sequences with new logic
-        for seq_id in validated_seq_ids:
-            try:
-                original_tax_id = integrator.get_original_tax_id_for_sequence(seq_id)
-                col_taxonomy = integrator.get_col_taxonomy_for_sequence(seq_id)
+    # BULK PRE-FETCH — resolve everything the per-sequence loops need in a few chunked,
+    # backend-aware queries instead of ~4 queries per sequence. This is the key win for
+    # YugabyteDB (each query = a network round-trip + distributed transaction).
+    all_seq_ids = set(validated_seq_ids) | {mod.seq_id for mod in modifications}
+    orig_map = integrator.bulk_get_original_tax_ids(all_seq_ids)                 # seq_id -> raw tax_id
+    col_map = integrator.bulk_get_col_taxonomy(all_seq_ids)                      # seq_id -> (tax_id, dict)
+    existing_sativa = integrator.bulk_get_existing_seq_tax(all_seq_ids, 'Sativa')  # {(seq_id, tax_id)}
 
-                if col_taxonomy:
-                    # CoL exists -> create new entry with same taxonomy + backbone=sativa
-                    tax_id = integrator.get_or_create_taxonomy(col_taxonomy, parent_tax_id=original_tax_id)
+    def _flush_seq_tax():
+        nonlocal seq_tax_batch
+        if len(seq_tax_batch) >= config['performance']['bulk_insert_size']:
+            integrator.bulk_insert_seq_tax(seq_tax_batch)
+            stats['seq_tax_created'] += len(seq_tax_batch)
+            seq_tax_batch = []
 
-                    if not integrator.check_seq_tax_exists(seq_id, tax_id, 'Sativa'):
-                        seq_tax_batch.append(integrator.prepare_seq_tax_entry(
-                            seq_id, tax_id, 'Correct', 1.0
-                        ))
-                        stats['validated_with_col'] += 1
-                    else:
-                        stats['duplicates_skipped'] += 1
+    # Process validated sequences: reuse the existing CoL (else original) tax_id — no
+    # per-sequence DB, and no taxonomy creation (the CoL/original taxonomy already exists).
+    for seq_id in validated_seq_ids:
+        try:
+            col_entry = col_map.get(seq_id)
+            if col_entry:
+                tax_id = col_entry[0]
+                if (seq_id, tax_id) not in existing_sativa:
+                    seq_tax_batch.append(integrator.prepare_seq_tax_entry(seq_id, tax_id, 'Correct', 1.0))
+                    existing_sativa.add((seq_id, tax_id))
+                    stats['validated_with_col'] += 1
                 else:
-                    # Pas de CoL : réutiliser la taxonomie d'origine (Raw) pour créer un lien Sativa
-                    if not original_tax_id:
-                        logger.warning(f"No original taxonomy found for validated sequence {seq_id}")
-                        stats['validated_without_col'] += 1
-                        continue
-
-                    original_taxonomy = integrator.get_taxonomy_by_id(original_tax_id)
-                    if not original_taxonomy:
-                        logger.warning(
-                            "Unable to load original taxonomy record %s for %s",
-                            original_tax_id, seq_id
-                        )
-                        stats['validated_without_col'] += 1
-                        continue
-
-                    if not integrator.check_seq_tax_exists(seq_id, original_tax_id, 'Sativa'):
-                        seq_tax_batch.append(integrator.prepare_seq_tax_entry(
-                            seq_id, original_tax_id, 'Correct', 1.0
-                        ))
-                        stats['validated_without_col'] += 1
-                    else:
-                        stats['duplicates_skipped'] += 1
-            except Exception as e:
-                logger.error(f"Error processing validated sequence {seq_id}: {e}")
-                stats['errors'] += 1
+                    stats['duplicates_skipped'] += 1
+            else:
+                original_tax_id = orig_map.get(seq_id)
+                if not original_tax_id:
+                    logger.warning(f"No original taxonomy found for validated sequence {seq_id}")
+                    stats['validated_without_col'] += 1
+                    continue
+                if (seq_id, original_tax_id) not in existing_sativa:
+                    seq_tax_batch.append(integrator.prepare_seq_tax_entry(seq_id, original_tax_id, 'Correct', 1.0))
+                    existing_sativa.add((seq_id, original_tax_id))
+                    stats['validated_without_col'] += 1
+                else:
+                    stats['duplicates_skipped'] += 1
+            _flush_seq_tax()
+        except Exception as e:
+            logger.error(f"Error processing validated sequence {seq_id}: {e}")
+            stats['errors'] += 1
 
     # Process modifications from .mis
 
     for mod in modifications:
         try:
-            # Get original taxonomy
-            original_tax_id = integrator.get_original_tax_id_for_sequence(mod.seq_id)
+            # Original + existing CoL taxonomy from the pre-fetched maps (no per-seq query)
+            original_tax_id = orig_map.get(mod.seq_id)
             if not original_tax_id:
                 logger.warning(f"No original taxonomy for {mod.seq_id}")
                 stats['errors'] += 1
                 continue
 
-            # Get existing CoL taxonomy
-            col_taxonomy = integrator.get_col_taxonomy_for_sequence(mod.seq_id)
+            _col_entry = col_map.get(mod.seq_id)
+            col_taxonomy = _col_entry[1] if _col_entry else None
 
             # Classify modification
             mod_type = integrator.classifier.classify_modification(
@@ -1370,14 +1444,15 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
                 if none_keys:
                     logger.debug(f"Found None values in taxonomy for {mod.seq_id} at keys: {none_keys}")
 
-                # Get or create taxonomy
+                # Get or create taxonomy (the SATIVA-proposed one may be new; modifications
+                # are the minority, so a per-item get_or_create here is acceptable).
                 tax_id = integrator.get_or_create_taxonomy(
                     action.taxonomy_to_use,
                     parent_tax_id=original_tax_id
                 )
 
-                # Check for duplicates
-                if integrator.check_seq_tax_exists(mod.seq_id, tax_id, 'Sativa'):
+                # Duplicate check against the pre-fetched Sativa links (no per-item query)
+                if (mod.seq_id, tax_id) in existing_sativa:
                     stats['duplicates_skipped'] += 1
                     continue
 
@@ -1385,6 +1460,7 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
                 seq_tax_batch.append(integrator.prepare_seq_tax_entry(
                     mod.seq_id, tax_id, action.seq_tax_status, mod.confidence
                 ))
+                existing_sativa.add((mod.seq_id, tax_id))
 
                 stats['seq_tax_created_pending'] += 1
 

@@ -34,6 +34,15 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+# Shared taxonomy normaliser (single source of truth for placeholder/species cleaning)
+for _u in (Path(__file__).resolve().parent / "utils",
+           Path.cwd() / "workflow" / "scripts" / "utils"):
+    if (_u / "taxonomy_normalize.py").exists():
+        if str(_u) not in sys.path:
+            sys.path.insert(0, str(_u))
+        break
+from taxonomy_normalize import clean_rank, clean_species
+
 logger = logging.getLogger(__name__)
 
 # Performance constants
@@ -291,13 +300,13 @@ class BOLDParser:
 
         for row_data, seq_len in chunk:
             try:
-                kingdom = self._clean_taxonomic_field(row_data.get("kingdom"))
-                phylum = self._clean_taxonomic_field(row_data.get("phylum"))
-                class_ = self._clean_taxonomic_field(row_data.get("class"))
-                order_ = self._clean_taxonomic_field(row_data.get("order"))
-                family = self._clean_taxonomic_field(row_data.get("family"))
-                genus = self._clean_taxonomic_field(row_data.get("genus"))
-                species = self._clean_taxonomic_field(row_data.get("species"))
+                kingdom = clean_rank(row_data.get("kingdom"))
+                phylum = clean_rank(row_data.get("phylum"))
+                class_ = clean_rank(row_data.get("class"))
+                order_ = clean_rank(row_data.get("order"))
+                family = clean_rank(row_data.get("family"))
+                genus = clean_rank(row_data.get("genus"))
+                species = clean_species(row_data.get("species"))
 
                 raw_sequence = (
                     row_data.get("nuc", "") or ""
@@ -529,7 +538,7 @@ class BOLDParser:
                         logger.warning("Reader timeout - assuming completion")
                         break
 
-                # Reste des workers
+                # Remaining workers
                 for fut in as_completed(worker_futures):
                     results_queue.put(fut.result())
 
@@ -545,7 +554,7 @@ class BOLDParser:
             )
             raise
         finally:
-            # Nettoyage des fichiers temporaires
+            # Clean up temporary files
             if temp_tsv_path and os.path.exists(temp_tsv_path):
                 try:
                     os.remove(temp_tsv_path)
@@ -606,7 +615,7 @@ def main():
             }
             database_formatting = {}
 
-        # Import du db_manager depuis utils/
+        # Import db_manager from utils/
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 

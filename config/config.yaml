@@ -116,26 +116,25 @@ deduplication:
 
 
 # Catalogue of Life API configuration
-# Polite settings for the public ChecklistBank API (thread-safe rate limiting +
-# 429 handling in col_taxonomic_matcher.py). Do not raise these aggressively.
+# The rate is set high: effective throughput is bounded by worker concurrency, not this
+# value. The client keeps a thread-safe limiter + 429/Retry-After handling as a safety net.
 CoL_api:
-  # Reproductibilité : release CoL à épingler. "3LR" = dernière release de CoL, résolue
-  # au démarrage du run et figée pour tout le run ; sa version + DOI sont enregistrés dans
-  # data/processed/col_matching_report.json (col_source). Mettre une clé de release précise
-  # (ex. 315777 = COL26.7, DOI 10.48580/dgyhw) pour rejouer exactement la même version.
-  # "3" = projet CoL vivant (NON reproductible) — déconseillé.
+  # Reproducibility: CoL release to pin. "3LR" = latest CoL release, resolved at run
+  # start and frozen for the whole run; its version + DOI are recorded in
+  # data/processed/col_matching_report.json (col_source). Set a specific release key
+  # (e.g. 315777 = COL26.7, DOI 10.48580/dgyhw) to replay the exact same version.
+  # "3" = live CoL project (NOT reproducible) — discouraged.
   dataset: "3LR"
-  max_requests_per_second: 8   # débit poli (le client plafonne à 15/s de toute façon)
-  max_workers: 8               # nb de requêtes concurrentes (plafonné à 8 côté code)
+  max_requests_per_second: 400  # unthrottled (bounded by worker concurrency, not this rate)
+  max_workers: 20               # number of concurrent CoL requests (capped at 32 in code)
   batch_size: 1000
 
 
 # Multiple Sequence Alignment (MSA) configuration
 msa:
-  # Deterministic mode (ported from 6.CurateMake): when true, MAFFT uses a fully
-  # reproducible invocation (FFT-NS-2, single thread, input order preserved) and
-  # sequences are sorted by content before alignment. Default false = production
-  # behaviour (--auto, multithreaded) matching the published pipeline.
+  # Deterministic mode: when true, MAFFT uses a fully reproducible invocation
+  # (FFT-NS-2, single thread, input order preserved) and sequences are sorted by
+  # content before alignment. Default false = production behaviour (--auto, multithreaded).
   deterministic: false
   # Batch size for sequence extraction (uses database_formatting.batch_size if not set)
   # batch_size: 10000
@@ -144,19 +143,19 @@ msa:
   create_indexes: false
 
   min_seq_threshold: 20
-  max_seq_threshold: 1000          # Nombre maximum de séquences par MSA
-  large_task_threshold: 2000       # Seuil pour grandes tâches MSA (nécessitant traitement spécial)
-  min_domain: "species"            # Niveau taxonomique minimum pour la descente hiérarchique
-  trimal_seq_overlap: 75    # Pourcentage minimum d'overlap pour conserver une séquence
-  trimal_res_overlap: 0.5   # Pourcentage de sequence avec un résidu à cet endroit
-  domain: "family" # Descente de order à family car MSA pas terrible à order
+  max_seq_threshold: 1000          # Maximum number of sequences per MSA
+  large_task_threshold: 2000       # Threshold for large MSA tasks (needing special handling)
+  min_domain: "species"            # Minimum taxonomic level for the hierarchical descent
+  trimal_seq_overlap: 75    # Minimum overlap percentage to keep a sequence
+  trimal_res_overlap: 0.5   # Fraction of sequences with a residue at this position
+  domain: "family" # Descend from order to family since MSA is poor at order level
   barcodes: ["ITS", "ITS1", "ITS2"]
   hierarchy_levels: ["genus", "family", "order", "class", "phylum"]
   tax_columns: ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
   id_col: "seq_id"
   seq_col: "sequence"
   barcode_col: "barcode"
-  max_thread_workers: 40 # Nombre de threads a utiliser par Barcode
+  max_thread_workers: 40 # Number of threads to use per barcode
   csv_path: "data/full.csv"
   msa_dir: "data/MSA"
   output_report: "reports/html/msa_analysis_report.html"
@@ -180,22 +179,31 @@ msa:
   classification_results_csv: "data/MSA/classification/msa_classification_assignments.csv"
   classification_stats_json: "data/MSA/classification/msa_classification_stats.json"
   assignment_integration_summary: "data/MSA/classification/msa_assignment_integration.json"
-  classification_max_workers: 20           # Nombre de processus hmmscan en parallèle
+  classification_max_workers: 20           # Number of parallel hmmscan processes
   classification_threads_per_worker: 1   # Single-threaded for deterministic results
-  classification_batch_size: 5000        # Séquences par batch
+  classification_batch_size: 5000        # Sequences per batch
   classification_evalue_threshold: 1e-3  # E-value max to accept hmmscan assignment
+
+  # Integration of orphan sequences into MSAs, scattered per clade (instead of a serial loop).
+  # method: "hmmalign" = hmmalign --mapali (fast: ~115x on large clades);
+  #         "mafft"    = mafft --add. Auto-fallback to mafft if hmmalign fails.
+  integration_method: "hmmalign"
+  integration_manifest: "data/MSA/integration/msa_integration_manifest.json"
+  integration_tasks_dir: "data/MSA/integration/tasks"
+  integration_results_dir: "data/MSA/integration/results"
+  integration_threads_per_clade: 2       # Few threads/clade -> many clades in parallel
 
 
 # SATIVA configuration
 sativa:
   input_msa_dir: "data/MSA"
   output_dir: "data/SATIVA"
-  sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"  # Renamed from script_path
+  sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"
   timeout_seconds: 21600
-  max_seq_count: 20000  # Renamed from max_seqs
-  max_alignment_length: 5000  # Renamed from max_len
-  sativa_mode: "ultrafast"  # Renamed from mode
-  confidence_threshold: 0.4  # Renamed from confidence
+  max_seq_count: 20000
+  max_alignment_length: 5000
+  sativa_mode: "ultrafast"
+  confidence_threshold: 0.4
   taxonomy_code: "BOT"
   threads: 1
   rand_seed: 42
@@ -211,11 +219,11 @@ sativa:
 sativa_integration:
   # CoL API configuration
   col_api:
-    # Post-SATIVA CoL re-validation. Uses the SAME corrected client as harmonize_taxo
-    # (col_taxonomic_matcher): EXACT search + synonym resolution + thread-safe polite rate
-    # limiting + pinned DOI'd release. Keep the rate polite (client caps at 15/s).
-    dataset: "3LR"               # release CoL épinglée (voir CoL_api.dataset)
-    max_requests_per_second: 8
+    # Post-SATIVA CoL re-validation. Uses the SAME client as harmonize_taxo
+    # (col_taxonomic_matcher): EXACT search + synonym resolution + thread-safe rate
+    # limiting + pinned DOI'd release.
+    dataset: "3LR"               # pinned CoL release (see CoL_api.dataset)
+    max_requests_per_second: 150  # unthrottled (bottleneck = parallelism, not throughput)
     timeout_per_request: 30
 
   # Cache configuration
@@ -226,7 +234,7 @@ sativa_integration:
 
   # Performance tuning
   performance:
-    max_workers_files: 10
+    max_workers_files: 20
     bulk_insert_size: 5000
 
   # Reporting

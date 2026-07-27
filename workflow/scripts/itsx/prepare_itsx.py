@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple
 
 from sqlalchemy import text
 
-# Configuration du logging
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -37,7 +37,7 @@ class SequenceExtractor:
             db_label: database label/path used purely for logs and reports.
         """
         self.db_manager = db_manager
-        # Juste pour le contexte dans le rapport / logs
+        # For context in the report / logs only
         self.db_label = str(db_label)
 
     def extract_col_sequences(self) -> Dict[str, List[Tuple[int, str, str, int]]]:
@@ -189,7 +189,7 @@ def main():
     start_time = time.time()
 
     try:
-        # ================== Configuration via Snakemake ou standalone ==================
+        # ================== Configuration via Snakemake or standalone ==================
         if 'snakemake' in globals():
             input_db = snakemake.params.db          # label ou chemin (pour le rapport)
             output_dir = str(Path(snakemake.params.output_fodler))
@@ -197,7 +197,7 @@ def main():
             config = snakemake.config
             log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
 
-            # Logging fichier pour Snakemake
+            # File logging for Snakemake
             file_handler = logging.FileHandler(log_file, mode="w")
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             logger.addHandler(file_handler)
@@ -209,7 +209,7 @@ def main():
             output_dir = "tmp/output"
             output_report = "tmp/output/itsx_report.json"
 
-            # Config SQLite compatible avec DatabaseManager V2
+            # SQLite config compatible with DatabaseManager V2
             config = {
                 'database': {
                     'type': 'sqlite',
@@ -266,9 +266,9 @@ def main():
             logger.info("Generating FASTA files...")
             created_files = extractor.write_fasta_files(sequences_by_barcode, output_dir)
 
-            # Robustness (ported from 6): ensure every expected barcode has at least an
-            # empty FASTA placeholder, so downstream ITSx barcode rules remain optional
-            # (no crash when a barcode yields no sequences).
+            # Ensure every expected barcode has at least an empty FASTA placeholder, so
+            # downstream ITSx barcode rules remain optional (no crash when a barcode
+            # yields no sequences).
             expected_barcodes = config.get("msa", {}).get("barcodes", [])
             if expected_barcodes:
                 output_path = Path(output_dir)

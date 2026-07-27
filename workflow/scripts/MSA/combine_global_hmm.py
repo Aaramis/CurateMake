@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Combine all barcode-level HMM databases into a single global database using hmmpress.
+Combine all barcode-level HMM databases into a single global HMM file
+(plain text, consumed directly by hmmsearch — no hmmpress index needed).
 """
 
 import argparse

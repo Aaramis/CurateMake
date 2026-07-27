@@ -31,6 +31,15 @@ from dataclasses import dataclass
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Shared taxonomy normaliser (single source of truth for placeholder/species cleaning)
+for _u in (Path(__file__).resolve().parent / "utils",
+           Path.cwd() / "workflow" / "scripts" / "utils"):
+    if (_u / "taxonomy_normalize.py").exists():
+        if str(_u) not in sys.path:
+            sys.path.insert(0, str(_u))
+        break
+from taxonomy_normalize import clean_rank, clean_species
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -189,45 +198,12 @@ class PERSONALParser:
             }
 
     def _clean_taxonomic_value(self, value: Optional[str]) -> Optional[str]:
-        """Clean a taxonomic field value."""
-        if value is None:
-            return None
-
-        value = str(value).strip()
-
-        # Handle empty or placeholder values
-        if not value or value.lower() in ['na', 'n/a', 'none', 'unknown', 'unidentified', '']:
-            return None
-
-        # Replace underscores with spaces for readability
-        value = value.replace('_', ' ')
-
-        return value.strip() if value.strip() else None
+        """Clean a non-species taxonomic field value (shared normaliser)."""
+        return clean_rank(value)
 
     def _clean_species_value(self, value: Optional[str]) -> Optional[str]:
-        """
-        Clean a species field value.
-        Species can contain genus + epithet (e.g., "Russula_abietina").
-        """
-        if value is None:
-            return None
-
-        value = str(value).strip()
-
-        # Handle empty or placeholder values
-        if not value or value.lower() in ['na', 'n/a', 'none', 'unknown', 'unidentified', '']:
-            return None
-
-        # Remove any trailing metadata
-        value = self.trailing_metadata_pattern.sub('', value)
-
-        # Replace underscores with spaces
-        value = value.replace('_', ' ')
-
-        # Clean up multiple spaces
-        value = ' '.join(value.split())
-
-        return value.strip() if value.strip() else None
+        """Clean a species field value (shared normaliser: binomial or None)."""
+        return clean_species(value)
 
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
         """Early-exit sequence validation."""

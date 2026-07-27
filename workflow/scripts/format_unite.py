@@ -20,6 +20,15 @@ from dataclasses import dataclass
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Shared taxonomy normaliser (single source of truth for placeholder/species cleaning)
+for _u in (Path(__file__).resolve().parent / "utils",
+           Path.cwd() / "workflow" / "scripts" / "utils"):
+    if (_u / "taxonomy_normalize.py").exists():
+        if str(_u) not in sys.path:
+            sys.path.insert(0, str(_u))
+        break
+from taxonomy_normalize import clean_rank, clean_species
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -97,13 +106,16 @@ class UNITEParser:
                         "s": "species",
                     }.get(rank[0], rank)  # map short → long
 
-                    clean_val = value.replace('_', ' ').strip()
-                    ranks[rank] = clean_val if clean_val and clean_val != "unidentified" else None
+                    ranks[rank] = clean_species(value) if rank == 'species' else clean_rank(value)
 
             return seq_id, tuple(sorted(ranks.items()))
 
-        except Exception:
+        except Exception as parse_err:
+            # Header unparseable: keep the sequence (behaviour unchanged) but surface
+            # why, so silent taxonomy loss is visible in the logs.
             self.stats['parsing_errors'] += 1
+            logger.warning(f"Header parse error ({parse_err!r}), inserting with empty "
+                           f"taxonomy: {header[:120]!r}")
             return header.lstrip('>'), ()
 
     def validate_sequence(self, sequence: str) -> Tuple[bool, int, float]:
@@ -205,7 +217,7 @@ class UNITEParser:
         return results
 
     def db_writer_consumer(self, source_id: str, results_queue: Queue):
-        """Writer avec SQLAlchemy bulk inserts (source_id is UUID string)."""
+        """Writer using SQLAlchemy bulk inserts (source_id is UUID string)."""
         logger.info("Starting DB writer")
         batch = []
 
@@ -228,7 +240,7 @@ class UNITEParser:
                     logger.warning("DB writer timeout")
                     break
 
-            # Traiter le dernier batch
+            # Process the last batch
             if batch:
                 self._flush_batch_sqlalchemy(batch, source_id)
                 self.stats['processed_sequences'] += len(batch)

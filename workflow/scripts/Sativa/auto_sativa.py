@@ -557,8 +557,9 @@ def main():
             summary_path = output_dir / "sativa.summary.json"
             with summary_path.open('w', encoding='utf-8') as f:
                 json.dump(asdict(result), f, indent=2)
-        except:
-            pass
+        except Exception as summary_err:
+            # Best-effort error summary; don't mask the original failure.
+            logger.warning(f"Could not write error summary: {summary_err}")
 
         sys.exit(1)
 

@@ -95,7 +95,7 @@ def main():
             "validation": integrity_report  # Integrity report details
         }
         
-        # Sauvegarder le rapport
+        # Save the report
         with open(output_report, 'w') as f:
             json.dump(report_data, f, indent=2)
         

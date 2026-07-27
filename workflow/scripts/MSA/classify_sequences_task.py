@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from external_tools import run_hmmscan
+from external_tools import run_hmmsearch
 
 
 def setup_logger(log_file: Path) -> logging.Logger:
@@ -55,7 +55,7 @@ def main():
         return
 
     logger.info("Classifying %d sequences against %s", len(subset), args.combined_hmm)
-    assignments = run_hmmscan(
+    assignments = run_hmmsearch(
         sequences_df=subset,
         hmm_db_path=args.combined_hmm,
         seq_col=args.seq_col,

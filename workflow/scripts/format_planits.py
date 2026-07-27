@@ -21,6 +21,15 @@ from io import TextIOWrapper
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Shared taxonomy normaliser (single source of truth for placeholder/species cleaning)
+for _u in (Path(__file__).resolve().parent / "utils",
+           Path.cwd() / "workflow" / "scripts" / "utils"):
+    if (_u / "taxonomy_normalize.py").exists():
+        if str(_u) not in sys.path:
+            sys.path.insert(0, str(_u))
+        break
+from taxonomy_normalize import clean_rank, clean_species
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -115,19 +124,11 @@ class PLANITSParser:
                         }
                         
                         rank_name = rank_mapping.get(rank_code, rank_code)
-                        
-                        # Clean the value
-                        if value and value.lower() not in ['na', 'unknown', '']:
-                            # Handle the special case for species
-                            if rank_name == 'species' and ' ' in value:
-                                # Keep only the species name (after the genus)
-                                parts = value.split()
-                                if len(parts) >= 2:
-                                    value = ' '.join(parts[:2])  # Genus + species
-                            
-                            ranks[rank_name] = value
+
+                        if rank_name == 'species':
+                            ranks[rank_name] = clean_species(value)
                         else:
-                            ranks[rank_name] = None
+                            ranks[rank_name] = clean_rank(value)
                 
                 return seq_id, tuple(sorted(ranks.items()))
             
@@ -274,7 +275,7 @@ class PLANITSParser:
         return results
 
     def db_writer_consumer(self, source_id: str, results_queue: Queue):
-        """Writer avec SQLAlchemy bulk inserts (source_id is UUID string)."""
+        """Writer using SQLAlchemy bulk inserts (source_id is UUID string)."""
         logger.info("Starting DB writer")
         batch = []
 
@@ -297,7 +298,7 @@ class PLANITSParser:
                     logger.warning("DB writer timeout")
                     break
 
-            # Traiter le dernier batch
+            # Process the last batch
             if batch:
                 self._flush_batch_sqlalchemy(batch, source_id)
                 self.stats['processed_sequences'] += len(batch)

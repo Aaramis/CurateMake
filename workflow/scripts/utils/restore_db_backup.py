@@ -28,14 +28,6 @@ def verify_database(db_path: Path) -> bool:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # # Run a full integrity check
-        # cursor.execute("PRAGMA integrity_check")
-        # result = cursor.fetchone()
-
-        # if result[0] != "ok":
-        #     print(f"❌ Integrity error: {result[0]}")
-        #     return False
-
         # Ensure that the main tables exist
         cursor.execute("""
             SELECT name FROM sqlite_master

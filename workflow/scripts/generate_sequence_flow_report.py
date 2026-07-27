@@ -505,10 +505,10 @@ def main():
     # Scale ribbons using normalized Y units (more robust than pixels)
     max_link_val = max(max(1, v) for _, _, v, _ in links_data)
 
-    # Largeur maximale en proportion de la hauteur de l'axe Y (0-1.1)
+    # Maximum width as a fraction of the Y-axis height (0-1.1)
     MAX_WIDTH_Y = 0.08  # 8% de la hauteur totale pour le ruban le plus large
 
-    # Ajouter les rubans (liens)
+    # Add the ribbons (links)
     for from_idx, to_idx, value, color in links_data:
         v = max(0, value)
         if v <= 0:
@@ -537,7 +537,7 @@ def main():
     # Log to make sure traces were added as expected
     logger.info(f"Traces added to figure: {len(fig.data)} (links + nodes + rectangles)")
 
-    # Ajouter les nœuds
+    # Add the nodes
     max_node_val = max(max(1, n[3]) for n in nodes_data)
     MIN_SIZE, MAX_SIZE = 9, 60
 
@@ -555,7 +555,7 @@ def main():
             showlegend=False
         ))
 
-    # Ajouter les cadres d'outils
+    # Add the tool frames
     add_tool_rectangle(fig, 0.9, 1.1, 2, 3, "CoL",
                        color="rgba(52, 152, 219, 0.08)",
                        border_color="rgba(52, 152, 219, 0.6)")
@@ -579,7 +579,7 @@ def main():
     msa_processing_rate = ((MSA_post_ITS1 + MSA_post_ITS2 + MSA_post_ITS) /
                           (MSA_pre_ITS1 + MSA_pre_ITS2 + MSA_pre_ITS) * 100) if (MSA_pre_ITS1 + MSA_pre_ITS2 + MSA_pre_ITS) > 0 else 0
 
-    # Sauvegarder le graphique Sankey comme fichier HTML standalone
+    # Save the Sankey diagram as a standalone HTML file
     output_path = Path(output_html)
     sankey_standalone_path = output_path.parent / "sequence_flow_sankey.html"
 

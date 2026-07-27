@@ -57,13 +57,24 @@ class TaxonomyDeduplicator:
         else:
             group_concat_expr = "GROUP_CONCAT(tax_id)"
 
+        # Group on COALESCE(col, '') so that a missing rank stored as NULL and the same
+        # rank stored as '' collapse into ONE group. The two write paths disagree on the
+        # convention (bulk_insert_taxonomies -> NULL, add_taxonomy -> ''), and a plain
+        # GROUP BY treats NULL and '' as distinct, leaving such same-lineage rows unmerged.
+        # COALESCE closes that gap and is portable (SQLite + PostgreSQL/YugabyteDB).
+        group_by_expr = (
+            "COALESCE(kingdom, ''), COALESCE(phylum, ''), COALESCE(class_, ''), "
+            "COALESCE(order_, ''), COALESCE(family, ''), COALESCE(genus, ''), "
+            "COALESCE(species, '')"
+        )
+
         query = f"""
             SELECT
                 MIN(tax_id) as keeper_id,
                 {group_concat_expr} as all_ids,
                 COUNT(*) as count
             FROM {self.db_manager.taxonomy_table}
-            GROUP BY kingdom, phylum, class_, order_, family, genus, species
+            GROUP BY {group_by_expr}
             HAVING COUNT(*) > 1
         """
 
@@ -229,11 +240,15 @@ class TaxonomyDeduplicator:
 
         def check_op():
             with self.db_manager.get_session() as session:
-                # Ensure no duplicate groups remain
+                # Ensure no duplicate groups remain (COALESCE so NULL and '' collapse,
+                # matching the grouping used by find_duplicate_taxonomies).
                 result = session.execute(text(f"""
                     SELECT COUNT(*) FROM (
                         SELECT 1 FROM {self.db_manager.taxonomy_table}
-                        GROUP BY kingdom, phylum, class_, order_, family, genus, species
+                        GROUP BY COALESCE(kingdom, ''), COALESCE(phylum, ''),
+                                 COALESCE(class_, ''), COALESCE(order_, ''),
+                                 COALESCE(family, ''), COALESCE(genus, ''),
+                                 COALESCE(species, '')
                         HAVING COUNT(*) > 1
                     ) AS subquery
                 """))

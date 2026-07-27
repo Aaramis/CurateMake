@@ -37,7 +37,7 @@ import time
 
 from sqlalchemy import create_engine, text, insert, or_, and_
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -271,35 +271,45 @@ class DatabaseManager:
         Returns:
             tax_id: Primary key of the taxonomy (UUID string)
         """
+        lineage = dict(
+            kingdom=kingdom,
+            phylum=phylum,
+            class_=class_,
+            order_=order_,
+            family=family,
+            genus=genus,
+            species=species,
+        )
+
         with self.get_session() as session:
             try:
                 # Check if taxonomy already exists (based on full lineage)
-                existing = session.query(Taxonomy).filter_by(
-                    kingdom=kingdom,
-                    phylum=phylum,
-                    class_=class_,
-                    order_=order_,
-                    family=family,
-                    genus=genus,
-                    species=species
-                ).first()
+                existing = session.query(Taxonomy).filter_by(**lineage).first()
 
                 if existing:
                     return existing.tax_id
 
                 # Insert new taxonomy
-                taxonomy = Taxonomy(
-                    kingdom=kingdom,
-                    phylum=phylum,
-                    class_=class_,
-                    order_=order_,
-                    family=family,
-                    genus=genus,
-                    species=species,
-                    parent_tax_id=parent_tax_id
-                )
+                taxonomy = Taxonomy(parent_tax_id=parent_tax_id, **lineage)
                 session.add(taxonomy)
-                session.flush()
+                try:
+                    session.flush()
+                except IntegrityError:
+                    # Another writer inserted the same lineage between our existence
+                    # check and this flush (concurrent workers can request the same
+                    # lineage). Roll back and return the row the other writer created.
+                    # Portable to SQLite and PostgreSQL/YugabyteDB (both raise
+                    # IntegrityError on the UNIQUE lineage constraint).
+                    session.rollback()
+                    existing = session.query(Taxonomy).filter_by(**lineage).first()
+                    if existing:
+                        logger.debug(
+                            "add_taxonomy: lost insert race for lineage %s, reusing %s",
+                            lineage, existing.tax_id
+                        )
+                        return existing.tax_id
+                    # Constraint violation was not the concurrent-duplicate case.
+                    raise
                 tax_id = taxonomy.tax_id
 
                 logger.debug(f"Added taxonomy: {genus or ''} {species or ''} (ID: {tax_id})")
@@ -642,29 +652,62 @@ class DatabaseManager:
 
         self._execute_with_retry("bulk_insert_taxonomies_insert", insert_phase)
 
-        # Phase 2: Query for tax_ids in a separate transaction
+        # Phase 2: resolve the authoritative tax_id for every unique taxonomy.
+        #
+        # tax_ids were pre-generated BEFORE the UPSERT, so any taxonomy we actually inserted
+        # keeps our pre-generated id. We therefore:
+        #   (2a) fetch by PRIMARY KEY (indexed, cheap, large chunks) to confirm the ones we
+        #        inserted — the vast majority on a fresh ingestion;
+        #   (2b) fall back to the content lookup ONLY for the few that already existed
+        #        (ON CONFLICT DO NOTHING kept another row).
+        # This keeps the number of queries low, which matters most on YugabyteDB (one
+        # round-trip per query).
         unique_taxonomy_tuples = {
             (t.get('kingdom'), t.get('phylum'), t.get('class_'),
              t.get('order_'), t.get('family'), t.get('genus'), t.get('species'))
             for t in taxonomies
         }
 
-        # OPTIMIZED: Batch fetch using chunked queries to avoid YugabyteDB RPC timeouts
-        # Split taxonomies into chunks to keep query time under 15 seconds
         tax_map = {}
-        # Use configurable chunk_size from config (default 10 for complex taxonomy queries)
-        chunk_size = self.taxonomy_fetch_chunk_size
 
-        tax_list = list(unique_taxonomy_tuples)
+        # (2a) Confirm inserted taxonomies via their pre-generated tax_id (PK lookup). Covers:
+        #   - every genuinely new taxonomy (our insert succeeded -> pregen id present);
+        #   - every taxonomy with a NULL field: the UNIQUE constraint treats NULL as distinct
+        #     (NULL != NULL), so ON CONFLICT does not fire and the UPSERT inserts a row with
+        #     our pregen id (a duplicate when the taxonomy already existed). These duplicates
+        #     are merged later by `deduplicate_taxonomies`, which remaps seq_tax to the keeper.
+        # Only fully-set keys that ALREADY existed fall through to (2b): ON CONFLICT skipped
+        # our insert, so the pregen id is absent and we look up the existing id by content.
+        pregen_to_key = {
+            t['tax_id']: (t.get('kingdom'), t.get('phylum'), t.get('class_'),
+                          t.get('order_'), t.get('family'), t.get('genus'), t.get('species'))
+            for t in unique_taxonomies
+        }
+        pregen_ids = list(pregen_to_key.keys())
+        pk_chunk = self.bulk_insert_batch_size  # same chunking as bulk_insert_sequences
+        for i in range(0, len(pregen_ids), pk_chunk):
+            chunk = pregen_ids[i:i + pk_chunk]
 
-        for i in range(0, len(tax_list), chunk_size):
-            chunk = tax_list[i:i + chunk_size]
+            def fetch_pk(chunk=chunk):
+                with self.get_session() as session:
+                    return [row[0] for row in session.query(Taxonomy.tax_id).filter(
+                        Taxonomy.tax_id.in_(chunk)).all()]
 
-            # Build OR condition for this chunk
+            for tid in self._execute_with_retry(f"bulk_insert_taxonomies_pk_{i}", fetch_pk):
+                key = pregen_to_key.get(tid)
+                if key is not None:
+                    tax_map[key] = tid
+
+        # (2b) Only pre-existing taxonomies (insert conflicts) remain -> content lookup.
+        missing = [k for k in unique_taxonomy_tuples if k not in tax_map]
+        chunk_size = self.taxonomy_fetch_chunk_size  # small: complex OR-of-ANDs predicate
+        for i in range(0, len(missing), chunk_size):
+            chunk = missing[i:i + chunk_size]
+
             conditions = []
             for tax_tuple in chunk:
                 kingdom, phylum, class_, order_, family, genus, species = tax_tuple
-                condition = and_(
+                conditions.append(and_(
                     (Taxonomy.kingdom == kingdom) if kingdom is not None else Taxonomy.kingdom.is_(None),
                     (Taxonomy.phylum == phylum) if phylum is not None else Taxonomy.phylum.is_(None),
                     (Taxonomy.class_ == class_) if class_ is not None else Taxonomy.class_.is_(None),
@@ -672,32 +715,22 @@ class DatabaseManager:
                     (Taxonomy.family == family) if family is not None else Taxonomy.family.is_(None),
                     (Taxonomy.genus == genus) if genus is not None else Taxonomy.genus.is_(None),
                     (Taxonomy.species == species) if species is not None else Taxonomy.species.is_(None)
-                )
-                conditions.append(condition)
+                ))
 
-            # Execute single query for this chunk with retry
-            def fetch_chunk():
+            def fetch_chunk(conditions=conditions):
                 with self.get_session() as session:
-                    results = session.query(
+                    return session.query(
                         Taxonomy.kingdom, Taxonomy.phylum, Taxonomy.class_,
                         Taxonomy.order_, Taxonomy.family, Taxonomy.genus,
                         Taxonomy.species, Taxonomy.tax_id
                     ).filter(or_(*conditions)).all()
-                    return results
 
-            results = self._execute_with_retry(
-                f"bulk_insert_taxonomies_fetch_chunk_{i}",
-                fetch_chunk
-            )
-
-            # Build mapping for this chunk
-            for t in results:
-                tax_tuple = (t.kingdom, t.phylum, t.class_, t.order_, t.family, t.genus, t.species)
-                tax_map[tax_tuple] = t.tax_id
+            for t in self._execute_with_retry(f"bulk_insert_taxonomies_conflict_{i}", fetch_chunk):
+                tax_map[(t.kingdom, t.phylum, t.class_, t.order_, t.family, t.genus, t.species)] = t.tax_id
 
         if len(tax_map) < len(unique_taxonomy_tuples):
-            missing = len(unique_taxonomy_tuples) - len(tax_map)
-            logger.warning(f"Could not find {missing}/{len(unique_taxonomy_tuples)} taxonomies in database")
+            n_missing = len(unique_taxonomy_tuples) - len(tax_map)
+            logger.warning(f"Could not find {n_missing}/{len(unique_taxonomy_tuples)} taxonomies in database")
 
         return tax_map
 

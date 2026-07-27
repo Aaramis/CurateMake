@@ -387,12 +387,12 @@ def create_html_report(df_msa, df_unassigned, df_cross_unassigned, output_file, 
 def main():
     """Main Snakemake entry point."""
     
-    # Configuration Snakemake
+    # Snakemake configuration
     if 'snakemake' not in globals():
         logger.critical("This script must be executed via Snakemake.")
         sys.exit(1)
     
-    # Configuration du logging pour Snakemake
+    # Logging configuration for Snakemake
     if snakemake.log and isinstance(snakemake.log, list) and len(snakemake.log) > 0:
         log_file = snakemake.log[0]
         file_handler = logging.FileHandler(log_file, mode="w")

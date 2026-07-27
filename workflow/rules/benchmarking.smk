@@ -1,12 +1,12 @@
 # workflow/rules/benchmarking.smk
 """
-Règle Snakemake pour générer le rapport de benchmarking.
+Snakemake rule to generate the benchmarking report.
 """
 
 rule generate_benchmark_report:
-    """Génère un rapport HTML interactif à partir de tous les fichiers benchmark disponibles."""
+    """Generate an interactive HTML report from all available benchmark files."""
     input:
-        # Dépend de toutes les étapes qui génèrent des benchmarks
+        # Depends on all steps that generate benchmarks
         final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
         itsx_deduplicate_post="data/processed/itsx_deduplicate_post.json",
         msa_run_report="data/processed/msa_run_report.json",
