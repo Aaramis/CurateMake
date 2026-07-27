@@ -52,10 +52,11 @@ class SequenceDeduplicator:
         """Create indexes required for performant deduplication."""
         logger.info("Verifying/creating indexes for deduplication...")
 
+        # seq_tax lookups by seq_id/tax_id are already served by the composite PK
+        # (seq_id leading) and the ORM index idx_seq_tax_tax, so no extra seq_tax
+        # indexes are created here.
         index_statements = [
             ("seq_barcode", f"CREATE INDEX IF NOT EXISTS idx_sequences_seq_barcode ON {self.db_manager.sequences_table}(sequence, barcode)"),
-            ("seq_tax_seq", f"CREATE INDEX IF NOT EXISTS idx_seq_tax_seq_id ON {self.db_manager.seq_tax_table}(seq_id)"),
-            ("seq_tax_tax", f"CREATE INDEX IF NOT EXISTS idx_seq_tax_tax_id ON {self.db_manager.seq_tax_table}(tax_id)"),
             ("dedup_composite", f"""
                 CREATE INDEX IF NOT EXISTS idx_sequences_dedup_composite
                 ON {self.db_manager.sequences_table}(sequence, barcode, barcode_status)

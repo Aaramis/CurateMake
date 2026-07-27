@@ -48,6 +48,7 @@ class MatchResult:
     """Result of a taxonomy matching attempt."""
     original_tax_id: int
     col_taxonomy: Optional[Dict[str, str]] = None
+    col_id: Optional[str] = None  # accepted CoL name-usage id (for reproducibility)
     success: bool = False
     error_message: Optional[str] = None
 
@@ -230,6 +231,14 @@ class TaxonomyMatcher:
         accepted = [r for r in cand if r.get("usage", {}).get("status") == "accepted"]
         return accepted[0] if accepted else cand[0]
 
+    @staticmethod
+    def _accepted_id(usage: Dict) -> Optional[str]:
+        """The accepted name-usage id of a chosen result (for a synonym, the id of its
+        accepted usage, not the synonym's own id)."""
+        if usage.get("status") == "synonym":
+            return (usage.get("accepted") or {}).get("id")
+        return usage.get("id")
+
     def _resolve(self, result: Dict) -> Dict[str, str]:
         """Build a {kingdom..species} dict from a chosen result, resolving synonym->accepted."""
         usage = result.get("usage", {})
@@ -275,7 +284,9 @@ class TaxonomyMatcher:
                     for r in self.LEVELS:
                         if cleaned.get(r) and r not in tax:
                             tax[r] = cleaned[r]
-                    return MatchResult(original_tax_id=taxonomy.tax_id, col_taxonomy=tax, success=bool(tax))
+                    return MatchResult(original_tax_id=taxonomy.tax_id, col_taxonomy=tax,
+                                       col_id=self._accepted_id(hit.get("usage", {})),
+                                       success=bool(tax))
 
             return MatchResult(original_tax_id=taxonomy.tax_id, success=False)
 
@@ -472,6 +483,26 @@ class CoLProcessor:
                 # Bulk insert seq_tax relations
                 if col_inserts:
                     self.db_manager.bulk_insert_seq_tax(col_inserts)
+
+                # Record CoL provenance (accepted usage id + pinned release) on each matched
+                # taxonomy row. This also stamps rows that already existed from the Raw
+                # ingestion (shared lineage): a plain UPDATE, so it covers both cases.
+                taxonomy_table = self._get_table('taxonomy')
+                dataset_key = self.api_client.dataset_key
+                seen_tid = set()
+                col_prov_updates = []
+                for result in successful_matches:
+                    new_tid = tax_id_map.get(result.original_tax_id)
+                    if new_tid and result.col_id and new_tid not in seen_tid:
+                        seen_tid.add(new_tid)
+                        col_prov_updates.append(
+                            {"tid": new_tid, "cid": result.col_id, "dk": dataset_key})
+                if col_prov_updates:
+                    session.execute(text(f"""
+                        UPDATE {taxonomy_table}
+                        SET col_id = :cid, col_dataset_key = :dk
+                        WHERE tax_id = :tid
+                    """), col_prov_updates)
 
                 # Mark legacy relations as correct in one update
                 if self.db_manager.db_type == "postgresql":

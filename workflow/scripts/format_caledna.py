@@ -471,7 +471,6 @@ class CALeDNAParser:
                 'original_id': record.original_id,
                 'sequence': record.sequence,
                 'length': record.length,
-                'percentage_n': record.n_frac,
                 'barcode': 'ITS2',
                 'barcode_status': 'Pending'
             }

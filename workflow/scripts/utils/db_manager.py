@@ -260,17 +260,26 @@ class DatabaseManager:
     def add_taxonomy(self, kingdom: str = None, phylum: str = None,
                      class_: str = None, order_: str = None, family: str = None,
                      genus: str = None, species: str = None,
-                     parent_tax_id: str = None) -> str:
+                     parent_tax_id: str = None,
+                     col_id: str = None, col_dataset_key: str = None) -> str:
         """
         Add taxonomy record with hierarchical support.
 
         Args:
             kingdom, phylum, class_, order_, family, genus, species: Taxonomic ranks
             parent_tax_id: Optional parent taxonomy ID (UUID string)
+            col_id, col_dataset_key: Optional CoL provenance (accepted usage id + pinned
+                release key). When the lineage already exists, they are stamped onto the
+                existing row only if it has no col_id yet.
 
         Returns:
             tax_id: Primary key of the taxonomy (UUID string)
         """
+        def _stamp(row):
+            if col_id and not row.col_id:
+                row.col_id = col_id
+                row.col_dataset_key = col_dataset_key
+
         lineage = dict(
             kingdom=kingdom,
             phylum=phylum,
@@ -287,10 +296,12 @@ class DatabaseManager:
                 existing = session.query(Taxonomy).filter_by(**lineage).first()
 
                 if existing:
+                    _stamp(existing)
                     return existing.tax_id
 
                 # Insert new taxonomy
-                taxonomy = Taxonomy(parent_tax_id=parent_tax_id, **lineage)
+                taxonomy = Taxonomy(parent_tax_id=parent_tax_id, col_id=col_id,
+                                    col_dataset_key=col_dataset_key, **lineage)
                 session.add(taxonomy)
                 try:
                     session.flush()
@@ -307,6 +318,7 @@ class DatabaseManager:
                             "add_taxonomy: lost insert race for lineage %s, reusing %s",
                             lineage, existing.tax_id
                         )
+                        _stamp(existing)
                         return existing.tax_id
                     # Constraint violation was not the concurrent-duplicate case.
                     raise
@@ -360,14 +372,6 @@ class DatabaseManager:
             except Exception as e:
                 logger.error(f"Failed to link sequence to taxonomy: {e}")
                 raise
-
-    @staticmethod
-    def calculate_percentage_n(sequence: str) -> float:
-        """Calculate percentage of N characters in sequence."""
-        if not sequence:
-            return 0.0
-        n_count = sequence.upper().count('N')
-        return (n_count / len(sequence)) * 100
 
     def link_sequence_taxonomy(self, seq_id: str, tax_id: str, backbone: str,
                               status: str = 'pending', confidence: float = None) -> None:
@@ -489,8 +493,7 @@ class DatabaseManager:
                        COUNT(seq.seq_id) as sequence_count,
                        AVG(seq.length) as avg_length,
                        MIN(seq.length) as min_length,
-                       MAX(seq.length) as max_length,
-                       AVG(seq.percentage_n) as avg_n_content
+                       MAX(seq.length) as max_length
                 FROM sources s
                 LEFT JOIN sequences seq ON s.source_id = seq.source_id
                 GROUP BY s.source_id, s.name
@@ -740,7 +743,7 @@ class DatabaseManager:
         Insert sequences in bulk and return mapping of original_ids to seq_ids.
 
         Args:
-            sequences: List of dicts with keys: source_id, original_id, sequence, length, percentage_n, barcode, barcode_status
+            sequences: List of dicts with keys: source_id, original_id, sequence, length, barcode, barcode_status
 
         Returns:
             Dict mapping original_id -> seq_id (UUID string)

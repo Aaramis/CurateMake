@@ -504,7 +504,7 @@ class BarcodeITSxProcessor:
 
         Args:
             sequences: List of sequence dictionaries with keys:
-                - sequence, barcode, length, percentage_n
+                - sequence, barcode, length
                 - source_id, original_id, parent_seq_id, tax_id
 
         Returns:
@@ -525,7 +525,6 @@ class BarcodeITSxProcessor:
                 'original_id': seq_data['original_id'],
                 'sequence': seq_data['sequence'],
                 'length': seq_data['length'],
-                'percentage_n': seq_data.get('percentage_n', 0.0),
                 'barcode': seq_data['barcode'],
                 'barcode_status': 'ITSx',  # Use 'ITSx' status for processed sequences
                 'parent_seq_id': seq_data.get('parent_seq_id')
@@ -553,10 +552,10 @@ class BarcodeITSxProcessor:
                     session.execute(
                         text(f"""
                             INSERT INTO {self.db.sequences_table}
-                            (seq_id, source_id, original_id, sequence, length, percentage_n,
+                            (seq_id, source_id, original_id, sequence, length,
                              barcode, barcode_status, parent_seq_id)
                             VALUES (:seq_id, :source_id, :original_id, :sequence, :length,
-                                    :percentage_n, :barcode, :barcode_status, :parent_seq_id)
+                                    :barcode, :barcode_status, :parent_seq_id)
                         """),
                         seq_inserts
                     )
@@ -630,17 +629,12 @@ class BarcodeITSxProcessor:
             # Get parent metadata
             parent = parent_metadata[parent_id]
 
-            # Calculate percentage N
-            n_count = sum(1 for c in sequence if c.upper() == 'N')
-            percentage_n = (n_count / len(sequence)) * 100 if sequence else 0.0
-
             # Prepare for insertion (only ITS1 and ITS2, not 5_8S)
             if region in ['ITS1', 'ITS2']:
                 insert_list.append({
                     'sequence': sequence,
                     'barcode': region,
                     'length': len(sequence),
-                    'percentage_n': percentage_n,
                     'source_id': parent['source_id'],
                     'original_id': parent['original_id'],
                     'parent_seq_id': parent_id,
@@ -741,14 +735,10 @@ class BarcodeITSxProcessor:
                 if not parent:
                     continue
 
-                n_count = sum(1 for c in full_seq if c.upper() == 'N')
-                percentage_n = (n_count / len(full_seq)) * 100 if full_seq else 0.0
-
                 reconstruction_batch.append({
                     'sequence': full_seq,
                     'barcode': 'ITS',
                     'length': len(full_seq),
-                    'percentage_n': percentage_n,
                     'source_id': parent['source_id'],
                     'original_id': parent['original_id'],
                     'parent_seq_id': parent_id,

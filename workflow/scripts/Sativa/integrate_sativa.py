@@ -92,6 +92,7 @@ class CoLValidationResult:
     success: bool
     match_quality: Optional[CoLMatchQuality]
     col_taxonomy: Optional[Dict[str, str]]  # {kingdom, phylum, ...}
+    col_id: Optional[str] = None  # accepted CoL name-usage id (for reproducibility)
     error_message: Optional[str] = None
 
 
@@ -373,14 +374,16 @@ class CoLValidator:
                 result = CoLValidationResult(
                     success=True,
                     match_quality=CoLMatchQuality.EXACT,
-                    col_taxonomy=col_taxonomy
+                    col_taxonomy=col_taxonomy,
+                    col_id=match.col_id
                 )
             else:
                 # Modified match
                 result = CoLValidationResult(
                     success=True,
                     match_quality=CoLMatchQuality.MODIFIED,
-                    col_taxonomy=col_taxonomy
+                    col_taxonomy=col_taxonomy,
+                    col_id=match.col_id
                 )
 
         # Add to cache
@@ -800,13 +803,15 @@ class DatabaseIntegrator:
 
         return self.db_manager._execute_with_retry("sativa_get_taxonomy_by_id", fetch_taxonomy)
 
-    def create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str]) -> str:
+    def create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str],
+                        col_id: Optional[str] = None, col_dataset_key: Optional[str] = None) -> str:
         """
         Create a new taxonomy entry.
 
         Args:
             taxonomy: Dict with taxonomy levels
             parent_tax_id: Parent taxonomy ID (for traceability)
+            col_id, col_dataset_key: Optional CoL provenance (accepted usage id + release).
 
         Returns:
             New tax_id
@@ -820,17 +825,38 @@ class DatabaseIntegrator:
             family=taxonomy.get('family') or '',
             genus=taxonomy.get('genus') or '',
             species=taxonomy.get('species') or '',
-            parent_tax_id=parent_tax_id
+            parent_tax_id=parent_tax_id,
+            col_id=col_id,
+            col_dataset_key=col_dataset_key
         )
 
-    def get_or_create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str]) -> str:
-        """Get existing taxonomy or create new one"""
+    def _stamp_col_provenance(self, tax_id: str, col_id: str, col_dataset_key: Optional[str]) -> None:
+        """Record CoL provenance on an existing taxonomy row (only if not already set)."""
+        from sqlalchemy import text
+        taxonomy_table = self._get_table('taxonomy')
+
+        def op():
+            with self.db_manager.get_session() as session:
+                session.execute(text(f"""
+                    UPDATE {taxonomy_table}
+                    SET col_id = :cid, col_dataset_key = :dk
+                    WHERE tax_id = :tid AND col_id IS NULL
+                """), {"cid": col_id, "dk": col_dataset_key, "tid": tax_id})
+                session.commit()
+
+        self.db_manager._execute_with_retry("sativa_stamp_col_provenance", op)
+
+    def get_or_create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str],
+                              col_id: Optional[str] = None, col_dataset_key: Optional[str] = None) -> str:
+        """Get existing taxonomy or create new one (stamping CoL provenance when given)."""
         existing_tax_id = self.check_taxonomy_exists(taxonomy)
 
         if existing_tax_id:
+            if col_id:
+                self._stamp_col_provenance(existing_tax_id, col_id, col_dataset_key)
             return existing_tax_id
 
-        return self.create_taxonomy(taxonomy, parent_tax_id)
+        return self.create_taxonomy(taxonomy, parent_tax_id, col_id, col_dataset_key)
 
     def check_seq_tax_exists(self, seq_id: str, tax_id: str, backbone: str) -> bool:
         """Check if a seq_tax link already exists"""
@@ -1446,9 +1472,16 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
 
                 # Get or create taxonomy (the SATIVA-proposed one may be new; modifications
                 # are the minority, so a per-item get_or_create here is acceptable).
+                # When CoL validated the proposal, stamp the accepted CoL usage id +
+                # pinned release for reproducibility (col_id is None on a CoL no-match).
+                _col_val = action.col_validation_result
+                _col_id = _col_val.col_id if _col_val else None
                 tax_id = integrator.get_or_create_taxonomy(
                     action.taxonomy_to_use,
-                    parent_tax_id=original_tax_id
+                    parent_tax_id=original_tax_id,
+                    col_id=_col_id,
+                    col_dataset_key=(integrator.col_validator.provenance.get("dataset_key")
+                                     if _col_id else None)
                 )
 
                 # Duplicate check against the pre-fetched Sativa links (no per-item query)

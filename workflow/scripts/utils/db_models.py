@@ -82,11 +82,8 @@ class Sequence(Base):
     original_id = Column(String, nullable=False)
     sequence = Column(Text, nullable=False)
     length = Column(Integer, nullable=False)
-    percentage_n = Column(Float, default=0.0)
     barcode = Column(String, default='ITS')
-    old_barcode = Column(String)
     barcode_status = Column(String, default='Pending')
-    msa_id = Column(String(36))
     parent_seq_id = Column(String(36), ForeignKey('sequences.seq_id', ondelete='SET NULL'))
 
     # Relationships
@@ -97,7 +94,6 @@ class Sequence(Base):
     # Constraints
     __table_args__ = (
         CheckConstraint('length > 0', name='check_length_positive'),
-        CheckConstraint('percentage_n >= 0 AND percentage_n <= 100', name='check_percentage_n_range'),
         CheckConstraint(
             "barcode_status IN ('Pending', 'Duplicate', 'ITSx', 'Processed', 'no_detection')",
             name='check_barcode_status_values'
@@ -110,7 +106,6 @@ class Sequence(Base):
         Index('idx_sequences_source', 'source_id'),
         Index('idx_sequences_parent', 'parent_seq_id'),
         Index('idx_sequences_barcode', 'barcode'),
-        Index('idx_sequences_length', 'length'),
         Index('idx_sequences_status', 'barcode_status'),
         Index('idx_sequences_original_id', 'original_id'),  # For bulk_insert_sequences fetch queries
     )
@@ -137,6 +132,12 @@ class Taxonomy(Base):
     genus = Column(String)
     species = Column(String)
     parent_tax_id = Column(String(36), ForeignKey('taxonomy.tax_id', ondelete='SET NULL'))
+    # CoL provenance (reproducibility): the accepted CoL name-usage id and the pinned
+    # release key that produced this taxon. Resolvable at
+    # checklistbank.org/dataset/<col_dataset_key>/taxon/<col_id>. NULL for taxonomies
+    # not resolved by CoL (Raw / Sativa).
+    col_id = Column(String)
+    col_dataset_key = Column(String)
 
     # Relationships
     parent = relationship("Taxonomy", remote_side=[tax_id], backref="children")
@@ -181,11 +182,11 @@ class SeqTax(Base):
             name='check_status_values'
         ),
         CheckConstraint(
-            "backbone IN ('Raw', 'CoL', 'GBIF', 'Sativa')",
+            "backbone IN ('Raw', 'CoL', 'Sativa')",
             name='check_backbone_values'
         ),
-        # Performance indices
-        Index('idx_seq_tax_seq', 'seq_id'),
+        # Performance indices. seq_id is the leading column of the composite PK
+        # (seq_id, tax_id, backbone), so it needs no standalone index; tax_id does.
         Index('idx_seq_tax_tax', 'tax_id'),
         Index('idx_seq_tax_backbone', 'backbone'),
         Index('idx_seq_tax_status', 'status'),

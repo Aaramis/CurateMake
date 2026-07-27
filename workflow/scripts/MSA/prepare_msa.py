@@ -84,10 +84,6 @@ class MSASequenceExtractor:
                 CREATE INDEX IF NOT EXISTS idx_sequences_barcode
                 ON {sequences_table}(barcode)
             """),
-            (f"idx_seq_tax_seq_id", f"""
-                CREATE INDEX IF NOT EXISTS idx_seq_tax_seq_id
-                ON {seq_tax_table}(seq_id)
-            """),
             (f"idx_sequences_barcode_seq_id", f"""
                 CREATE INDEX IF NOT EXISTS idx_sequences_barcode_seq_id
                 ON {sequences_table}(barcode, seq_id)
