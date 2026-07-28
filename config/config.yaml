@@ -135,11 +135,10 @@ msa:
   csv_path: "data/full.csv"
   output_report: "reports/html/msa_analysis_report.html"
 
-  # === Bottom-up MSA construction (new logic, cf. INTEGRATION_DESIGN.md) ===
+  # === Bottom-up MSA construction (cf. INTEGRATION_DESIGN.md) ===
   # Floor: cluster (vsearch) -> MAFFT -> trimAl -gappyout; gated climb
-  # species->genus->family. Scatter per (barcode, family). Toggled via `enabled`.
+  # species->genus->family. Scatter per (barcode, family).
   bottomup:
-    enabled: true         # false = current top-down pipeline; true = bottom-up switch
     families_dir: "data/MSA/bottomup/families"
     families_manifest: "data/MSA/bottomup/families_manifest.json"
     out_dir: "data/MSA/bottomup/out"

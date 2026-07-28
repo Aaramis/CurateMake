@@ -39,19 +39,3 @@ def create_fasta_header(row: pd.Series, tax_columns: List[str], id_col: str = "s
     else:
         # No taxonomy data available
         return f">{base_id}"
-
-
-def get_fasta_ids(fasta_path: str) -> list:
-    """Return the sequence headers from a FASTA file."""
-    ids = []
-    try:
-        with open(fasta_path, 'r') as f:
-            for line in f:
-                if line.startswith('>'):
-                    # Grab the first token after '>'
-                    ids.append(line[1:].split()[0].strip())
-    except FileNotFoundError:
-        print(f"Warning: FASTA file not found {fasta_path}")
-    return ids
-
-

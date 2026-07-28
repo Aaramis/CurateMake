@@ -1,12 +1,10 @@
 # external_tools.py
 import os
-import glob
 import subprocess
 import tempfile
 import pandas as pd
-import os
 import utils
-from typing import Optional, List, Set
+from typing import List, Set
 from pathlib import Path
 
 
@@ -26,91 +24,6 @@ def existing_msa_ids(msa_path: str) -> Set[str]:
                 ids.add(line[1:].split()[0].split("|")[0])
     return ids
 
-
-def run_mafft(sequences_df: pd.DataFrame,
-              barcode: str,
-              clade_name: str,
-              level: str,
-              output_folder: str,
-              seq_col: str,
-              tax_columns: List[str],
-              id_col: str = "seq_id",
-              deterministic: bool = False) -> Optional[str]:
-    """
-    Run MAFFT on a set of sequences, save the result, and return the FASTA path.
-
-    Args:
-        sequences_df: DataFrame containing the sequences to align.
-        barcode: Barcode label.
-        clade_name: Clade name.
-        level: Taxonomic level (family, genus, etc.).
-        output_folder: Root output directory.
-        seq_col: Column holding sequences.
-        tax_columns: Taxonomy columns for FASTA headers.
-        id_col: Identifier column.
-        deterministic: If True, use a fully reproducible MAFFT invocation
-            (FFT-NS-2, single thread, input order preserved) and sort sequences
-            deterministically before writing. If False (default), use the
-            production behaviour (``--auto --thread -1``).
-
-    Returns:
-        Path to the MAFFT alignment file.
-    """
-    output_dir = Path(output_folder) / barcode / f"alignments_{level}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = f"{output_dir}/{clade_name}_msa.fasta"
-
-    # Write temporary input file for MAFFT
-    with tempfile.NamedTemporaryFile(mode='w+', suffix=".fasta", delete=False) as infile:
-        try:
-            # Deterministic mode: sort sequences by stable content keys (not UUID)
-            # so the MAFFT input order is reproducible across runs.
-            if deterministic:
-                sort_cols = [c for c in ['source_id', 'original_id', 'sequence']
-                             if c in sequences_df.columns]
-                rows_iter = (sequences_df.sort_values(sort_cols, kind="mergesort")
-                             if sort_cols else sequences_df).iterrows()
-            else:
-                rows_iter = sequences_df.iterrows()
-            # Stream sequences into the temporary input
-            for _, row in rows_iter:
-                header = utils.create_fasta_header(row, tax_columns, id_col)
-                infile.write(f"{header}\n{row[seq_col]}\n")
-            infile_path = infile.name
-        except Exception as e:
-            print(f"Error while writing MAFFT input file: {str(e)}")
-            return None
-
-    # Execute MAFFT
-    if deterministic:
-        # FFT-NS-2 (--retree 2 --maxiterate 0), single-threaded, input order preserved:
-        # fully reproducible alignment.
-        command = ["mafft", "--retree", "2", "--maxiterate", "0", "--quiet",
-                   "--thread", "1", "--threadit", "0", "--inputorder", infile_path]
-    else:
-        command = ["mafft", "--auto", "--quiet", "--thread", "-1", infile_path]
-    try:
-        # Redirect output directly to the output file
-        with open(output_file, 'w') as outfile:
-            result = subprocess.run(
-                command, 
-                stdout=outfile,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True
-            )
-        
-        # Cleanup temporary file
-        os.unlink(infile_path)
-        
-        return output_file
-        
-    except subprocess.CalledProcessError as e:
-        print(f"MAFFT failed: {e.stderr}")
-        # Cleanup on failure
-        if os.path.exists(infile_path):
-            os.unlink(infile_path)
-        return None
 
 def run_hmmsearch(sequences_df: pd.DataFrame,
                   hmm_db_path: str,
@@ -208,132 +121,6 @@ def run_hmmsearch(sequences_df: pd.DataFrame,
                 pass
 
 
-def create_hmm_database(hmm_dir: str, combined_hmm_path: str) -> bool:
-    """
-    Concatenate all .hmm files from a directory into a single combined HMM.
-
-    No hmmpress: the combined HMM is consumed by hmmsearch (run_hmmsearch),
-    which reads the plain-text profile file directly. Any stale hmmpress index
-    (.h3{fimp}) next to the output is purged to avoid confusion / wasted disk.
-
-    Args:
-        hmm_dir (str): Directory containing .hmm files (recursively searched).
-        combined_hmm_path (str): Destination path for the combined HMM.
-
-    Returns:
-        bool: True on success, False otherwise.
-    """
-    try:
-        # Recursively gather all .hmm files, excluding empty marker files
-        all_hmm_files = sorted(glob.glob(os.path.join(hmm_dir, '**', '*.hmm'), recursive=True))
-        hmm_files = [f for f in all_hmm_files if os.path.getsize(f) > 0]
-
-        skipped = len(all_hmm_files) - len(hmm_files)
-        if skipped > 0:
-            print(f"Info: skipping {skipped} empty HMM file(s)")
-
-        if not hmm_files:
-            print(f"Warning: no valid .hmm files found in {hmm_dir}")
-            return False
-
-        # Purge any stale hmmpress index (no longer produced nor read)
-        for ext in ['.h3f', '.h3i', '.h3m', '.h3p']:
-            if os.path.exists(combined_hmm_path + ext):
-                os.remove(combined_hmm_path + ext)
-
-        with open(combined_hmm_path, 'w') as outfile:
-            for hmm_file in hmm_files:
-                with open(hmm_file, 'r') as infile:
-                    outfile.write(infile.read())
-
-        return True
-
-    except Exception as e:
-        print(f"Unexpected error while creating HMM database: {str(e)}")
-        return False
-
-def combine_hmm_databases(hmm_paths: List[str], output_path: str) -> bool:
-    """
-    Merge multiple HMM databases into one.
-
-    No hmmpress: the merged HMM is consumed by hmmsearch (run_hmmsearch),
-    which reads the plain-text profile file directly. Any stale hmmpress index
-    (.h3{fimp}) next to the output is purged.
-
-    Args:
-        hmm_paths: List of paths to existing HMM databases.
-        output_path: Destination for the combined database.
-
-    Returns:
-        True on success, False otherwise.
-    """
-    try:
-        # Purge any stale hmmpress index (no longer produced nor read)
-        for ext in ['.h3f', '.h3i', '.h3m', '.h3p']:
-            if os.path.exists(output_path + ext):
-                os.remove(output_path + ext)
-
-        # Concatenate HMM files, skipping empty marker files
-        skipped = 0
-        with open(output_path, 'w') as outfile:
-            for hmm_path in sorted(hmm_paths):
-                if not os.path.exists(hmm_path):
-                    print(f"Warning: missing HMM file {hmm_path}")
-                    continue
-                if os.path.getsize(hmm_path) == 0:
-                    skipped += 1
-                    continue
-                with open(hmm_path, 'r') as infile:
-                    outfile.write(infile.read())
-
-        if skipped > 0:
-            print(f"Info: skipping {skipped} empty HMM file(s)")
-
-        return True
-    except Exception as e:
-        print(f"Unexpected error while combining HMM databases: {str(e)}")
-        return False
-
-
-def run_hmmbuild(msa_path: str, hmm_path: str, barcode: str = None) -> bool:
-    """
-    Execute hmmbuild to generate a profile from a single MSA.
-
-    Args:
-        msa_path (str): path to the MSA FASTA.
-        hmm_path (str): destination HMM file.
-        barcode (str, optional): optional barcode prefix for the profile name.
-
-    Returns:
-        bool: True on success, False otherwise.
-    """
-    try:
-        # Extract clade name from filename
-        clade_name = Path(msa_path).stem.replace('_msa', '')
-
-        # Prefix with barcode if provided
-        if barcode:
-            profile_name = f"{barcode}_{clade_name}"
-        else:
-            profile_name = clade_name
-
-        subprocess.run([
-            'hmmbuild',
-            '--dna',
-            '-n', profile_name,  # Nom explicite du profile
-            hmm_path,
-            msa_path
-        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"hmmbuild failed for {msa_path}: {e.stderr}")
-        return False
-    except Exception as e:
-        print(f"Unexpected error during hmmbuild for {msa_path}: {str(e)}")
-        return False
-
-
-
 def run_mafft_add(new_sequences_df: pd.DataFrame,
                   existing_msa_path: str,
                   output_msa_path: str,
@@ -415,9 +202,9 @@ def run_hmmalign_add(new_sequences_df: pd.DataFrame,
     aligned FASTA usable by SATIVA.
 
     NOTE: ``--mapali`` expects the reference alignment the HMM was built from.
-    A full pipeline run rebuilds the trimmed MSAs from scratch, so this holds;
-    the caller (integrate_clade_task) falls back to ``mafft --add`` if hmmalign
-    fails, which keeps re-runs on an already-enriched MSA safe.
+    A full pipeline run rebuilds the MSAs from scratch, so this holds; the caller
+    falls back to ``mafft --add`` if hmmalign fails, which keeps re-runs on an
+    already-enriched MSA safe.
 
     Returns True on success, False otherwise (caller may fall back to MAFFT).
     """
@@ -469,56 +256,3 @@ def run_hmmalign_add(new_sequences_df: pd.DataFrame,
                     os.remove(p)
             except Exception:
                 pass
-
-
-def run_trimal_and_identify_removed(input_msa_path: str, seq_overlap_threshold: int, seq_resoverlap_threshold: int) -> set:
-    """
-    Run trimal on an MSA, overwrite the original file with the cleaned result,
-    and return the IDs of sequences that were removed.
-    """
-    if not os.path.exists(input_msa_path) or os.path.getsize(input_msa_path) == 0:
-        return set()
-
-    output_dir = os.path.dirname(input_msa_path)
-    trimmed_msa_path = "" # Initialisation
-
-    try:
-        # 1. Read original sequence IDs before trimming
-        original_ids = utils.get_fasta_ids(input_msa_path)
-        if not original_ids:
-            return set()
-
-        # 2. Create a temporary output file
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".fasta", dir=output_dir) as tmp_out:
-            trimmed_msa_path = tmp_out.name
-
-        # 3. Run trimal with the configured thresholds
-        command = [
-            'trimal',
-            '-in', input_msa_path,
-            '-out', trimmed_msa_path,
-            '-seqoverlap', str(seq_overlap_threshold),
-            '-resoverlap', str(seq_resoverlap_threshold),
-            '-noallgaps'  # Drop columns containing only gaps
-        ]
-        subprocess.run(command, capture_output=True, text=True, check=True)
-
-        # 4. Read IDs from the cleaned file
-        trimmed_ids = utils.get_fasta_ids(trimmed_msa_path)
-
-        # 5. Identify removed sequences and replace the original file
-        removed_ids = set(original_ids) - set(trimmed_ids)
-        os.replace(trimmed_msa_path, input_msa_path)
-
-        return removed_ids
-
-    except subprocess.CalledProcessError as e:
-        print(f"trimal failed on {os.path.basename(input_msa_path)}: {e.stderr}")
-        if os.path.exists(trimmed_msa_path):
-            os.remove(trimmed_msa_path)
-        return set()
-    except Exception as e:
-        print(f"Unexpected error during Trimal cleanup: {e}")
-        if os.path.exists(trimmed_msa_path):
-            os.remove(trimmed_msa_path)
-        return set()

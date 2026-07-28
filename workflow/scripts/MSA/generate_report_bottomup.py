@@ -5,13 +5,12 @@ HTML report for the bottom-up MSA construction.
 Consumes bottomup_summary.json (+ per-family manifests for the per-MSA metrics
 + residual_report.json + contamination_report.json) and produces a report that
 matches the styling of the other pipeline reports (same container/section/stats-table
-shell as generate_report_MSA.py). Focused on:
+shell). Focused on:
   - distribution of the emergent STOP LEVELS + SATIVA coverage,
   - MSA quality (ratio/occupancy, gate pass rate),
   - residual (orphans reclassified by hmmsearch),
   - coarse contamination (cross-kingdom/phylum),
   - largest MSAs.
-Replaces generate_report_MSA.py when msa.bottomup.enabled = true.
 """
 
 import argparse

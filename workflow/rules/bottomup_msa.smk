@@ -1,15 +1,14 @@
 # workflow/rules/bottomup_msa.smk
 """
-Bottom-up construction of the reference MSAs (new logic).
+Bottom-up construction of the reference MSAs.
 Scatter per (barcode, family); bottom-up internal to the job (cf. INTEGRATION_DESIGN.md).
-Toggled via msa.bottomup.enabled (SATIVA switch lives in sativa.smk).
+SATIVA consumes the manifest produced here (see sativa.smk).
 """
 
 import os
 import json
 
 _bu = config["msa"].get("bottomup", {})
-BU_ENABLED = bool(_bu.get("enabled", False))   # toggle: bottom-up (True) vs top-down (False)
 FULL_CSV = config["msa"]["csv_path"]
 BU_FAMILIES_DIR = _bu.get("families_dir", "data/MSA/bottomup/families")
 BU_MANIFEST = _bu.get("families_manifest", "data/MSA/bottomup/families_manifest.json")
