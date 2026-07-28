@@ -3,8 +3,8 @@
 Restore the ITS database from a backup.
 
 Usage:
-    python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db
-    python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db --target data/db/its.db
+    python restore_db_backup.py --backup results/db/its_backup_20251029_102912.db
+    python restore_db_backup.py --backup results/db/its_backup_20251029_102912.db --target results/db/its.db
 """
 
 import argparse
@@ -151,9 +151,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db
-  python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db --target data/db/its.db
-  python restore_db_backup.py --backup data/db/its_backup_20251029_102912.db --skip-verification
+  python restore_db_backup.py --backup results/db/its_backup_20251029_102912.db
+  python restore_db_backup.py --backup results/db/its_backup_20251029_102912.db --target results/db/its.db
+  python restore_db_backup.py --backup results/db/its_backup_20251029_102912.db --skip-verification
         """
     )
 
@@ -168,7 +168,7 @@ Examples:
         '--target',
         type=Path,
         default=None,
-        help='Path to the destination file (default: data/db/its.db)'
+        help='Path to the destination file (default: results/db/its.db)'
     )
 
     parser.add_argument(
@@ -182,7 +182,7 @@ Examples:
     # Determine the target path
     if args.target is None:
         # Use the default path
-        target_path = Path("data/db/its.db")
+        target_path = Path("results/db/its.db")
     else:
         target_path = args.target
 

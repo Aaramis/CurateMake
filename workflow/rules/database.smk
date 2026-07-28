@@ -9,7 +9,7 @@ rule create_database:
     """Initialise the database (SQLite or PostgreSQL) with the full schema."""
     output:
         db = get_db_path(),
-        report = "data/processed/database_creation_report.json"
+        report = "results/processed/database_creation_report.json"
     log:
         "logs/database/creation.log"
     benchmark:

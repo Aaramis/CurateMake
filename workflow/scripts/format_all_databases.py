@@ -37,13 +37,13 @@ def generate_comprehensive_summary() -> Dict[str, Any]:
         # Test mode (example only)
         # Replace these paths with your own when running outside Snakemake
         formatted_reports = [
-            "data/processed/BOLD_formatted_report.json",
-            "data/processed/CALeDNA_Multi_formatted_report.json",
-            "data/processed/PLANITS_formatted_report.json",
-            "data/processed/UNITE_formatted_report.json"
+            "results/processed/BOLD_formatted_report.json",
+            "results/processed/CALeDNA_Multi_formatted_report.json",
+            "results/processed/PLANITS_formatted_report.json",
+            "results/processed/UNITE_formatted_report.json"
         ]
-        deduplication_report = "data/processed/taxonomy_deduplication_report.json"
-        output_file = "data/processed/formatting_summary.json"
+        deduplication_report = "results/processed/taxonomy_deduplication_report.json"
+        output_file = "results/processed/formatting_summary.json"
     
     summary = {
         'process': 'complete_database_formatting',

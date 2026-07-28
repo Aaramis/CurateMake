@@ -30,8 +30,6 @@ wheels/
 
 # Data folders
 data/
-!data/raw/
-!data/raw/**
 !resources/
 *.fasta
 *.fastq
@@ -129,3 +127,7 @@ reports
 cache
 test.py
 analysis_plans
+# Raw input datasets live under resources/ — force-track them despite the
+# *.fasta / PLAN* / *.zip ignores above (mirrors the old !data/raw/** rule).
+!resources/
+!resources/**

@@ -17,4 +17,4 @@ def get_db_path():
     else:
         # PostgreSQL doesn't create a local file
         # Return a sentinel file to track database initialization
-        return "data/db/.postgresql_initialized"
+        return "results/db/.postgresql_initialized"

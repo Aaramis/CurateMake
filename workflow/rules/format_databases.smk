@@ -63,22 +63,22 @@ def formatted_database_reports():
     """Paths of the formatted reports (configured databases + CALeDNA + PERSONAL)."""
     reports = []
     if has_database("unite"):
-        reports.append("data/processed/unite_formatted_report.json")
+        reports.append("results/processed/unite_formatted_report.json")
     if has_database("planits"):
-        reports.append("data/processed/planits_formatted_report.json")
+        reports.append("results/processed/planits_formatted_report.json")
     if has_database("bold"):
-        reports.append("data/processed/bold_formatted_report.json")
+        reports.append("results/processed/bold_formatted_report.json")
     if has_caledna_database():
         reports.extend(
             expand(
-                "data/processed/caledna_{caledna_file}_formatted_report.json",
+                "results/processed/caledna_{caledna_file}_formatted_report.json",
                 caledna_file=get_caledna_basenames(),
             )
         )
     if has_personal_database():
         reports.extend(
             expand(
-                "data/processed/personal_{personal_file}_formatted_report.json",
+                "results/processed/personal_{personal_file}_formatted_report.json",
                 personal_file=get_personal_basenames(),
             )
         )
@@ -91,7 +91,7 @@ if has_database("unite"):
             source = config["databases"]["unite"]["path"],
             db_ready = rules.create_database.output.report
         output:
-            report = "data/processed/unite_formatted_report.json"
+            report = "results/processed/unite_formatted_report.json"
         log:
             "logs/format_databases/unite_formatting.log"
         benchmark:
@@ -114,7 +114,7 @@ if has_database("planits"):
             source = config["databases"]["planits"]["path"],
             db_ready = rules.create_database.output.report
         output:
-            report = "data/processed/planits_formatted_report.json"
+            report = "results/processed/planits_formatted_report.json"
         log:
             "logs/format_databases/planits_formatting.log"
         benchmark:
@@ -137,7 +137,7 @@ if has_database("bold"):
             source = config["databases"]["bold"]["path"],
             db_ready = rules.create_database.output.report
         output:
-            report = "data/processed/bold_formatted_report.json"
+            report = "results/processed/bold_formatted_report.json"
         log:
             "logs/format_databases/bold_formatting.log"
         benchmark:
@@ -161,7 +161,7 @@ if has_caledna_database():
                                          if os.path.splitext(os.path.basename(f))[0] == wildcards.caledna_file),
             db_ready = rules.create_database.output.report
         output:
-            report = "data/processed/caledna_{caledna_file}_formatted_report.json"
+            report = "results/processed/caledna_{caledna_file}_formatted_report.json"
         log:
             "logs/format_databases/caledna_{caledna_file}_formatting.log"
         benchmark:
@@ -188,7 +188,7 @@ if has_personal_database():
                                             if os.path.splitext(os.path.basename(f))[0] == wildcards.personal_file),
             db_ready = rules.create_database.output.report
         output:
-            report = "data/processed/personal_{personal_file}_formatted_report.json"
+            report = "results/processed/personal_{personal_file}_formatted_report.json"
         log:
             "logs/format_databases/personal_{personal_file}_formatting.log"
         benchmark:
@@ -211,7 +211,7 @@ rule deduplicate_taxonomies:
         formatted = formatted_database_reports()
 
     output:
-        report = "data/processed/taxonomy_deduplication_report.json"
+        report = "results/processed/taxonomy_deduplication_report.json"
     params:
         db = get_db_path(),
     log:
@@ -226,9 +226,9 @@ rule deduplicate_taxonomies:
 # Rule finale
 rule format_all_databases:
     input:
-        deduplication = "data/processed/taxonomy_deduplication_report.json"
+        deduplication = "results/processed/taxonomy_deduplication_report.json"
     output:
-        summary = "data/processed/formatting_summary.json"
+        summary = "results/processed/formatting_summary.json"
     log:
         "logs/format_databases/all_formatting.log"
     benchmark:

@@ -113,9 +113,9 @@ rule all:
 
 # Cleanup rule
 rule clean:
-    """Remove the temporary files generated in data/processed (non-interactive)."""
+    """Remove the temporary files generated in results/processed (non-interactive)."""
     params:
-        paths=["data/processed"]
+        paths=["results/processed"]
     run:
         import shutil
         from pathlib import Path
@@ -128,17 +128,17 @@ rule clean:
                 shutil.rmtree(path)
             else:
                 path.unlink()
-        Path("data/processed").mkdir(parents=True, exist_ok=True)
+        Path("results/processed").mkdir(parents=True, exist_ok=True)
 
 
 rule clean_all:
     """Remove the pipeline's main artifacts in a controlled way."""
     params:
         paths=[
-            "data/processed",
-            "data/db",
-            "data/validation",
-            "data/ITSx",
+            "results/processed",
+            "results/db",
+            "results/validation",
+            "results/ITSx",
             "results",
             "logs",
         ]

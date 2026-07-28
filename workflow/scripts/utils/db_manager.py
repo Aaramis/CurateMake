@@ -16,7 +16,7 @@ Usage:
     from db_manager import DatabaseManager
 
     # SQLite (default)
-    db = DatabaseManager(db_type="sqlite", path="data/db/its.db")
+    db = DatabaseManager(db_type="sqlite", path="results/db/its.db")
 
     # PostgreSQL
     db = DatabaseManager(
@@ -70,7 +70,7 @@ class DatabaseManager:
             **kwargs: Backend-specific connection parameters
 
         SQLite kwargs:
-            path (str): Database file path (default: "data/db/its.db")
+            path (str): Database file path (default: "results/db/its.db")
 
         PostgreSQL kwargs:
             host (str): Database host
@@ -133,7 +133,7 @@ class DatabaseManager:
 
         # Store db_path for backward compatibility
         if db_type == "sqlite":
-            self.db_path = Path(connection_kwargs.get('path', 'data/db/its.db'))
+            self.db_path = Path(connection_kwargs.get('path', 'results/db/its.db'))
         else:
             self.db_path = None
 
@@ -1038,7 +1038,7 @@ def get_database_manager(config: Dict) -> DatabaseManager:
         config = {
             'database': {
                 'type': 'sqlite',
-                'sqlite': {'path': 'data/db', 'name': 'its.db'}
+                'sqlite': {'path': 'results/db', 'name': 'its.db'}
             },
             'database_formatting': {
                 'batch_size': 5000
@@ -1060,7 +1060,7 @@ def get_database_manager(config: Dict) -> DatabaseManager:
 
     if db_type == "sqlite":
         sqlite_config = db_config.get("sqlite", {})
-        db_dir = Path(sqlite_config.get("path", "data/db"))
+        db_dir = Path(sqlite_config.get("path", "results/db"))
         db_name = sqlite_config.get("name", "its.db")
         db_path = db_dir / db_name
 

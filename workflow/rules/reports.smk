@@ -9,23 +9,23 @@ import os
 _FLOW_BU = config["msa"].get("bottomup", {})
 _FLOW_COMMON_IN = dict(
     final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
-    formatting_summary="data/processed/formatting_summary.json",
-    itsx_deduplicate_pre="data/processed/itsx_deduplicate_pre.json",
-    itsx_deduplicate_post="data/processed/itsx_deduplicate_post.json",
-    itsx_process="data/processed/itsx_process.json",
-    itsx_prepare="data/processed/itsx_prepare_report.json",
-    msa_prepare="data/processed/msa_prepare_report.json",
+    formatting_summary="results/processed/formatting_summary.json",
+    itsx_deduplicate_pre="results/processed/itsx_deduplicate_pre.json",
+    itsx_deduplicate_post="results/processed/itsx_deduplicate_post.json",
+    itsx_process="results/processed/itsx_process.json",
+    itsx_prepare="results/processed/itsx_prepare_report.json",
+    msa_prepare="results/processed/msa_prepare_report.json",
 )
 
 rule sequence_flow_report:
     """Flow report (bottom-up: reads the bottom-up summary)."""
     input:
-        bottomup_summary=_FLOW_BU.get("summary", "data/MSA/bottomup/bottomup_summary.json"),
+        bottomup_summary=_FLOW_BU.get("summary", "results/MSA/bottomup/bottomup_summary.json"),
         **_FLOW_COMMON_IN
     output:
         report="reports/html/sequence_flow_report.html"
     params:
-        processed_dir="data/processed"
+        processed_dir="results/processed"
     log:
         "logs/reports/sequence_flow_report.log"
     conda:

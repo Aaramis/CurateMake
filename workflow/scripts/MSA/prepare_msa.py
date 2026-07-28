@@ -482,13 +482,13 @@ def main():
 
         else:
             logger.warning("Mode standalone")
-            db_label = "data/db/its.db"
+            db_label = "results/db/its.db"
             out_csv = "tmp/msa_sequences.csv"
             out_report = "tmp/msa_prepare_report.json"
             config = {
                 "database": {
                     "type": "sqlite",
-                    "sqlite": {"path": "data/db", "name": "its.db"},
+                    "sqlite": {"path": "results/db", "name": "its.db"},
                 }
             }
             Path(out_csv).parent.mkdir(parents=True, exist_ok=True)

@@ -205,7 +205,7 @@ def main():
         else:
             # Mode test standalone
             logger.warning("Running in standalone test mode")
-            input_db = "data/db/its.db"
+            input_db = "results/db/its.db"
             output_dir = "tmp/output"
             output_report = "tmp/output/itsx_report.json"
 
@@ -214,7 +214,7 @@ def main():
                 'database': {
                     'type': 'sqlite',
                     'sqlite': {
-                        'path': 'data/db',
+                        'path': 'results/db',
                         'name': 'its.db'
                     }
                 }

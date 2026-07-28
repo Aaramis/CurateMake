@@ -6,7 +6,7 @@ Rules Snakemake pour l'usage de l'outil ITSx
 import os
 from pathlib import Path
 
-ITSX_FASTA_DIR = config.get("itsx_output_dir", "data")
+ITSX_FASTA_DIR = config.get("itsx_output_dir", "results")
 ITSX_BARCODES = config["msa"].get("barcodes", ["ITS", "ITS1", "ITS2"])
 ITSX_DETERMINISTIC = bool(config.get("itsx_deterministic", False))
 ITSX_FASTA_FILES = [
@@ -15,8 +15,8 @@ ITSX_FASTA_FILES = [
 
 
 def get_itsx_barcodes(wildcards):
-    """Dynamically retrieve the list of barcodes from data/ITSx/"""
-    itsx_dir = Path("data/ITSx")
+    """Dynamically retrieve the list of barcodes from results/ITSx/"""
+    itsx_dir = Path("results/ITSx")
     if itsx_dir.exists():
         barcodes = [d.name for d in itsx_dir.iterdir() if d.is_dir()]
         return sorted(barcodes)
@@ -28,11 +28,11 @@ rule deduplicate_sequences_pre_itsx:
     Deduplication of sequences before ITSx processing
     """
     input:
-        col_summary="data/processed/col_matching_report.json"
+        col_summary="results/processed/col_matching_report.json"
     params:
         db=get_db_path(),
     output:
-        report="data/processed/itsx_deduplicate_pre.json"
+        report="results/processed/itsx_deduplicate_pre.json"
     log:
         "logs/ITSX/itsx_deduplicate_pre.log"
     benchmark:
@@ -44,12 +44,12 @@ rule deduplicate_sequences_pre_itsx:
 
 rule prepare_itsx:
     input:
-        deduplicate_pre_report="data/processed/itsx_deduplicate_pre.json"
+        deduplicate_pre_report="results/processed/itsx_deduplicate_pre.json"
     params:
         db=get_db_path(),
-        output_fodler="data"
+        output_fodler="results"
     output:
-        report="data/processed/itsx_prepare_report.json",
+        report="results/processed/itsx_prepare_report.json",
         fastas=ITSX_FASTA_FILES
     log:
         "logs/ITSX/prepare_itsx.log"
@@ -66,15 +66,15 @@ rule run_itsx_barcode:
     Run ITSx for a specific barcode (native parallelisation)
     """
     input:
-        report="data/processed/itsx_prepare_report.json",
+        report="results/processed/itsx_prepare_report.json",
         fasta=lambda wildcards: os.path.join(ITSX_FASTA_DIR, f"{wildcards.barcode}.fasta")
     params:
-        output_dir="data/ITSx/{barcode}",
-        temp_dir="data/ITSx/.temp_{barcode}",
+        output_dir="results/ITSx/{barcode}",
+        temp_dir="results/ITSx/.temp_{barcode}",
         cpu=1 if ITSX_DETERMINISTIC else config.get("itsx_cpu", 30),
         multi_thread="F" if ITSX_DETERMINISTIC else "T"
     output:
-        done="data/processed/itsx_run_{barcode}.done"
+        done="results/processed/itsx_run_{barcode}.done"
     log:
         "logs/ITSX/run_itsx_{barcode}.log"
     benchmark:
@@ -108,11 +108,11 @@ rule run_itsx_all:
     """
     input:
         lambda wildcards: expand(
-            "data/processed/itsx_run_{barcode}.done",
+            "results/processed/itsx_run_{barcode}.done",
             barcode=get_itsx_barcodes(wildcards)
         )
     output:
-        done="data/processed/itsx_run.done"
+        done="results/processed/itsx_run.done"
     shell:
         "touch {output.done}"
 
@@ -122,13 +122,13 @@ rule process_barcode_itsx:
     Starts as soon as its ITSx barcode is finished
     """
     input:
-        itsx_done="data/processed/itsx_run_{barcode}.done",
+        itsx_done="results/processed/itsx_run_{barcode}.done",
     params:
         db=get_db_path(),
-        itsx_dir="data/ITSx",
-        data_dir="data",
+        itsx_dir="results/ITSx",
+        data_dir="results",
     output:
-        report="data/processed/itsx_{barcode}_result.json"
+        report="results/processed/itsx_{barcode}_result.json"
     log:
         "logs/ITSX/process_itsx_{barcode}.log"
     benchmark:
@@ -145,11 +145,11 @@ rule aggregate_itsx_results:
     """
     input:
         lambda wildcards: expand(
-            "data/processed/itsx_{barcode}_result.json",
+            "results/processed/itsx_{barcode}_result.json",
             barcode=get_itsx_barcodes(wildcards)
         )
     output:
-        report="data/processed/itsx_process.json"
+        report="results/processed/itsx_process.json"
     log:
         "logs/ITSX/aggregate_itsx_results.log"
     benchmark:
@@ -164,11 +164,11 @@ rule deduplicate_sequences_post_itsx:
     Deduplication of sequences after ITSx processing
     """
     input:
-        itsx_report="data/processed/itsx_process.json",
+        itsx_report="results/processed/itsx_process.json",
     params:
         db=get_db_path(),
     output:
-        report="data/processed/itsx_deduplicate_post.json"
+        report="results/processed/itsx_deduplicate_post.json"
     log:
         "logs/ITSX/itsx_deduplicate_post.log"
     benchmark:

@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 
 
-SATIVA_MANIFEST = "data/processed/sativa_task_manifest.json"
-SATIVA_REPORT = "data/processed/sativa_analysis_report.json"
+SATIVA_MANIFEST = "results/processed/sativa_task_manifest.json"
+SATIVA_REPORT = "results/processed/sativa_analysis_report.json"
 SATIVA_OUTPUT_DIR = config["sativa"]["output_dir"]
 
 

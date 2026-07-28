@@ -7,13 +7,13 @@ import os
 
 rule col_taxonomic_matching:
     input:
-        formatting_summary="data/processed/formatting_summary.json"
-        # deduplication="data/processed/taxonomy_deduplication_report.json"
+        formatting_summary="results/processed/formatting_summary.json"
+        # deduplication="results/processed/taxonomy_deduplication_report.json"
     params:
         db=get_db_path(),
         batch_size=config["CoL_api"]["batch_size"]
     output:
-        report="data/processed/col_matching_report.json"
+        report="results/processed/col_matching_report.json"
     log:
         "logs/harmonize_taxo/col_matching.log"
     benchmark:

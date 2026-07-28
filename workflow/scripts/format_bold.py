@@ -591,7 +591,7 @@ def main():
             config = {
                 "database": {
                     "type": "sqlite",
-                    "sqlite": {"path": "data/db", "name": "its.db"},
+                    "sqlite": {"path": "results/db", "name": "its.db"},
                 }
             }
             database_formatting = {}

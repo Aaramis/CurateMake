@@ -14,13 +14,13 @@ import os
 
 rule prepare_msa:
     input:
-        deduplicate_post_report="data/processed/itsx_deduplicate_post.json"
+        deduplicate_post_report="results/processed/itsx_deduplicate_post.json"
     params:
         db=get_db_path(),
-        output_fodler="data",
+        output_fodler="results",
         csv_path=config["msa"]['csv_path']
     output:
-        report="data/processed/msa_prepare_report.json",
+        report="results/processed/msa_prepare_report.json",
         sequences=config["msa"]['csv_path']
     log:
         "logs/MSA/prepare_msa.log"
@@ -37,11 +37,11 @@ rule prepare_msa:
 _MSA_BU = config["msa"].get("bottomup", {})
 rule analyze_msa_report:
     input:
-        summary=_MSA_BU.get("summary", "data/MSA/bottomup/bottomup_summary.json"),
-        residual=_MSA_BU.get("residual_report", "data/MSA/bottomup/residual_report.json"),
-        contamination=_MSA_BU.get("contamination_report", "data/MSA/bottomup/contamination_report.json")
+        summary=_MSA_BU.get("summary", "results/MSA/bottomup/bottomup_summary.json"),
+        residual=_MSA_BU.get("residual_report", "results/MSA/bottomup/residual_report.json"),
+        contamination=_MSA_BU.get("contamination_report", "results/MSA/bottomup/contamination_report.json")
     params:
-        out_dir=_MSA_BU.get("out_dir", "data/MSA/bottomup/out")
+        out_dir=_MSA_BU.get("out_dir", "results/MSA/bottomup/out")
     output:
         report=config["msa"]["output_report"]
     log:

@@ -1373,7 +1373,7 @@ def main():
             import argparse
             parser = argparse.ArgumentParser(description="SATIVA Results Visualization")
             parser.add_argument("--sativa-dir", type=str, help="SATIVA output directory (legacy mode)")
-            parser.add_argument("--database", type=str, default="data/db/its.db", help="Path to SQLite database file")
+            parser.add_argument("--database", type=str, default="results/db/its.db", help="Path to SQLite database file")
             parser.add_argument("--output", type=str, default="sativa_visualization_report.html", help="Output HTML file")
             args = parser.parse_args()
 

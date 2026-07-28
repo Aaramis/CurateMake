@@ -903,7 +903,7 @@ def main():
         engine = db_manager.engine
     else:
         output_path = Path('reports/html/taxonomy_sunburst.html')
-        db_path = Path('data/db/its.db')
+        db_path = Path('results/db/its.db')
         if not db_path.exists():
             logger.error(f"Database not found: {db_path}")
             sys.exit(1)

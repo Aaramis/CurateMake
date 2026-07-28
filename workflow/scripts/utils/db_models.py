@@ -15,7 +15,7 @@ Usage:
     from db_models import get_engine, get_session, init_database
 
     # Create engine (SQLite or PostgreSQL)
-    engine = get_engine("sqlite", path="data/db/its.db")
+    engine = get_engine("sqlite", path="results/db/its.db")
     # or
     engine = get_engine("postgresql", host="localhost", user="its_user", ...)
 
@@ -271,7 +271,7 @@ def get_engine(db_type: str = "sqlite", echo: bool = False, **kwargs):
         **kwargs: Backend-specific connection parameters
 
     SQLite kwargs:
-        path (str): Database file path (default: "data/db/its.db")
+        path (str): Database file path (default: "results/db/its.db")
 
     PostgreSQL kwargs:
         host (str): Database host (default: "localhost")
@@ -290,7 +290,7 @@ def get_engine(db_type: str = "sqlite", echo: bool = False, **kwargs):
 
     Examples:
         # SQLite
-        engine = get_engine("sqlite", path="data/db/its.db")
+        engine = get_engine("sqlite", path="results/db/its.db")
 
         # PostgreSQL
         engine = get_engine(
@@ -302,7 +302,7 @@ def get_engine(db_type: str = "sqlite", echo: bool = False, **kwargs):
         )
     """
     if db_type == "sqlite":
-        path = kwargs.get('path', 'data/db/its.db')
+        path = kwargs.get('path', 'results/db/its.db')
         db_path = Path(path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -396,7 +396,7 @@ def get_session(engine) -> Session:
         Session instance
 
     Example:
-        engine = get_engine("sqlite", path="data/db/its.db")
+        engine = get_engine("sqlite", path="results/db/its.db")
         session = get_session(engine)
 
         # Use session
@@ -421,7 +421,7 @@ def init_database(engine, schema=None):
         schema: Optional schema name for PostgreSQL
 
     Example:
-        engine = get_engine("sqlite", path="data/db/its.db")
+        engine = get_engine("sqlite", path="results/db/its.db")
         init_database(engine)
     """
     # For PostgreSQL with custom schema, modify table definitions before create_all

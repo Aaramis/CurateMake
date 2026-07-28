@@ -521,12 +521,12 @@ def main():
         else:
             # Test mode
             logger.warning("Running in standalone test mode")
-            input_file = "data/raw/PERSONAL/personal.fasta"
+            input_file = "resources/PERSONAL/personal.fasta"
             output_report = "test_personal_report.json"
             config = {
                 'database': {
                     'type': 'sqlite',
-                    'sqlite': {'path': 'data/db', 'name': 'its.db'}
+                    'sqlite': {'path': 'results/db', 'name': 'its.db'}
                 }
             }
             config_validation = {
