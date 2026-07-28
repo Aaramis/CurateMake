@@ -9,7 +9,7 @@ dependencies:
   - python=3.10
   - pip
 
-  # Base de données
+  # Database
   - sqlite=3.45
   - sqlalchemy=2.0
   - psycopg2=2.9  

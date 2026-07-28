@@ -6,9 +6,26 @@ import tempfile
 import pandas as pd
 import os
 import utils
-from typing import Optional, List
+from typing import Optional, List, Set
 from pathlib import Path
-    
+
+
+def existing_msa_ids(msa_path: str) -> Set[str]:
+    """Raw seq_ids already present in an aligned FASTA (header up to first space / '|').
+
+    Used to make ``--add`` integrations idempotent: on a partial re-run the MSA on
+    disk may already contain previously-integrated sequences (build_family is cached
+    on its manifest, not on the per-MSA FASTA), so re-adding them would duplicate.
+    """
+    ids: Set[str] = set()
+    if not msa_path or not os.path.exists(msa_path):
+        return ids
+    with open(msa_path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                ids.add(line[1:].split()[0].split("|")[0])
+    return ids
+
 
 def run_mafft(sequences_df: pd.DataFrame,
               barcode: str,

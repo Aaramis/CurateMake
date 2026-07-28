@@ -243,79 +243,6 @@ class CoLValidator:
 
         self.last_request_time = time.time()
 
-    def _query_col_api(self, taxonomy: Dict[str, str]) -> Optional[Dict]:
-        """Query CoL API with taxonomy"""
-        try:
-            self._rate_limit()
-
-            # Build query parameters
-            params = {"fuzzy": "true"}
-
-            # Try from most specific to least specific
-            taxonomy_levels = ['species', 'genus', 'family', 'order_', 'class_', 'phylum', 'kingdom']
-
-            for level in taxonomy_levels:
-                if taxonomy.get(level):
-                    # Primary search term
-                    params['q'] = taxonomy[level]
-
-                    # Add context from higher levels
-                    for context_level in taxonomy_levels[taxonomy_levels.index(level)+1:]:
-                        if taxonomy.get(context_level):
-                            param_name = context_level.replace('_', '')
-                            params[param_name] = taxonomy[context_level]
-
-                    break
-
-            if 'q' not in params:
-                return None
-
-            response = self.session.get(self.base_url, params=params, timeout=self.timeout)
-            self.stats['api_calls'] += 1
-
-            if response.status_code != 200:
-                logger.warning(f"CoL API error {response.status_code}")
-                self.stats['failed_calls'] += 1
-                return None
-
-            data = response.json()
-
-            if data.get("match") and "usage" in data:
-                return data["usage"]
-
-            return None
-
-        except Exception as e:
-            logger.warning(f"CoL API request failed: {e}")
-            self.stats['failed_calls'] += 1
-            return None
-
-    @staticmethod
-    def _extract_classification_from_usage(usage: Dict) -> Dict[str, str]:
-        """Extract taxonomy classification from CoL usage response"""
-        classification = {}
-
-        # Extract from classification array
-        if "classification" in usage:
-            for taxon in usage["classification"]:
-                if taxon.get('rank') and taxon.get('name'):
-                    rank = taxon['rank'].lower()
-                    if rank == 'class':
-                        rank = 'class_'
-                    elif rank == 'order':
-                        rank = 'order_'
-                    classification[rank] = taxon['name']
-
-        # Add the main taxon
-        if usage.get("rank") and usage.get("name"):
-            rank = usage["rank"].lower()
-            if rank == 'class':
-                rank = 'class_'
-            elif rank == 'order':
-                rank = 'order_'
-            classification[rank] = usage["name"]
-
-        return classification
 
     @staticmethod
     def _taxonomies_match(tax1: Dict[str, str], tax2: Dict[str, str]) -> bool:
@@ -651,86 +578,6 @@ class DatabaseIntegrator:
             return f"{schema}.{table_name}"
         return table_name
 
-    def _run_with_retry(self, operation_name: str, func):
-        """Execute a DB operation with retry."""
-        return self.db_manager._execute_with_retry(operation_name, func)
-
-    def get_original_tax_id_for_sequence(self, seq_id: str) -> Optional[str]:
-        """
-        Get the original (Raw) taxonomy ID for a sequence.
-
-        Args:
-            seq_id: Sequence UUID
-
-        Returns:
-            Original tax_id or None
-        """
-        from sqlalchemy import text
-
-        seq_tax_table = self._get_table('seq_tax')
-
-        def fetch_tax_id():
-            with self.db_manager.get_session() as session:
-                # Priority: Raw taxonomy
-                result = session.execute(text(f"""
-                    SELECT tax_id FROM {seq_tax_table}
-                    WHERE seq_id = :seq_id AND backbone = 'Raw'
-                    LIMIT 1
-                """), {"seq_id": seq_id}).fetchone()
-
-                if result:
-                    return result[0]
-
-                # Fallback: any taxonomy
-                result = session.execute(text(f"""
-                    SELECT tax_id FROM {seq_tax_table}
-                    WHERE seq_id = :seq_id
-                    LIMIT 1
-                """), {"seq_id": seq_id}).fetchone()
-
-                return result[0] if result else None
-
-        return self.db_manager._execute_with_retry("sativa_get_original_tax_id", fetch_tax_id)
-
-    def get_col_taxonomy_for_sequence(self, seq_id: str) -> Optional[Dict[str, str]]:
-        """
-        Get the CoL taxonomy for a sequence if it exists.
-
-        Args:
-            seq_id: Sequence UUID
-
-        Returns:
-            Taxonomy dict if CoL taxonomy exists, None otherwise
-        """
-        from sqlalchemy import text
-
-        seq_tax_table = self._get_table('seq_tax')
-        taxonomy_table = self._get_table('taxonomy')
-
-        def fetch_col_taxonomy():
-            with self.db_manager.get_session() as session:
-                result = session.execute(text(f"""
-                    SELECT t.kingdom, t.phylum, t.class_, t.order_, t.family, t.genus, t.species
-                    FROM {seq_tax_table} st
-                    JOIN {taxonomy_table} t ON st.tax_id = t.tax_id
-                    WHERE st.seq_id = :seq_id AND st.backbone = 'CoL'
-                    LIMIT 1
-                """), {"seq_id": seq_id}).fetchone()
-
-                if result:
-                    return {
-                        'kingdom': result[0] or '',
-                        'phylum': result[1] or '',
-                        'class_': result[2] or '',
-                        'order_': result[3] or '',
-                        'family': result[4] or '',
-                        'genus': result[5] or '',
-                        'species': result[6] or ''
-                    }
-
-                return None
-
-        return self.db_manager._execute_with_retry("sativa_get_col_taxonomy", fetch_col_taxonomy)
 
     def check_taxonomy_exists(self, taxonomy: Dict[str, str]) -> Optional[str]:
         """
@@ -773,35 +620,6 @@ class DatabaseIntegrator:
 
         return self.db_manager._execute_with_retry("sativa_check_taxonomy", fetch_existing_taxonomy)
 
-    def get_taxonomy_by_id(self, tax_id: str) -> Optional[Dict[str, str]]:
-        """Retrieve a taxonomy dict by its ID."""
-        from sqlalchemy import text
-
-        taxonomy_table = self._get_table('taxonomy')
-
-        def fetch_taxonomy():
-            with self.db_manager.get_session() as session:
-                row = session.execute(text(f"""
-                    SELECT kingdom, phylum, class_, order_, family, genus, species
-                    FROM {taxonomy_table}
-                    WHERE tax_id = :tax_id
-                    LIMIT 1
-                """), {"tax_id": tax_id}).fetchone()
-
-                if not row:
-                    return None
-
-                return {
-                    'kingdom': row[0],
-                    'phylum': row[1],
-                    'class_': row[2],
-                    'order_': row[3],
-                    'family': row[4],
-                    'genus': row[5],
-                    'species': row[6],
-                }
-
-        return self.db_manager._execute_with_retry("sativa_get_taxonomy_by_id", fetch_taxonomy)
 
     def create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str],
                         col_id: Optional[str] = None, col_dataset_key: Optional[str] = None) -> str:
@@ -858,22 +676,6 @@ class DatabaseIntegrator:
 
         return self.create_taxonomy(taxonomy, parent_tax_id, col_id, col_dataset_key)
 
-    def check_seq_tax_exists(self, seq_id: str, tax_id: str, backbone: str) -> bool:
-        """Check if a seq_tax link already exists"""
-        from sqlalchemy import text
-
-        seq_tax_table = self._get_table('seq_tax')
-
-        def fetch_exists():
-            with self.db_manager.get_session() as session:
-                result = session.execute(text(f"""
-                    SELECT 1 FROM {seq_tax_table}
-                    WHERE seq_id = :seq_id AND tax_id = :tax_id AND backbone = :backbone
-                """), {"seq_id": seq_id, "tax_id": tax_id, "backbone": backbone}).fetchone()
-
-                return result is not None
-
-        return self.db_manager._execute_with_retry("sativa_check_seq_tax_exists", fetch_exists)
 
     # ------------------------------------------------------------------ #
     # BULK helpers (avoid the per-sequence N+1: one chunked query instead #
@@ -1594,8 +1396,78 @@ def generate_reports(stats: Dict, config: Dict, output_dir: Path):
     logger.info("Report generation completed")
 
 
+def integrate_one_clade(snakemake):
+    """Integrate a single SATIVA clade (scattered rule sativa_integrate_task).
+
+    Runs as soon as this clade's SATIVA job finishes, so the DB/CoL I/O (which is
+    the bulk of integration wall-clock, ~0 CPU) overlaps with the remaining SATIVA
+    compute of other clades. Concurrency across clades is gated by the db_lock
+    resource (serial on SQLite, parallel on PostgreSQL/YugabyteDB); concurrent
+    taxonomy inserts are made safe by add_taxonomy's IntegrityError handling.
+    The sativa_warnings table and all ORM tables are created earlier by the schema
+    step, so nothing is created here.
+    """
+    start_time = time.time()
+    config = snakemake.config
+    barcode = snakemake.wildcards.barcode
+    tax_level = snakemake.wildcards.level
+    taxon = snakemake.wildcards.taxon
+    clade_dir = (Path(snakemake.params.sativa_output_dir) / barcode
+                 / f"alignments_{tax_level}" / taxon)
+    out_report = Path(snakemake.output.report)
+
+    db_manager = get_database_manager(config)
+
+    col_config = config['sativa_integration']['col_api']
+    cache_config = config['sativa_integration']['cache']
+    # Per-clade cache file: avoids concurrent writes to a single shared pickle when
+    # clade jobs run in parallel (the in-memory cache still covers repeated lineages
+    # within the clade, which is where most cache hits come from).
+    clade_cache = (clade_dir / "col_integration_cache.pkl") if cache_config['enabled'] else None
+    col_validator = CoLValidator(
+        max_requests_per_second=col_config['max_requests_per_second'],
+        timeout=col_config['timeout_per_request'],
+        cache_enabled=cache_config['enabled'],
+        cache_file=clade_cache,
+        max_memory_cache=cache_config['max_memory_entries'],
+        dataset=col_config.get('dataset', '3LR')
+    )
+
+    stats = defaultdict(int)
+    stats['metadata'] = {
+        'barcode': barcode, 'tax_level': tax_level, 'taxon': taxon,
+        'start_time': datetime.now().isoformat()
+    }
+
+    # Only clades with a .mis file are integrated (same rule as the previous full-scan
+    # behaviour: scan_sativa_output_directory required a .mis).
+    mis_candidates = sorted(clade_dir.glob("*.mis"))
+    if mis_candidates:
+        try:
+            file_stats = process_single_mis_file(
+                mis_candidates[0], barcode, tax_level,
+                col_validator, db_manager, config['sativa_integration'])
+            merge_stats(stats, file_stats)
+        except Exception as e:
+            logger.error(f"[{taxon}] integration failed: {e}")
+            stats['failed_files'] += 1
+    else:
+        logger.info(f"[{taxon}] no .mis file — nothing to integrate")
+
+    col_validator.close()
+    stats['metadata']['end_time'] = datetime.now().isoformat()
+    stats['metadata']['runtime_seconds'] = time.time() - start_time
+    stats['col_api_stats'] = dict(col_validator.stats)
+
+    out_report.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_report, 'w') as f:
+        json.dump(dict(stats), f, indent=2, default=str)
+    logger.info(f"[{taxon}] integrated in {stats['metadata']['runtime_seconds']:.1f}s "
+                f"({stats.get('total_modifications', 0)} modifications) -> {out_report}")
+
+
 def main(snakemake):
-    """Main entry point"""
+    """Main entry point (legacy full-scan mode; the DAG now scatters per clade)."""
     start_time = time.time()
 
     logger.info("=" * 70)
@@ -1695,7 +1567,11 @@ def main(snakemake):
 
 if __name__ == "__main__":
     if 'snakemake' in globals():
-        main(snakemake)
+        # Per-clade scatter (sativa_integrate_task) vs. legacy full-scan (main).
+        if getattr(snakemake, 'rule', None) == 'sativa_integrate_task':
+            integrate_one_clade(snakemake)
+        else:
+            main(snakemake)
     else:
         logger.error("This script must be run through Snakemake")
         sys.exit(1)

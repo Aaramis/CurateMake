@@ -408,7 +408,6 @@ def transform_to_plotly(df_sunburst: pd.DataFrame) -> pd.DataFrame:
             children_sum = sum(nodes_dict[child_id]['values'] for child_id in children_map[node_id])
             nodes_dict[node_id]['values'] = children_sum
 
-    # Convert to DataFrame
     result_nodes = [{k: v for k, v in node.items() if k != 'is_leaf'}
                     for node in nodes_dict.values()]
     plotly_data = pd.DataFrame(result_nodes)

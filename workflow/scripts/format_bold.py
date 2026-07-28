@@ -267,25 +267,6 @@ class BOLDParser:
 
         return "".join(c for c in sequence if c in self.valid_chars)
 
-    def _clean_taxonomic_field(self, value: Optional[str]) -> Optional[str]:
-        """Clean a taxonomy field (return None if empty / NA / etc.)."""
-        if value is None:
-            return None
-
-        val = str(value).strip()
-        if val.lower() in {"none", "null", "na", "n/a", ""}:
-            return None
-
-        return val.replace("_", " ").strip()
-
-    def _clean_field(self, value: str) -> Optional[str]:
-        """Generic cleaning routine for a string field."""
-        if value is None:
-            return None
-        val = str(value).strip()
-        if not val or val.lower() in {"none", "null", "na"}:
-            return None
-        return val
 
     # --------------------------
     # 5. Transformation worker
@@ -615,7 +596,6 @@ def main():
             }
             database_formatting = {}
 
-        # Import db_manager from utils/
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 

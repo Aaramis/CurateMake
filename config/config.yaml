@@ -6,7 +6,7 @@ itsx_deterministic: false  # Set to true for reproducible results (slower, singl
 # Database configuration
 database:
   # Backend type: "sqlite" (dev/small datasets) or "postgresql" (production/large datasets)
-  type: "sqlite"
+  type: "postgresql"
 
   # SQLite settings (development, datasets < 1M sequences)
   sqlite:
@@ -14,27 +14,23 @@ database:
     name: "its_mini_database.db"
 
   # PostgreSQL settings (production, datasets > 1M sequences).
-  # Uncomment this block AND provide credentials via .env (POSTGRES_HOST, POSTGRES_PORT,
-  # POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB) to use PostgreSQL/YugabyteDB.
-  # postgresql:
-  #   host: "{{ env.POSTGRES_HOST }}"
-  #   port: "{{ env.POSTGRES_PORT }}"
-  #   user: "{{ env.POSTGRES_USER }}"
-  #   password: "{{ env.POSTGRES_PASSWORD }}"
-  #   database: "{{ env.POSTGRES_DB }}"
-  #   schema: "its_curate"
-  #   pool_size: 10
-  #   max_overflow: 20
-  #   echo: false
+  # Credentials come from .env (POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER,
+  # POSTGRES_PASSWORD, POSTGRES_DB) — the Snakefile raises if any is missing.
+  postgresql:
+    host: "{{ env.POSTGRES_HOST }}"
+    port: "{{ env.POSTGRES_PORT }}"
+    user: "{{ env.POSTGRES_USER }}"
+    password: "{{ env.POSTGRES_PASSWORD }}"
+    database: "{{ env.POSTGRES_DB }}"
+    schema: "its_curate"
+    pool_size: 10
+    max_overflow: 20
+    echo: false
 
   # Retry configuration for distributed databases (e.g., YugabyteDB)
   # db_manager will automatically retry transient errors
   writer_retry:
     max_attempts: 100  # High value for distributed DBs with transient errors
-
-  # Common settings
-  backup_retention_days: 30
-  vacuum_threshold_mb: 100
 
 
 # Database formatting configuration
@@ -78,7 +74,6 @@ databases:
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file_retention_days: 7
 
 
 # Benchmarking
@@ -192,6 +187,51 @@ msa:
   integration_tasks_dir: "data/MSA/integration/tasks"
   integration_results_dir: "data/MSA/integration/results"
   integration_threads_per_clade: 2       # Few threads/clade -> many clades in parallel
+
+  # === Bottom-up MSA construction (new logic, cf. INTEGRATION_DESIGN.md) ===
+  # Floor: cluster (vsearch) -> MAFFT -> trimAl -gappyout; gated climb
+  # species->genus->family. Scatter per (barcode, family). Toggled via `enabled`.
+  bottomup:
+    enabled: true         # false = current top-down pipeline; true = bottom-up switch
+    families_dir: "data/MSA/bottomup/families"
+    families_manifest: "data/MSA/bottomup/families_manifest.json"
+    out_dir: "data/MSA/bottomup/out"
+    summary: "data/MSA/bottomup/bottomup_summary.json"
+    cluster_id: 0.97       # vsearch identity threshold at the floor
+    gate_ratio: 2.5        # GATE: max cols/length ratio to climb (to calibrate)
+    gate_occ: 40.0         # GATE: min % of columns >=50% occupied to climb (to calibrate)
+    max_group: 300         # subsample per cluster/species (bounds the compute)
+    min_ref: 2             # min size of a reference MSA (otherwise -> residual hmmsearch)
+    threads_per_family: 2  # few threads/family -> many families in parallel
+    # Residual (singletons + unplaced) -> hmmsearch classification + integration
+    residual_report: "data/MSA/bottomup/residual_report.json"
+    residual_evalue: 1e-3
+    residual_threads: 8
+    # UNBOUNDED climb (cross-family gather): family -> order -> class -> phylum
+    # as long as the gate passes. [] = bounded at the family. Stop level stays emergent.
+    climbed_manifest: "data/MSA/bottomup/climbed_manifest.json"
+    climb_ranks: ["order", "class", "phylum"]
+    # SATIVA manifest: only validate MSAs with enough DIVERSITY (>=2 distinct taxa
+    # -> real mislabel-detection power), with a secondary size floor.
+    sativa_manifest: "data/MSA/bottomup/sativa_manifest.json"
+    sativa_min_seqs: 4
+    # Diversity gate for SATIVA. 1 = OFF (default): every MSA with >= sativa_min_seqs goes
+    # to SATIVA (single-species MSAs still catch intra-cluster intruders). Raise to 2+ to
+    # only validate MSAs with >=N distinct taxa (skips single-species MSAs) — this can drop
+    # coverage sharply when most lineages stop at the species level.
+    sativa_min_taxa: 1
+    # COARSE contamination tier (cross-kingdom/phylum): classifies each MSA against the
+    # profile lib (top-k consensus) and compares homology to the label. Complements SATIVA
+    # (which only sees the fine intra-clade mislabels).
+    contamination_report: "data/MSA/bottomup/contamination_report.json"
+    contamination_flag_ranks: ["kingdom", "phylum"]
+    contamination_min_score: 80.0
+    contamination_top_k: 5
+    # O(M^2) all-vs-all -> scattered: reps split into batches, one hmmsearch per batch.
+    contamination_dir: "data/MSA/bottomup/contam"
+    contamination_batch_size: 200      # reps per hmmsearch job (smaller -> more parallel)
+    contamination_max_evalue: 1e-5
+    contamination_search_threads: 4    # threads per batch hmmsearch
 
 
 # SATIVA configuration

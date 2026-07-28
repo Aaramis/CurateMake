@@ -496,7 +496,6 @@ def main():
             }
             database_formatting = {}
 
-        # Import and initialization
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
@@ -541,7 +540,6 @@ def main():
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Save the report
         if 'snakemake' in globals():
             with open(output_report, 'w') as f:
                 json.dump(report_data, f, indent=2)

@@ -14,7 +14,6 @@ from typing import List, Tuple, Set, Dict, Any, Optional
 from pathlib import Path
 from sqlalchemy import func, text
 
-# Import ORM models
 sys.path.append(str(Path(__file__).parent / "utils"))
 from db_models import Sequence
 

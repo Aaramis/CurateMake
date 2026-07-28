@@ -14,7 +14,6 @@ from typing import List, Tuple, Dict, Any
 from pathlib import Path
 from sqlalchemy import func, text, Index
 
-# Import ORM models
 sys.path.append(str(Path(__file__).parent / "utils"))
 from db_models import Taxonomy, SeqTax
 

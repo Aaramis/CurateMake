@@ -55,33 +55,3 @@ def get_fasta_ids(fasta_path: str) -> list:
     return ids
 
 
-def analyze_msa_file(msa_path, logger):
-    try:
-        with open(msa_path, 'r') as f:
-            sequences = []
-            current_seq = ''
-            for line in f:
-                if line.startswith('>'):
-                    if current_seq:
-                        sequences.append(current_seq)
-                    current_seq = ''
-                else:
-                    current_seq += line.strip()
-            if current_seq:
-                sequences.append(current_seq)
-            
-            if not sequences:
-                return 0, 0
-            
-            num_sequences = len(sequences)
-            alignment_length = len(sequences[0]) if sequences else 0
-            
-            for seq in sequences[1:]:
-                if len(seq) != alignment_length:
-                    logger.warning(f"Inconsistent alignment length detected in {msa_path}")
-                    break
-            
-            return num_sequences, alignment_length
-    except Exception as e:
-        logger.error(f"Failed to analyze MSA file {msa_path}: {str(e)}")
-        return 0, 0

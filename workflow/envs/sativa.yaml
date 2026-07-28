@@ -11,8 +11,8 @@ dependencies:
   - psycopg2=2.9
   - numpy
   - ete3
-  # EPA-ng: moteur de placement du leave-one-out (remplace RAxML -f O par défaut,
-  # voir workflow/scripts/Sativa/sativa/README_MODIFICATIONS.md).
+  # EPA-ng: leave-one-out placement engine (replaces the default RAxML -f O,
+  # see workflow/scripts/Sativa/sativa/README_MODIFICATIONS.md).
   - epa-ng=0.3.8
   # NOTE: RAxML is NOT installed here. SATIVA invokes the RAxML 8.2.3 binaries
   # shipped in its own bundle (workflow/scripts/Sativa/sativa/raxml/, via

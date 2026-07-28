@@ -9,6 +9,7 @@ dependencies:
   - mafft=7.526
   - hmmer=3.4
   - trimal=1.5.1
+  - vsearch=2.28.1   # clustering d'homologie au plancher (construction bottom-up)
   - sqlalchemy=2.0
   - psycopg2=2.9
   - matplotlib

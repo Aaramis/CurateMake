@@ -303,7 +303,6 @@ def generate_index(reports_dir, output_file, available_reports):
 </html>
 """
 
-    # Write the file
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

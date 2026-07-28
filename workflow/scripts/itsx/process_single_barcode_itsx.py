@@ -790,18 +790,6 @@ class BarcodeITSxProcessor:
         return self.stats
 
 
-def _is_serialization_failure(error: OperationalError) -> bool:
-    """Return True if the exception is a PostgreSQL serialization failure."""
-    orig = getattr(error, "orig", None)
-    if orig is None:
-        return False
-    if getattr(orig, "pgcode", None) == "40001":  # PostgreSQL serialization_failure
-        return True
-    if PGSerializationFailure and isinstance(orig, PGSerializationFailure):
-        return True
-    return False
-
-
 def main():
     """
     Main entry point - supports both Snakemake and standalone CLI modes.

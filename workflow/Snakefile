@@ -82,17 +82,18 @@ if not DATABASES:
 # Inclusion des fonctions communes
 include: "rules/common.smk"
 
-# Inclusion des règles modulaires
+# Include the modular rules
 include: "rules/database.smk"
 include: "rules/format_databases.smk"
 include: "rules/harmonize_taxo.smk"
 include: "rules/itsx.smk"
 include: "rules/msa.smk"
+include: "rules/bottomup_msa.smk"
 include: "rules/sativa.smk"
 include: "rules/benchmarking.smk"
 include: "rules/reports.smk"
 
-# Règle par défaut
+# Default rule
 rule all:
     input:
         config["sativa"]["visualization_report"],  # SATIVA visualization report
@@ -103,12 +104,12 @@ rule all:
         "reports/html/sequence_flow_report.html",    # Sequence flow report
         "reports/html/benchmark_report.html",        # Benchmark report
         "reports/html/sativa_taxonomy_report.html",  # SATIVA taxonomy report with 4-way comparison
-        "reports/html/index.html"                    # Index des rapports (runs last)
+        "reports/html/index.html"                    # Reports index (runs last)
 
 
-# Règle de nettoyage
+# Cleanup rule
 rule clean:
-    """Supprime les fichiers temporaires générés dans data/processed (non interactif)."""
+    """Remove the temporary files generated in data/processed (non-interactive)."""
     params:
         paths=["data/processed"]
     run:
@@ -127,7 +128,7 @@ rule clean:
 
 
 rule clean_all:
-    """Supprime les artéfacts principaux du pipeline de manière contrôlée."""
+    """Remove the pipeline's main artifacts in a controlled way."""
     params:
         paths=[
             "data/processed",
@@ -150,9 +151,9 @@ rule clean_all:
             else:
                 path.unlink()
 
-# Règle de validation
+# Validation rule
 rule validate:
-    """Valide la configuration et les dépendances"""
+    """Validate the configuration and the dependencies"""
     log:
         "logs/validation.log"
     script:

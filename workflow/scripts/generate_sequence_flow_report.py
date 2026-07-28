@@ -217,7 +217,9 @@ def main():
             "itsx_process": snakemake.input.itsx_process,
             "itsx_prepare": snakemake.input.itsx_prepare,
             "msa_prepare": snakemake.input.msa_prepare,
-            "msa_run": snakemake.input.msa_run,
+            # msa_run (top-down) OU bottomup_summary (bottom-up), selon le mode
+            "msa_run": getattr(snakemake.input, "msa_run", None),
+            "bottomup_summary": getattr(snakemake.input, "bottomup_summary", None),
         }
         output_html = snakemake.output.report
     except NameError:
@@ -228,7 +230,7 @@ def main():
     # DATA LOADING
     # ========================================
     logger.info("\n📥 Loading JSON reports...")
-    reports = {key: load_json_safe(path) for key, path in report_paths.items()}
+    reports = {key: (load_json_safe(path) if path else {}) for key, path in report_paths.items()}
 
     # ========================================
     # METRIC EXTRACTION
@@ -336,29 +338,44 @@ def main():
                 f"ITS2={MSA_pre_ITS2}, ITS={MSA_pre_ITS}")
 
     # --- MSA Processing ---
-    msa_barcode_results = safe_get(reports["msa_run"], ['results', 'barcode_results'], {})
-
-    MSA_unprocessed_ITS1 = safe_get(msa_barcode_results, ['ITS1', 'sequences_unprocessed'], 0)
-    MSA_unprocessed_ITS2 = safe_get(msa_barcode_results, ['ITS2', 'sequences_unprocessed'], 0)
-    MSA_unprocessed_ITS = safe_get(msa_barcode_results, ['ITS', 'sequences_unprocessed'], 0)
-
-    MSA_treat_ITS1 = safe_get(msa_barcode_results, ['ITS1', 'sequences_processed'], 0) - MSA_unprocessed_ITS1
-    MSA_treat_ITS2 = safe_get(msa_barcode_results, ['ITS2', 'sequences_processed'], 0) - MSA_unprocessed_ITS2
-    MSA_treat_ITS = safe_get(msa_barcode_results, ['ITS', 'sequences_processed'], 0) - MSA_unprocessed_ITS
-
-    # MSA reassignments
-    msa_reassign = safe_get(reports["msa_run"], ['results', 'global_assignments', 'reassignment_stats'], {})
-
-    MSA_ITS1_ITS1 = safe_get(msa_reassign, ['ITS1_to_ITS1', 'count'], 0)
-    MSA_ITS2_ITS2 = safe_get(msa_reassign, ['ITS2_to_ITS2', 'count'], 0)
-    MSA_ITS_ITS = safe_get(msa_reassign, ['ITS_to_ITS', 'count'], 0)
-
-    MSA_ITS1_ITS2 = safe_get(msa_reassign, ['ITS1_to_ITS2', 'count'], 0)
-    MSA_ITS1_ITS = safe_get(msa_reassign, ['ITS1_to_ITS', 'count'], 0)
-    MSA_ITS2_ITS1 = safe_get(msa_reassign, ['ITS2_to_ITS1', 'count'], 0)
-    MSA_ITS2_ITS = safe_get(msa_reassign, ['ITS2_to_ITS', 'count'], 0)
-    MSA_ITS_ITS1 = safe_get(msa_reassign, ['ITS_to_ITS1', 'count'], 0)
-    MSA_ITS_ITS2 = safe_get(msa_reassign, ['ITS_to_ITS2', 'count'], 0)
+    _bu_summary = reports.get("bottomup_summary") or {}
+    if _bu_summary:
+        # BOTTOM-UP mode: no cross-barcode reassignment. "treated" = sequences in the
+        # reference MSAs; "unprocessed" = residual (classified afterwards by hmmsearch).
+        _pb = _bu_summary.get("per_barcode", {})
+        MSA_treat_ITS1 = safe_get(_pb, ['ITS1', 'ref_seqs'], 0)
+        MSA_treat_ITS2 = safe_get(_pb, ['ITS2', 'ref_seqs'], 0)
+        MSA_treat_ITS = safe_get(_pb, ['ITS', 'ref_seqs'], 0)
+        MSA_unprocessed_ITS1 = safe_get(_pb, ['ITS1', 'residual'], 0)
+        MSA_unprocessed_ITS2 = safe_get(_pb, ['ITS2', 'residual'], 0)
+        MSA_unprocessed_ITS = safe_get(_pb, ['ITS', 'residual'], 0)
+        # Residual re-insertion (orphans reclassified by hmmsearch -> added to an MSA):
+        # Untreated -> final MSA flow, SAME barcode (no cross-barcode reassignment in
+        # bottom-up). The remainder of "Untreated" (residual - reinserted) = unassigned (terminal).
+        MSA_ITS1_ITS1 = safe_get(_pb, ['ITS1', 'reinserted'], 0)
+        MSA_ITS2_ITS2 = safe_get(_pb, ['ITS2', 'reinserted'], 0)
+        MSA_ITS_ITS = safe_get(_pb, ['ITS', 'reinserted'], 0)
+        MSA_ITS1_ITS2 = MSA_ITS1_ITS = MSA_ITS2_ITS1 = 0
+        MSA_ITS2_ITS = MSA_ITS_ITS1 = MSA_ITS_ITS2 = 0
+    else:
+        msa_barcode_results = safe_get(reports["msa_run"], ['results', 'barcode_results'], {})
+        MSA_unprocessed_ITS1 = safe_get(msa_barcode_results, ['ITS1', 'sequences_unprocessed'], 0)
+        MSA_unprocessed_ITS2 = safe_get(msa_barcode_results, ['ITS2', 'sequences_unprocessed'], 0)
+        MSA_unprocessed_ITS = safe_get(msa_barcode_results, ['ITS', 'sequences_unprocessed'], 0)
+        MSA_treat_ITS1 = safe_get(msa_barcode_results, ['ITS1', 'sequences_processed'], 0) - MSA_unprocessed_ITS1
+        MSA_treat_ITS2 = safe_get(msa_barcode_results, ['ITS2', 'sequences_processed'], 0) - MSA_unprocessed_ITS2
+        MSA_treat_ITS = safe_get(msa_barcode_results, ['ITS', 'sequences_processed'], 0) - MSA_unprocessed_ITS
+        # MSA reassignments
+        msa_reassign = safe_get(reports["msa_run"], ['results', 'global_assignments', 'reassignment_stats'], {})
+        MSA_ITS1_ITS1 = safe_get(msa_reassign, ['ITS1_to_ITS1', 'count'], 0)
+        MSA_ITS2_ITS2 = safe_get(msa_reassign, ['ITS2_to_ITS2', 'count'], 0)
+        MSA_ITS_ITS = safe_get(msa_reassign, ['ITS_to_ITS', 'count'], 0)
+        MSA_ITS1_ITS2 = safe_get(msa_reassign, ['ITS1_to_ITS2', 'count'], 0)
+        MSA_ITS1_ITS = safe_get(msa_reassign, ['ITS1_to_ITS', 'count'], 0)
+        MSA_ITS2_ITS1 = safe_get(msa_reassign, ['ITS2_to_ITS1', 'count'], 0)
+        MSA_ITS2_ITS = safe_get(msa_reassign, ['ITS2_to_ITS', 'count'], 0)
+        MSA_ITS_ITS1 = safe_get(msa_reassign, ['ITS_to_ITS1', 'count'], 0)
+        MSA_ITS_ITS2 = safe_get(msa_reassign, ['ITS_to_ITS2', 'count'], 0)
 
     MSA_post_ITS1 = MSA_ITS1_ITS1 + MSA_ITS2_ITS1 + MSA_ITS_ITS1 + MSA_treat_ITS1
     MSA_post_ITS2 = MSA_ITS2_ITS2 + MSA_ITS1_ITS2 + MSA_ITS_ITS2 + MSA_treat_ITS2
@@ -1256,7 +1273,6 @@ def main():
 </body>
 </html>"""
 
-    # Write the HTML file
     with open(output_html, 'w', encoding='utf-8') as f:
         f.write(html_content)
 

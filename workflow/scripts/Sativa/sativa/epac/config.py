@@ -266,8 +266,12 @@ By A.Kozlov and J.Zhang, the Exelixis Lab. Based on RAxML %s by A.Stamatakis.\n"
         return os.path.join(self.output_dir, self.subst_name(fname))
         
     def clean_tempdir(self):
+        # Cleaning the temp dir must NEVER be fatal: on a parallel FS (/pools) under
+        # heavy concurrency, shutil.rmtree's scandir/unlink may see a file
+        # (e.g. RAxML_output.mfresolv_*) vanish between listing and unlink
+        # -> FileNotFoundError. The analysis is already finished at this point; ignore it.
         if not self.debug and os.path.isdir(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
     
     def exit_fatal_error(self, msg=None):
         if msg:

@@ -38,6 +38,20 @@ def sativa_summary_inputs(_wildcards):
     return [_sativa_summary_path(task) for task in _sativa_tasks()]
 
 
+def _sativa_integration_path(task):
+    return os.path.join(
+        SATIVA_OUTPUT_DIR,
+        task["barcode"],
+        f"alignments_{task['tax_level']}",
+        task["taxon"],
+        "integration.json",
+    )
+
+
+def sativa_integration_inputs(_wildcards):
+    return [_sativa_integration_path(task) for task in _sativa_tasks()]
+
+
 def sativa_task_msa_path(wildcards):
     for task in _sativa_tasks():
         if (
@@ -52,23 +66,36 @@ def sativa_task_msa_path(wildcards):
 # ---------------------------------------------------------------------------
 # Manifest generation (checkpoint)
 # ---------------------------------------------------------------------------
-checkpoint sativa_task_manifest:
-    input:
-        msa_report="data/processed/msa_run_report.json"
-    output:
-        manifest=SATIVA_MANIFEST
-    params:
-        input_msa_dir=config["sativa"]["input_msa_dir"],
-        barcodes=config["sativa"]["barcodes"],
-        tax_levels=config["sativa"]["tax_levels"]
-    log:
-        "logs/sativa/manifest.log"
-    benchmark:
-        "benchmarks/sativa/manifest.benchmark.txt"
-    conda:
-        "../envs/sativa.yaml"
-    script:
-        "../scripts/Sativa/prepare_sativa_manifest.py"
+if BU_ENABLED:
+    # Bottom-up switch: SATIVA consumes the manifest produced by bottomup_collect
+    # (already in the right format, {taxon}=msa_id filesystem-safe).
+    checkpoint sativa_task_manifest:
+        input:
+            manifest=BU_SATIVA_MANIFEST
+        output:
+            manifest=SATIVA_MANIFEST
+        log:
+            "logs/sativa/manifest.log"
+        shell:
+            "cp {input.manifest} {output.manifest}"
+else:
+    checkpoint sativa_task_manifest:
+        input:
+            msa_report="data/processed/msa_run_report.json"
+        output:
+            manifest=SATIVA_MANIFEST
+        params:
+            input_msa_dir=config["sativa"]["input_msa_dir"],
+            barcodes=config["sativa"]["barcodes"],
+            tax_levels=config["sativa"]["tax_levels"]
+        log:
+            "logs/sativa/manifest.log"
+        benchmark:
+            "benchmarks/sativa/manifest.benchmark.txt"
+        conda:
+            "../envs/sativa.yaml"
+        script:
+            "../scripts/Sativa/prepare_sativa_manifest.py"
 
 
 # ---------------------------------------------------------------------------
@@ -156,19 +183,47 @@ rule sativa_visualization:
 
 
 # ---------------------------------------------------------------------------
-# SATIVA integration into the database
+# SATIVA integration into the database — scattered per clade
+#
+# Each clade is integrated as soon as its SATIVA job finishes, so the DB/CoL I/O
+# (the bulk of integration wall-clock, ~0 CPU) overlaps with the remaining SATIVA
+# compute of other clades instead of running as one job after the barrier.
+# Concurrent writes are safe (add_taxonomy handles the insert race; bulk ops +
+# writer_retry absorb contention). db_lock keeps the same lever as the format rules
+# (no effect unless `--resources db_lock=N` is passed; use db_lock=1 to serialise
+# SQLite). On PostgreSQL/YugabyteDB the jobs run concurrently under `-j`.
 # ---------------------------------------------------------------------------
-rule sativa_integrate:
+rule sativa_integrate_task:
     input:
-        sativa_report=SATIVA_REPORT,
+        summary=os.path.join(
+            SATIVA_OUTPUT_DIR, "{barcode}", "alignments_{level}", "{taxon}", "sativa.summary.json"
+        ),
         db=get_db_path()
     output:
-        report=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json"
+        report=os.path.join(
+            SATIVA_OUTPUT_DIR, "{barcode}", "alignments_{level}", "{taxon}", "integration.json"
+        )
     params:
-        db_path=get_db_path(),
-        sativa_output_dir=SATIVA_OUTPUT_DIR,
-        barcodes=config["sativa"]["barcodes"],
-        tax_levels=config["sativa"]["tax_levels"]
+        sativa_output_dir=SATIVA_OUTPUT_DIR
+    resources:
+        db_lock=GLOBAL_DB_LOCK
+    log:
+        "logs/sativa/integrate_tasks/{barcode}/{level}/{taxon}.log"
+    benchmark:
+        "benchmarks/sativa/integrate_tasks/{barcode}.{level}.{taxon}.benchmark.txt"
+    conda:
+        "../envs/sativa.yaml"
+    script:
+        "../scripts/Sativa/integrate_sativa.py"
+
+
+# Barrier: aggregate the per-clade integration reports into the single report the
+# downstream steps expect. Keeps the rule name/output stable for sativa_visualization.
+rule sativa_integrate:
+    input:
+        clade_reports=sativa_integration_inputs
+    output:
+        report=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json"
     log:
         "logs/sativa/integrate_sativa.log"
     benchmark:
@@ -176,4 +231,4 @@ rule sativa_integrate:
     conda:
         "../envs/sativa.yaml"
     script:
-        "../scripts/Sativa/integrate_sativa.py"
+        "../scripts/Sativa/collect_sativa_integration.py"

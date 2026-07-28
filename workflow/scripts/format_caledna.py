@@ -117,7 +117,6 @@ class CALeDNAParser:
         """
         logger.info(f"Extracting files from {zip_path}")
         
-        # Create a temporary folder
         temp_dir = tempfile.mkdtemp(prefix="caledna_extract_")
         
         fasta_file = None
@@ -153,7 +152,6 @@ class CALeDNAParser:
                     raise FileNotFoundError("No taxonomy file found in the archive")
                 
         except Exception as e:
-            # Clean up on error
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
             raise e
@@ -576,7 +574,6 @@ class CALeDNAParser:
             logger.error(f"Critical error in processing pipeline: {e}", exc_info=True)
             raise
         finally:
-            # Cleanup
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
                 logger.info(f"Cleaned up temporary directory: {temp_dir}")
@@ -630,7 +627,6 @@ def main():
             }
             database_formatting = {}
 
-        # Import and initialization
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
@@ -669,7 +665,6 @@ def main():
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Save the report
         if 'snakemake' in globals():
             with open(output_report, 'w') as f:
                 json.dump(report_data, f, indent=2)

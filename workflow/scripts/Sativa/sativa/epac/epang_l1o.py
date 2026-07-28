@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Leave-one-out via EPA-ng, en remplacement de RAxML `-f O` dans SATIVA.
+"""Leave-one-out via EPA-ng, replacing RAxML `-f O` in SATIVA.
 
-Produit une liste de placements au MÊME format que EpaJsonParser.get_placement(),
-avec des numéros d'arête = numérotation B= du refjson (celle qu'attend
-classify_seq via bid_taxonomy_map). La classification/décision reste 100% SATIVA.
+Produces a placement list in the SAME format as EpaJsonParser.get_placement(),
+with edge numbers = the refjson B= numbering (the one classify_seq expects via
+bid_taxonomy_map). The classification/decision stays 100% SATIVA.
 
-Approche : k-fold. Pour chaque pli, on retire ses feuilles de l'arbre+alignement de
-référence et on place les séquences du pli avec EPA-ng ; on remappe les arêtes EPA-ng
-vers B= par bipartition de feuilles. Tous les placements sont conservés
-(--filter-acc-lwr 0.99999 --filter-max 100000) pour retrouver la masse de LWR complète.
+Approach: k-fold. For each fold, its leaves are removed from the reference tree +
+alignment and the fold's sequences are placed with EPA-ng; the EPA-ng edges are
+remapped to B= by leaf bipartition. All placements are kept
+(--filter-acc-lwr 0.99999 --filter-max 100000) to recover the full LWR mass.
 """
 import os, sys, re, json, glob, subprocess, shutil
 sys.setrecursionlimit(200000)
 from ete3 import Tree
 
-# epa-ng résolu depuis le PATH (fourni par l'env conda sativa.yaml) ; surchargeable
+# epa-ng resolved from PATH (provided by the sativa.yaml conda env); overridable
 # via CURATEMAKE_EPANG_BIN.
 EPANG = os.environ.get("CURATEMAKE_EPANG_BIN") or shutil.which("epa-ng") or "epa-ng"
 
@@ -57,14 +57,14 @@ def run_epang_l1o(refjson_tree_str, refaln_path, reftree_path, raxml_outdir,
         if log: log.info("[epang-l1o] " + m)
         else: sys.stderr.write("[epang-l1o] " + m + "\n")
 
-    # modèle EPA-ng : RAxML_info.mfresolv si présent, sinon GTR+G (EPA-ng ré-évalue)
+    # EPA-ng model: RAxML_info.mfresolv if present, otherwise GTR+G (EPA-ng re-evaluates)
     info = glob.glob(os.path.join(raxml_outdir, "RAxML_info.mfresolv*"))
     model = info[0] if info else "GTR+G"
-    _log("modèle EPA-ng: %s" % model)
+    _log("EPA-ng model: %s" % model)
 
     bidmap, allL = _bip_map(refjson_tree_str, "B")        # bipartition -> B-id
     aln = _read_fasta(refaln_path)
-    # aligner les clés de l'alignement sur les noms de feuilles
+    # align the alignment keys onto the leaf names
     leaves = list(allL)
     aln_by_leaf = {}
     for lf in leaves:
@@ -73,7 +73,7 @@ def run_epang_l1o(refjson_tree_str, refaln_path, reftree_path, raxml_outdir,
                 aln_by_leaf[lf] = aln[cand]; break
     missing = [l for l in leaves if l not in aln_by_leaf]
     if missing:
-        raise RuntimeError("epang-l1o: %d feuilles sans séquence (ex %s)" % (len(missing), missing[:3]))
+        raise RuntimeError("epang-l1o: %d leaves without a sequence (e.g. %s)" % (len(missing), missing[:3]))
 
     full_tree = Tree(reftree_path, format=1)
     ordered = sorted(leaves)
@@ -131,13 +131,13 @@ def run_epang_l1o(refjson_tree_str, refaln_path, reftree_path, raxml_outdir,
 
 
 def run_epang_final(reftree_path, refaln_path, raxml_outdir, workdir, threads=1, log=None):
-    """Passe 2 (confirmation) via EPA-ng, en remplacement du RAxML `-f v` de run_epa_once.
+    """Pass 2 (confirmation) via EPA-ng, replacing the RAxML `-f v` of run_epa_once.
 
-    Place les séquences 'suspectes' (celles élaguées de l'arbre = alignement de réf MOINS
-    les feuilles de l'arbre élagué) sur l'arbre de référence débarrassé des mislabels, et
-    écrit un jplace directement consommable par EpaJsonParser (arbre {N} + placements
-    auto-cohérents : le bid_tax_map est reconstruit à partir de cet arbre par SATIVA).
-    Renvoie le chemin du jplace, ou None si aucune séquence suspecte.
+    Places the 'suspect' sequences (those pruned from the tree = reference alignment MINUS
+    the pruned tree's leaves) onto the mislabel-free reference tree, and writes a jplace
+    directly consumable by EpaJsonParser (tree {N} + self-consistent placements: the
+    bid_tax_map is rebuilt from that tree by SATIVA).
+    Returns the jplace path, or None if there is no suspect sequence.
     """
     def _log(m):
         (log.info if log else (lambda x: sys.stderr.write(x + "\n")))("[epang-final] " + m)
@@ -152,7 +152,7 @@ def run_epang_final(reftree_path, refaln_path, raxml_outdir, workdir, threads=1,
     ref_seqs = {n: s for n, s in aln.items() if n in ref_leaves}
     query_seqs = {n: s for n, s in aln.items() if n not in ref_leaves}
     if not query_seqs:
-        _log("aucune séquence suspecte à replacer")
+        _log("no suspect sequence to re-place")
         return None
     _write_fasta(ref_seqs, os.path.join(workdir, "ref.fasta"))
     _write_fasta(query_seqs, os.path.join(workdir, "query.fasta"))
@@ -165,5 +165,5 @@ def run_epang_final(reftree_path, refaln_path, raxml_outdir, workdir, threads=1,
     jpf = os.path.join(workdir, "epa_result.jplace")
     if r.returncode != 0 or not os.path.isfile(jpf):
         raise RuntimeError("EPA-ng final placement failed: " + (r.stderr[-300:] if r.stderr else "no jplace"))
-    _log("%d suspects replacés (modèle %s)" % (len(query_seqs), os.path.basename(model)))
+    _log("%d suspects re-placed (model %s)" % (len(query_seqs), os.path.basename(model)))
     return jpf

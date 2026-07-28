@@ -6,31 +6,51 @@ Snakemake rules for generating HTML reports
 import os
 
 
-rule sequence_flow_report:
-    """
-    Generate an interactive visual report of sequence flow through the pipeline
-    """
-    input:
-        final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
-        formatting_summary="data/processed/formatting_summary.json",
-        itsx_deduplicate_pre="data/processed/itsx_deduplicate_pre.json",
-        itsx_deduplicate_post="data/processed/itsx_deduplicate_post.json",
-        itsx_process="data/processed/itsx_process.json",
-        itsx_prepare="data/processed/itsx_prepare_report.json",
-        msa_prepare="data/processed/msa_prepare_report.json",
-        msa_run="data/processed/msa_run_report.json"
-    output:
-        report="reports/html/sequence_flow_report.html"
-    params:
-        processed_dir="data/processed"
-    log:
-        "logs/reports/sequence_flow_report.log"
-    benchmark:
-        "benchmarks/reports/sequence_flow_report.benchmark.txt"
-    conda:
-        "../envs/sativa.yaml"  # Uses the SATIVA environment, which includes plotly
-    script:
-        "../scripts/generate_sequence_flow_report.py"
+_FLOW_BU = config["msa"].get("bottomup", {})
+_FLOW_COMMON_IN = dict(
+    final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
+    formatting_summary="data/processed/formatting_summary.json",
+    itsx_deduplicate_pre="data/processed/itsx_deduplicate_pre.json",
+    itsx_deduplicate_post="data/processed/itsx_deduplicate_post.json",
+    itsx_process="data/processed/itsx_process.json",
+    itsx_prepare="data/processed/itsx_prepare_report.json",
+    msa_prepare="data/processed/msa_prepare_report.json",
+)
+
+if _FLOW_BU.get("enabled", False):
+    rule sequence_flow_report:
+        """Flow report (mode bottom-up : lit le summary bottom-up au lieu de msa_run)."""
+        input:
+            bottomup_summary=_FLOW_BU.get("summary", "data/MSA/bottomup/bottomup_summary.json"),
+            **_FLOW_COMMON_IN
+        output:
+            report="reports/html/sequence_flow_report.html"
+        params:
+            processed_dir="data/processed"
+        log:
+            "logs/reports/sequence_flow_report.log"
+        conda:
+            "../envs/sativa.yaml"
+        script:
+            "../scripts/generate_sequence_flow_report.py"
+else:
+    rule sequence_flow_report:
+        """Generate an interactive visual report of sequence flow through the pipeline."""
+        input:
+            msa_run="data/processed/msa_run_report.json",
+            **_FLOW_COMMON_IN
+        output:
+            report="reports/html/sequence_flow_report.html"
+        params:
+            processed_dir="data/processed"
+        log:
+            "logs/reports/sequence_flow_report.log"
+        benchmark:
+            "benchmarks/reports/sequence_flow_report.benchmark.txt"
+        conda:
+            "../envs/sativa.yaml"  # Uses the SATIVA environment, which includes plotly
+        script:
+            "../scripts/generate_sequence_flow_report.py"
 
 
 rule sativa_taxonomy_report:

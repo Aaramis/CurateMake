@@ -535,7 +535,6 @@ def main():
                 'max_n_fraction': 0.1
             }
 
-        # Import and initialization
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
@@ -578,7 +577,6 @@ def main():
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
         }
 
-        # Save the report
         if 'snakemake' in globals():
             Path(output_report).parent.mkdir(parents=True, exist_ok=True)
             with open(output_report, 'w') as f:
