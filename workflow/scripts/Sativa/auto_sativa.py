@@ -374,6 +374,7 @@ def main():
             parser.add_argument("--confidence", type=float, default=0.6, help="Confidence threshold")
             parser.add_argument("--taxonomy-code", type=str, default="BOT", help="Taxonomy code")
             parser.add_argument("--rand-seed", type=int, default=None, help="Random seed forwarded to SATIVA/RAxML")
+            parser.add_argument("--timeout", type=int, default=21600, help="SATIVA timeout (seconds)")
 
             args = parser.parse_args()
 
@@ -469,7 +470,7 @@ def main():
         sativa_start = time.time()
 
         # Get timeout from params (default: 6 hours = 21600 seconds)
-        timeout_seconds = snakemake.params.get('timeout_seconds', 21600) if 'snakemake' in globals() else None
+        timeout_seconds = snakemake.params.get('timeout_seconds', 21600) if 'snakemake' in globals() else args.timeout
 
         run_sativa(
             fasta_path=fasta_path,
@@ -536,6 +537,28 @@ def main():
 
         logger.info(f"Timeout summary written to: {summary_path}")
         logger.info("Exiting with success (timeout)")
+        sys.exit(0)
+
+    except subprocess.CalledProcessError as e:
+        # SATIVA (sativa.py) itself failed on THIS MSA — typically a degenerate alignment
+        # (too few informative sites, marginal genus-only/small clade). This is a per-MSA
+        # outcome, not a pipeline failure: record an "error" summary and exit 0 so the run
+        # continues (the sequences of this MSA are simply left unvalidated).
+        logger.warning(f"SATIVA failed on this MSA (recorded as error, not fatal): {e}")
+        result = SativaResult(
+            barcode=barcode if 'barcode' in locals() else "unknown",
+            tax_level=tax_level if 'tax_level' in locals() else "unknown",
+            taxon=taxon if 'taxon' in locals() else "unknown",
+            n_seq=n_seq if 'n_seq' in locals() else 0,
+            aln_len=aln_len if 'aln_len' in locals() else 0,
+            status="error",
+            reason=f"SATIVA execution failed: {str(e)[:400]}",
+            runtime_sec=time.time() - start_time
+        )
+        summary_path = output_dir / "sativa.summary.json"
+        with summary_path.open('w', encoding='utf-8') as f:
+            json.dump(asdict(result), f, indent=2)
+        logger.info(f"Error summary written to: {summary_path}; exiting 0 (per-MSA SATIVA failure)")
         sys.exit(0)
 
     except Exception as e:

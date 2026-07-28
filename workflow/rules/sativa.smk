@@ -106,7 +106,8 @@ rule sativa_task:
         confidence=config["sativa"]["confidence_threshold"],
         taxonomy_code=config["sativa"]["taxonomy_code"],
         timeout_seconds=config["sativa"]["timeout_seconds"],
-        rand_seed=config["sativa"].get("rand_seed")
+        rand_seed_arg=(f"--rand-seed {config['sativa']['rand_seed']}"
+                       if config["sativa"].get("rand_seed") is not None else "")
     threads: config["sativa"]["threads"]
     resources:
         sativa_jobs=1
@@ -116,8 +117,28 @@ rule sativa_task:
         "benchmarks/sativa/tasks/{barcode}.{level}.{taxon}.benchmark.txt"
     conda:
         "../envs/sativa.yaml"
-    script:
-        "../scripts/Sativa/auto_sativa.py"
+    # Run the real script file (shell) rather than Snakemake's `script:` temp-copy
+    # mechanism, which races on the parallel FS under high job concurrency
+    # (.snakemake/scripts/tmp*.auto_sativa.py missing / 0-byte).
+    shell:
+        """
+        python workflow/scripts/Sativa/auto_sativa.py \
+            --msa {input.msa} \
+            --outdir {params.outdir} \
+            --taxon {params.taxon} \
+            --barcode {params.barcode} \
+            --tax-level {params.tax_level} \
+            --log-file {log} \
+            --max-seqs {params.max_seqs} \
+            --max-len {params.max_len} \
+            --threads {threads} \
+            --sativa-script {params.sativa_script} \
+            --sativa-mode {params.sativa_mode} \
+            --confidence {params.confidence} \
+            --taxonomy-code {params.taxonomy_code} \
+            --timeout {params.timeout_seconds} \
+            {params.rand_seed_arg}
+        """
 
 # ---------------------------------------------------------------------------
 # Aggregate report
@@ -188,6 +209,7 @@ rule sativa_integrate_task:
         sativa_output_dir=SATIVA_OUTPUT_DIR
     resources:
         db_lock=GLOBAL_DB_LOCK
+    retries: 3            # same transient temp-script race as sativa_task
     log:
         "logs/sativa/integrate_tasks/{barcode}/{level}/{taxon}.log"
     benchmark:
