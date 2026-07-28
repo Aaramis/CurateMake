@@ -108,12 +108,16 @@ def main() -> None:
     # per_msa: msa_id -> number of re-inserted orphans; msa_id = "{barcode}__{family}__{NNNN}".
     n_reinserted_total = 0
     n_unassigned_total = 0
+    n_orphans_total = n_residual                # family singletons (fallback if no report)
+    n_no_family_recovered = 0
     if args.residual_report:
         try:
             with open(args.residual_report, encoding="utf-8") as fh:
                 residual = json.load(fh)
             n_reinserted_total = residual.get("n_integrated", 0)
             n_unassigned_total = residual.get("n_unassigned", 0)
+            n_orphans_total = residual.get("n_residual", n_residual)   # family singletons + no-family
+            n_no_family_recovered = residual.get("n_no_family", 0)
             for msa_id, cnt in residual.get("per_msa", {}).items():
                 bc = msa_id.split("__", 1)[0]
                 pb = per_barcode.setdefault(bc, {"ref_seqs": 0, "residual": 0, "reinserted": 0, "n_msa": 0})
@@ -129,7 +133,8 @@ def main() -> None:
         "total_sequences": split.get("total_sequences", 0),
         "n_no_family": split.get("n_no_family", 0),
         "n_msa_total": len(final_msas),
-        "n_residual_total": n_residual,
+        "n_residual_total": n_orphans_total,
+        "n_no_family_recovered": n_no_family_recovered,
         "n_reinserted_total": n_reinserted_total,
         "n_unassigned_total": n_unassigned_total,
         "gate_pass_total": gate_pass,

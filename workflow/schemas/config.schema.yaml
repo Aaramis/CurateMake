@@ -84,9 +84,6 @@ properties:
           sativa_min_seqs:
             type: integer
             minimum: 1
-          sativa_min_taxa:
-            type: integer
-            minimum: 1
           contamination_flag_ranks:
             type: array
             items:
