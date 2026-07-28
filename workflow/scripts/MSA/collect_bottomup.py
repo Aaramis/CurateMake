@@ -7,10 +7,9 @@ Two sources:
   - CLIMBED manifest (climb_lineage): the AUTHORITATIVE list of final MSAs
     (climbed cross-family merges + passthrough), which feeds SATIVA.
 
-SATIVA selection: an MSA is sent to SATIVA only if it has real validation power,
-i.e. taxonomic DIVERSITY (n_taxa >= sativa_min_taxa) — at least 2 distinct taxa are
-needed to detect a mislabel. A large single-species MSA is useless to SATIVA
-(validated by membership). `sativa_min_seqs` stays a secondary size floor.
+SATIVA selection: every MSA with at least `sativa_min_seqs` sequences goes to SATIVA
+(including genus-only / single-species MSAs — SATIVA can still flag topological
+intruders there).
 """
 
 import argparse
@@ -32,9 +31,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-summary", required=True)
     p.add_argument("--sativa-manifest", help="SATIVA-compatible manifest to emit (optional).")
     p.add_argument("--sativa-min-seqs", type=int, default=4,
-                   help="Size floor (secondary) for SATIVA.")
-    p.add_argument("--sativa-min-taxa", type=int, default=2,
-                   help="Min diversity (number of distinct taxa) to validate via SATIVA.")
+                   help="Size floor: only MSAs with >= this many sequences go to SATIVA.")
     p.add_argument("--contamination-report", default=None,
                    help="Contamination report: emptied (re-homed) MSAs are excluded from SATIVA.")
     p.add_argument("--residual-report", default=None,
@@ -91,7 +88,6 @@ def main() -> None:
     gate_pass = sum(1 for e in final_msas if e.get("gate_pass"))
     sativa_tasks = []
     sativa_barcodes = set()
-    n_low_diversity = 0
     for e in final_msas:
         barcode = e.get("barcode", "ITS")
         pb = per_barcode.setdefault(barcode, {"ref_seqs": 0, "residual": 0, "reinserted": 0, "n_msa": 0})
@@ -99,10 +95,6 @@ def main() -> None:
         pb["n_msa"] += 1
         sativa_barcodes.add(barcode)
         if not e.get("msa_path"):
-            continue
-        # DIVERSITY first (validation power), size as a secondary floor
-        if e.get("n_taxa", 0) < args.sativa_min_taxa:
-            n_low_diversity += 1
             continue
         if e.get("n", 0) < args.sativa_min_seqs:
             continue
@@ -144,7 +136,6 @@ def main() -> None:
         "climbed": climbed.get("climbed", {}),
         "stop_levels": dict(stop_levels),
         "sativa_selected": len(sativa_tasks),
-        "sativa_skipped_low_diversity": n_low_diversity,
         "per_barcode": per_barcode,
         "residual_files": residual_files,
         "per_family": per_family,
@@ -159,7 +150,6 @@ def main() -> None:
             "source": "bottomup",
             "total_tasks": len(sativa_tasks),
             "min_seqs": args.sativa_min_seqs,
-            "min_taxa": args.sativa_min_taxa,
             "barcodes": sorted(sativa_barcodes),
             "tax_levels": sorted({t["tax_level"] for t in sativa_tasks}),
             "tasks": sativa_tasks,
@@ -167,9 +157,8 @@ def main() -> None:
         Path(args.sativa_manifest).parent.mkdir(parents=True, exist_ok=True)
         with open(args.sativa_manifest, "w", encoding="utf-8") as fh:
             json.dump(sativa_manifest, fh, indent=2)
-        logger.info("SATIVA manifest: %d tasks (>= %d taxa, >= %d seqs); %d MSAs skipped (diversity < %d).",
-                    len(sativa_tasks), args.sativa_min_taxa, args.sativa_min_seqs,
-                    n_low_diversity, args.sativa_min_taxa)
+        logger.info("SATIVA manifest: %d tasks (>= %d seqs).",
+                    len(sativa_tasks), args.sativa_min_seqs)
 
     logger.info("Bottom-up: %d families, %d final MSAs, %d residual, climbed=%s, levels=%s",
                 summary["n_families"], len(final_msas), n_residual,

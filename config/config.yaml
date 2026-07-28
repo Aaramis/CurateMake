@@ -159,12 +159,7 @@ msa:
     # SATIVA manifest: only validate MSAs with enough DIVERSITY (>=2 distinct taxa
     # -> real mislabel-detection power), with a secondary size floor.
     sativa_manifest: "results/MSA/bottomup/sativa_manifest.json"
-    sativa_min_seqs: 4
-    # Diversity gate for SATIVA. 1 = OFF (default): every MSA with >= sativa_min_seqs goes
-    # to SATIVA (single-species MSAs still catch intra-cluster intruders). Raise to 2+ to
-    # only validate MSAs with >=N distinct taxa (skips single-species MSAs) — this can drop
-    # coverage sharply when most lineages stop at the species level.
-    sativa_min_taxa: 1
+    sativa_min_seqs: 4     # size floor: only MSAs with >= this many sequences go to SATIVA
     # COARSE contamination tier (cross-kingdom/phylum): classifies each MSA against the
     # profile lib (top-k consensus) and compares homology to the label. Complements SATIVA
     # (which only sees the fine intra-clade mislabels).

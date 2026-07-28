@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
 """
-Classification + integration of the RESIDUAL orphans from the bottom-up construction.
+Classification + integration of the RESIDUAL orphans from the bottom-up construction,
+plus the sequences that had NO family (they cannot enter a family tree, so they are
+recovered here by homology instead of being dropped).
 
-The residual (singletons + unplaced sequences) is small (~1000x less than the old
-flow). We reuse the existing machinery, resized:
+Sources of orphans:
+  - per-family residual.fasta (singletons + unplaced sequences);
+  - the _no_family.csv produced by split_families.
+
+Steps:
   1. concatenate the HMM profiles of all reference MSAs -> library
-  2. hmmsearch the residual against the library -> best MSA per sequence
+  2. hmmsearch the orphans against the library -> best MSA per sequence (by homology;
+     no barcode constraint — placement follows real homology, not the annotated barcode,
+     which may itself be wrong; a true ITS1 will not score against an ITS2 profile anyway)
   3. add each orphan to its assigned MSA (hmmalign --mapali, fallback mafft --add)
-Emits a JSON report. The assigned MSAs are mutated in place (like the old integration).
+Emits a JSON report. The assigned MSAs are mutated in place.
 """
 
 import argparse
+import csv
 import json
 import logging
 import os
 import tempfile
-from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -54,9 +61,25 @@ def read_fasta(path):
     return recs
 
 
+def read_no_family_csv(path):
+    """Returns [(seq_id, tax_dict, sequence)] from the _no_family.csv."""
+    recs = []
+    with open(path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            sid = (row.get("seq_id") or "").strip()
+            seq = (row.get("sequence") or "").replace("-", "").replace(".", "").upper()
+            if not sid or not seq:
+                continue
+            tax = {r: (row.get(r) or "").strip() for r in RANKS}
+            recs.append((sid, tax, seq))
+    return recs
+
+
 def parse_args():
-    p = argparse.ArgumentParser(description="Classify+integrate residual orphans (bottom-up).")
+    p = argparse.ArgumentParser(description="Classify+integrate residual orphans + no-family seqs (bottom-up).")
     p.add_argument("--family-manifests", nargs="*", default=[])
+    p.add_argument("--no-family-csv", default=None,
+                   help="split_families _no_family.csv: seqs without a family, recovered by homology.")
     p.add_argument("--output-report", required=True)
     p.add_argument("--max-evalue", type=float, default=1e-3)
     p.add_argument("--threads", type=int, default=4)
@@ -73,10 +96,10 @@ def main():
         h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
         logger.addHandler(h)
 
-    # 1. map msa_id -> (msa_path, profile_path) + collect the residuals
+    # 1. map msa_id -> entry + collect the orphans (per-family residual.fasta + no-family CSV).
     msa_map = {}
-    residual_recs = []
     profile_paths = []
+    orphan_recs = []            # (seq_id, tax_dict, seq)
     for mpath in args.family_manifests:
         m = json.load(open(mpath, encoding="utf-8"))
         for e in m.get("msas", []):
@@ -85,13 +108,20 @@ def main():
                 profile_paths.append(e["profile_path"])
         res = Path(mpath).parent / "residual.fasta"
         if res.exists():
-            residual_recs.extend(read_fasta(str(res)))
+            orphan_recs.extend(read_fasta(str(res)))
 
-    report = {"n_residual": len(residual_recs), "n_profiles": len(profile_paths),
-              "n_classified": 0, "n_integrated": 0, "n_unassigned": 0, "per_msa": {}}
+    n_no_family = 0
+    if args.no_family_csv and os.path.exists(args.no_family_csv):
+        nf = read_no_family_csv(args.no_family_csv)
+        orphan_recs.extend(nf)
+        n_no_family = len(nf)
 
-    if not residual_recs or not profile_paths:
-        logger.info("Nothing to do (residual=%d, profiles=%d).", len(residual_recs), len(profile_paths))
+    report = {"n_residual": len(orphan_recs), "n_no_family": n_no_family,
+              "n_profiles": len(profile_paths), "n_classified": 0, "n_integrated": 0,
+              "n_unassigned": 0, "per_msa": {}}
+
+    if not orphan_recs or not profile_paths:
+        logger.info("Nothing to do (orphans=%d, profiles=%d).", len(orphan_recs), len(profile_paths))
         Path(args.output_report).parent.mkdir(parents=True, exist_ok=True)
         json.dump(report, open(args.output_report, "w"), indent=2)
         return
@@ -106,16 +136,18 @@ def main():
 
         # df with the taxonomy (columns kingdom..species) to propagate it to the integration
         df = pd.DataFrame(
-            [{"seq_id": sid, "sequence": seq, **tax} for sid, tax, seq in residual_recs]
+            [{"seq_id": sid, "sequence": seq, **tax} for sid, tax, seq in orphan_recs]
         ).drop_duplicates("seq_id")
-        # hmmsearch: bare headers (tax_columns=[]) -> raw seq_id for the reclassification
+        # hmmsearch: bare headers (tax_columns=[]) -> raw seq_id for the reclassification.
+        # Placement is by homology only (no barcode filter): a mislabelled barcode should
+        # not block a real homology hit, and a true ITS1 won't score against an ITS2 profile.
         assignments = run_hmmsearch(
             sequences_df=df, hmm_db_path=lib, seq_col="sequence",
             max_thread_workers=args.threads, tax_columns=[], id_col="seq_id",
             max_evalue=args.max_evalue,
         )
         report["n_classified"] = int(len(assignments))
-        report["n_unassigned"] = len(df) - len(assignments)
+        report["n_unassigned"] = len(df) - int(len(assignments))
 
         # 3. integration per assigned MSA (WITH taxonomy -> SATIVA can validate the orphans)
         for msa_id, grp in assignments.groupby("assigned_msa"):
@@ -150,8 +182,9 @@ def main():
 
     Path(args.output_report).parent.mkdir(parents=True, exist_ok=True)
     json.dump(report, open(args.output_report, "w"), indent=2)
-    logger.info("Residual: %d classified, %d integrated, %d unassigned.",
-                report["n_classified"], report["n_integrated"], report["n_unassigned"])
+    logger.info("Residual+no-family: %d orphans (%d no-family), %d classified, %d integrated, %d unassigned.",
+                report["n_residual"], report["n_no_family"], report["n_classified"],
+                report["n_integrated"], report["n_unassigned"])
 
 
 if __name__ == "__main__":

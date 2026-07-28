@@ -18,7 +18,6 @@ BU_RESIDUAL_REPORT = _bu.get("residual_report", "results/MSA/bottomup/residual_r
 BU_RESIDUAL_EVALUE = float(_bu.get("residual_evalue", 1e-3))
 BU_SATIVA_MANIFEST = _bu.get("sativa_manifest", "results/MSA/bottomup/sativa_manifest.json")
 BU_SATIVA_MIN_SEQS = int(_bu.get("sativa_min_seqs", 4))
-BU_SATIVA_MIN_TAXA = int(_bu.get("sativa_min_taxa", 2))
 BU_CLIMBED_MANIFEST = _bu.get("climbed_manifest", "results/MSA/bottomup/climbed_manifest.json")
 BU_CLIMB_RANKS = _bu.get("climb_ranks", ["order", "class", "phylum"])
 BU_CONTAM_REPORT = _bu.get("contamination_report", "results/MSA/bottomup/contamination_report.json")
@@ -161,8 +160,7 @@ rule bottomup_collect:
         summary=BU_SUMMARY,
         sativa_manifest=BU_SATIVA_MANIFEST
     params:
-        min_seqs=BU_SATIVA_MIN_SEQS,
-        min_taxa=BU_SATIVA_MIN_TAXA
+        min_seqs=BU_SATIVA_MIN_SEQS
     log:
         "logs/MSA/bottomup/collect.log"
     conda:
@@ -176,7 +174,6 @@ rule bottomup_collect:
             --output-summary {output.summary} \
             --sativa-manifest {output.sativa_manifest} \
             --sativa-min-seqs {params.min_seqs} \
-            --sativa-min-taxa {params.min_taxa} \
             --contamination-report {input.contamination} \
             --residual-report {input.residual} \
             --log-file {log}
@@ -281,7 +278,8 @@ rule bottomup_residual:
     output:
         report=BU_RESIDUAL_REPORT
     params:
-        max_evalue=BU_RESIDUAL_EVALUE
+        max_evalue=BU_RESIDUAL_EVALUE,
+        no_family_csv=os.path.join(BU_FAMILIES_DIR, "_no_family.csv")
     threads: int(_bu.get("residual_threads", 8))
     log:
         "logs/MSA/bottomup/residual.log"
@@ -293,6 +291,7 @@ rule bottomup_residual:
         """
         python workflow/scripts/MSA/residual_classify_integrate.py \
             --family-manifests {input.families} \
+            --no-family-csv {params.no_family_csv} \
             --output-report {output.report} \
             --max-evalue {params.max_evalue} \
             --threads {threads} \

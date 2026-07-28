@@ -185,10 +185,10 @@ def build_html(summary, msas, residual, contamination):
                     <p>Residual orphans: <strong>{n_res:,}</strong>
                        (re-inserted by hmmsearch: <strong>{summary.get('n_reinserted_total', 0):,}</strong>,
                         unassigned: <strong>{summary.get('n_unassigned_total', 0):,}</strong>)</p>
-                    <p>Sequences without a family: <strong>{summary.get('n_no_family', 0):,}</strong></p>
+                    <p>Sequences without a family: <strong>{summary.get('n_no_family', 0):,}</strong>
+                       (recovered by hmmsearch into nearby MSAs at the residual step)</p>
                     <p>MSAs sent to SATIVA: <strong>{summary.get('sativa_selected', 0):,}</strong>
-                       &nbsp;|&nbsp; skipped (diversity below threshold):
-                       <strong>{summary.get('sativa_skipped_low_diversity', 0):,}</strong></p>
+                       (every MSA with &ge; sativa_min_seqs sequences)</p>
                 </div>
             </div>
 
