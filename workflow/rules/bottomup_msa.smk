@@ -226,7 +226,8 @@ rule contam_search:
         shard=os.path.join(BU_CONTAM_DIR, "shards", "shard_{b}.hmm"),
         reps=os.path.join(BU_CONTAM_DIR, "reps.fa")
     output:
-        tbl=os.path.join(BU_CONTAM_DIR, "hits", "{b}.tbl")
+        # transient: consumed only by the bottomup_contamination gather
+        tbl=temp(os.path.join(BU_CONTAM_DIR, "hits", "{b}.tbl"))
     params:
         max_evalue=BU_CONTAM_MAX_EVALUE
     threads: int(_bu.get("contamination_search_threads", 4))

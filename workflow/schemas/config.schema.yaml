@@ -1,0 +1,118 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+description: >
+  CurateMake pipeline configuration. Permissive schema: it checks that the required
+  sections exist and that the user-tunable knobs have sane types/ranges, but allows
+  extra keys everywhere (additionalProperties: true) so it does not fight the config.
+type: object
+additionalProperties: true
+required:
+  - database
+  - databases
+  - msa
+  - sativa
+
+properties:
+
+  itsx_cpu:
+    type: integer
+    minimum: 1
+  itsx_deterministic:
+    type: boolean
+
+  database:
+    type: object
+    additionalProperties: true
+    required: [type]
+    properties:
+      type:
+        type: string
+        enum: [sqlite, postgresql]
+
+  databases:
+    type: object
+    additionalProperties: true
+    minProperties: 1
+
+  msa:
+    type: object
+    additionalProperties: true
+    required: [csv_path, barcodes, output_report, bottomup]
+    properties:
+      csv_path:
+        type: string
+      output_report:
+        type: string
+      create_indexes:
+        type: boolean
+      barcodes:
+        type: array
+        minItems: 1
+        items:
+          type: string
+      bottomup:
+        type: object
+        additionalProperties: true
+        properties:
+          cluster_id:
+            type: number
+            minimum: 0
+            maximum: 1
+          gate_ratio:
+            type: number
+            minimum: 0
+          gate_occ:
+            type: number
+            minimum: 0
+            maximum: 100
+          max_group:
+            type: integer
+            minimum: 1
+          min_ref:
+            type: integer
+            minimum: 1
+          threads_per_family:
+            type: integer
+            minimum: 1
+          residual_threads:
+            type: integer
+            minimum: 1
+          climb_ranks:
+            type: array
+            items:
+              type: string
+              enum: [genus, family, order, class, phylum, kingdom]
+          sativa_min_seqs:
+            type: integer
+            minimum: 1
+          sativa_min_taxa:
+            type: integer
+            minimum: 1
+          contamination_flag_ranks:
+            type: array
+            items:
+              type: string
+          contamination_min_score:
+            type: number
+            minimum: 0
+          contamination_top_k:
+            type: integer
+            minimum: 1
+          contamination_batch_size:
+            type: integer
+            minimum: 1
+          contamination_search_threads:
+            type: integer
+            minimum: 1
+          # e-value knobs may be YAML strings (e.g. "1e-3" has no dot) -> allow both.
+          residual_evalue:
+            type: [number, string]
+          contamination_max_evalue:
+            type: [number, string]
+
+  sativa:
+    type: object
+    additionalProperties: true
+
+  sativa_integration:
+    type: object
+    additionalProperties: true

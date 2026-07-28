@@ -63,13 +63,17 @@ def expand_env_vars(config_dict, parent_key=None):
             return value
     return config_dict
 
-# Charger et configurer le fichier YAML via Snakemake (supporte --config/--configfile)
+# Load the YAML config via Snakemake (supports --config/--configfile)
 configfile: "config/config.yaml"
 
-# Substituer les variables d'environnement
+# Substitute environment variables ({{ env.VAR }} / ${VAR}) from .env
 config = expand_env_vars(config)
 
-# Variables globales
+# Validate the config against the schema (catches missing sections / mistyped knobs early)
+from snakemake.utils import validate
+validate(config, "schemas/config.schema.yaml")
+
+# Global variables
 DATABASES = list(config["databases"].keys())
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 
