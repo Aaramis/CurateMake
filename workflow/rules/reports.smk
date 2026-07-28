@@ -17,40 +17,21 @@ _FLOW_COMMON_IN = dict(
     msa_prepare="data/processed/msa_prepare_report.json",
 )
 
-if _FLOW_BU.get("enabled", False):
-    rule sequence_flow_report:
-        """Flow report (mode bottom-up : lit le summary bottom-up au lieu de msa_run)."""
-        input:
-            bottomup_summary=_FLOW_BU.get("summary", "data/MSA/bottomup/bottomup_summary.json"),
-            **_FLOW_COMMON_IN
-        output:
-            report="reports/html/sequence_flow_report.html"
-        params:
-            processed_dir="data/processed"
-        log:
-            "logs/reports/sequence_flow_report.log"
-        conda:
-            "../envs/sativa.yaml"
-        script:
-            "../scripts/generate_sequence_flow_report.py"
-else:
-    rule sequence_flow_report:
-        """Generate an interactive visual report of sequence flow through the pipeline."""
-        input:
-            msa_run="data/processed/msa_run_report.json",
-            **_FLOW_COMMON_IN
-        output:
-            report="reports/html/sequence_flow_report.html"
-        params:
-            processed_dir="data/processed"
-        log:
-            "logs/reports/sequence_flow_report.log"
-        benchmark:
-            "benchmarks/reports/sequence_flow_report.benchmark.txt"
-        conda:
-            "../envs/sativa.yaml"  # Uses the SATIVA environment, which includes plotly
-        script:
-            "../scripts/generate_sequence_flow_report.py"
+rule sequence_flow_report:
+    """Flow report (bottom-up: reads the bottom-up summary)."""
+    input:
+        bottomup_summary=_FLOW_BU.get("summary", "data/MSA/bottomup/bottomup_summary.json"),
+        **_FLOW_COMMON_IN
+    output:
+        report="reports/html/sequence_flow_report.html"
+    params:
+        processed_dir="data/processed"
+    log:
+        "logs/reports/sequence_flow_report.log"
+    conda:
+        "../envs/sativa.yaml"
+    script:
+        "../scripts/generate_sequence_flow_report.py"
 
 
 rule sativa_taxonomy_report:

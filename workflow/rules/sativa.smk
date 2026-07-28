@@ -66,36 +66,17 @@ def sativa_task_msa_path(wildcards):
 # ---------------------------------------------------------------------------
 # Manifest generation (checkpoint)
 # ---------------------------------------------------------------------------
-if BU_ENABLED:
-    # Bottom-up switch: SATIVA consumes the manifest produced by bottomup_collect
-    # (already in the right format, {taxon}=msa_id filesystem-safe).
-    checkpoint sativa_task_manifest:
-        input:
-            manifest=BU_SATIVA_MANIFEST
-        output:
-            manifest=SATIVA_MANIFEST
-        log:
-            "logs/sativa/manifest.log"
-        shell:
-            "cp {input.manifest} {output.manifest}"
-else:
-    checkpoint sativa_task_manifest:
-        input:
-            msa_report="data/processed/msa_run_report.json"
-        output:
-            manifest=SATIVA_MANIFEST
-        params:
-            input_msa_dir=config["sativa"]["input_msa_dir"],
-            barcodes=config["sativa"]["barcodes"],
-            tax_levels=config["sativa"]["tax_levels"]
-        log:
-            "logs/sativa/manifest.log"
-        benchmark:
-            "benchmarks/sativa/manifest.benchmark.txt"
-        conda:
-            "../envs/sativa.yaml"
-        script:
-            "../scripts/Sativa/prepare_sativa_manifest.py"
+# SATIVA consumes the manifest produced by bottomup_collect (already in the right
+# format, {taxon}=msa_id filesystem-safe).
+checkpoint sativa_task_manifest:
+    input:
+        manifest=BU_SATIVA_MANIFEST
+    output:
+        manifest=SATIVA_MANIFEST
+    log:
+        "logs/sativa/manifest.log"
+    shell:
+        "cp {input.manifest} {output.manifest}"
 
 
 # ---------------------------------------------------------------------------

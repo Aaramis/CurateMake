@@ -9,7 +9,6 @@ rule generate_benchmark_report:
         # Depends on all steps that generate benchmarks
         final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
         itsx_deduplicate_post="data/processed/itsx_deduplicate_post.json",
-        msa_run_report="data/processed/msa_run_report.json",
         sativa_visualization=config["sativa"]["visualization_report"],
         msa_report=config["msa"]["output_report"],
         sequence_flow="reports/html/sequence_flow_report.html",

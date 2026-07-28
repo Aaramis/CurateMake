@@ -127,66 +127,13 @@ CoL_api:
 
 # Multiple Sequence Alignment (MSA) configuration
 msa:
-  # Deterministic mode: when true, MAFFT uses a fully reproducible invocation
-  # (FFT-NS-2, single thread, input order preserved) and sequences are sorted by
-  # content before alignment. Default false = production behaviour (--auto, multithreaded).
-  deterministic: false
-  # Batch size for sequence extraction (uses database_formatting.batch_size if not set)
+  # Sequence extraction (prepare_msa). The MSA construction itself is bottom-up (below).
+  # Batch size for extraction (uses database_formatting.batch_size if not set):
   # batch_size: 10000
-
-  # Whether to create indexes before extraction (can timeout on YugabyteDB)
-  create_indexes: false
-
-  min_seq_threshold: 20
-  max_seq_threshold: 1000          # Maximum number of sequences per MSA
-  large_task_threshold: 2000       # Threshold for large MSA tasks (needing special handling)
-  min_domain: "species"            # Minimum taxonomic level for the hierarchical descent
-  trimal_seq_overlap: 75    # Minimum overlap percentage to keep a sequence
-  trimal_res_overlap: 0.5   # Fraction of sequences with a residue at this position
-  domain: "family" # Descend from order to family since MSA is poor at order level
+  create_indexes: false            # create DB indexes before extraction (can timeout on YugabyteDB)
   barcodes: ["ITS", "ITS1", "ITS2"]
-  hierarchy_levels: ["genus", "family", "order", "class", "phylum"]
-  tax_columns: ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
-  id_col: "seq_id"
-  seq_col: "sequence"
-  barcode_col: "barcode"
-  max_thread_workers: 40 # Number of threads to use per barcode
   csv_path: "data/full.csv"
-  msa_dir: "data/MSA"
   output_report: "reports/html/msa_analysis_report.html"
-  task_manifest: "data/processed/msa_task_manifest.json"
-  stage_markers:
-    alignments: "data/processed/msa_alignments_complete.flag"
-    trimming: "data/processed/msa_trimming_complete.flag"
-    hmm_profiles: "data/processed/msa_hmm_complete.flag"
-    combined_hmm: "data/processed/msa_combined_hmm_complete.flag"
-    classification: "data/processed/msa_classification_complete.flag"
-  classification_manifest: "data/MSA/classification/msa_classification_manifest.json"
-  unprocessed_sequences_csv: "data/MSA/classification/msa_unprocessed_sequences.csv"
-  global_hmm_raw: "data/MSA/combined/all_profiles_combined_raw.hmm"
-  global_hmm: "data/MSA/combined/all_profiles_combined.hmm"
-  hmm_filter:
-    min_relent: 0.2
-    min_prele: 0.2
-    report_json: "data/MSA/combined/hmmstat_filter_report.json"
-  classification_batches_dir: "data/MSA/classification/batches"
-  classification_batches_json_dir: "data/MSA/classification/batches_json"
-  classification_results_csv: "data/MSA/classification/msa_classification_assignments.csv"
-  classification_stats_json: "data/MSA/classification/msa_classification_stats.json"
-  assignment_integration_summary: "data/MSA/classification/msa_assignment_integration.json"
-  classification_max_workers: 20           # Number of parallel hmmscan processes
-  classification_threads_per_worker: 1   # Single-threaded for deterministic results
-  classification_batch_size: 5000        # Sequences per batch
-  classification_evalue_threshold: 1e-3  # E-value max to accept hmmscan assignment
-
-  # Integration of orphan sequences into MSAs, scattered per clade (instead of a serial loop).
-  # method: "hmmalign" = hmmalign --mapali (fast: ~115x on large clades);
-  #         "mafft"    = mafft --add. Auto-fallback to mafft if hmmalign fails.
-  integration_method: "hmmalign"
-  integration_manifest: "data/MSA/integration/msa_integration_manifest.json"
-  integration_tasks_dir: "data/MSA/integration/tasks"
-  integration_results_dir: "data/MSA/integration/results"
-  integration_threads_per_clade: 2       # Few threads/clade -> many clades in parallel
 
   # === Bottom-up MSA construction (new logic, cf. INTEGRATION_DESIGN.md) ===
   # Floor: cluster (vsearch) -> MAFFT -> trimAl -gappyout; gated climb
