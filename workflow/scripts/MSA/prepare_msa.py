@@ -182,198 +182,135 @@ class MSASequenceExtractor:
         self.ensure_indexes()
         total_estimate = self.estimate_sequence_count()
 
+        sequences_table = self._get_table('sequences')
         seq_tax_table = self._get_table('seq_tax')
         taxonomy_table = self._get_table('taxonomy')
 
         sequences_with_keys: List[Tuple[Tuple[str, str, str, str], Dict]] = []
 
-        logger.info("Starting MSA sequence extraction (batch_size=%d)...", self.batch_size)
+        logger.info("Starting MSA sequence extraction...")
 
         start = time.time()
         last_log = start
 
-        barcodes = self._fetch_barcodes()
-        if not barcodes:
-            return []
-
-        logger.info("Found %d barcodes for MSA extraction.", len(barcodes))
-
-        for barcode_idx, barcode in enumerate(barcodes, start=1):
-            logger.info("Barcode %d/%d: %s", barcode_idx, len(barcodes), barcode)
-
-            # Stream sequences for this barcode (no ORDER BY to avoid temp_file_limit)
-            def process_barcode():
-                batches = []
-                with self.db_manager.get_session() as session:
-                    if self.db_type == "postgresql":
-                        barcode_clause = "s.barcode = :barcode"
-                        if barcode == "ITS":
-                            barcode_clause = "(s.barcode = :barcode OR s.barcode IS NULL)"
-                        seq_query = text(f"""
-                            SELECT
-                                s.seq_id,
-                                s.sequence,
-                                COALESCE(s.barcode, 'ITS') AS barcode,
-                                s.source_id,
-                                s.original_id
-                            FROM {self._get_table('sequences')} s
-                            WHERE s.barcode_status != 'Duplicate'
-                              AND {barcode_clause}
-                        """)
-                        result = session.execute(
-                            seq_query,
-                            {"barcode": barcode}
-                        ).yield_per(self.batch_size)
-                    else:
-                        barcode_clause = "s.barcode = :barcode"
-                        if barcode == "ITS":
-                            barcode_clause = "(s.barcode = :barcode OR s.barcode IS NULL)"
-                        seq_query = text(f"""
-                            SELECT
-                                s.seq_id,
-                                s.sequence,
-                                COALESCE(s.barcode, 'ITS') AS barcode,
-                                s.source_id,
-                                s.original_id
-                            FROM {self._get_table('sequences')} s
-                            WHERE s.barcode_status != 'Duplicate'
-                              AND {barcode_clause}
-                        """)
-                        result = session.execute(seq_query, {"barcode": barcode})
-
-                    batch = []
-                    for row in result:
-                        batch.append(row)
-                        if len(batch) >= self.batch_size:
-                            batches.append(batch)
-                            batch = []
-                    if batch:
-                        batches.append(batch)
-                return batches
-
-            seq_batches = self.db_manager._execute_with_retry(
-                f"msa_extract_barcode_{barcode}",
-                process_barcode
+        def assemble(row):
+            item = {
+                'seq_id': row.seq_id,
+                'sequence': row.sequence,
+                'barcode': row.barcode,
+                'kingdom': row.kingdom,
+                'phylum': row.phylum,
+                'class': row.class_,
+                'order': row.order_,
+                'family': row.family,
+                'genus': row.genus,
+                'species': row.species,
+            }
+            # Rule 1: Streptophyta -> Tracheophyta
+            if item['phylum'].lower() == "streptophyta":
+                item['phylum'] = "Tracheophyta"
+            # Rule 2: replace "incertae sedis" with empty string
+            for k, v in item.items():
+                if isinstance(v, str) and "incertae sedis" in v.lower():
+                    item[k] = ""
+            sort_key = (
+                str(row.barcode),
+                str(row.source_id or ""),
+                str(row.original_id or ""),
+                str(row.seq_id),
             )
+            return (sort_key, item)
 
-            for seq_rows in seq_batches:
-                seq_map = {row.seq_id: row for row in seq_rows}
-                seq_ids = list(seq_map.keys())
-
-                tax_rows = []
-                if self.db_type == "postgresql":
-                    tax_query = text(f"""
-                        SELECT
-                            st.seq_id,
-                            COALESCE(t.kingdom, '') AS kingdom,
-                            COALESCE(t.phylum, '') AS phylum,
-                            COALESCE(t.class_, '') AS class_,
-                            COALESCE(t.order_, '') AS order_,
-                            COALESCE(t.family, '') AS family,
-                            COALESCE(t.genus, '') AS genus,
-                            COALESCE(t.species, '') AS species
-                        FROM {seq_tax_table} st
-                        LEFT JOIN {taxonomy_table} t ON st.tax_id = t.tax_id
-                        WHERE st.backbone = 'CoL'
-                          AND st.seq_id = ANY(:seq_ids)
-                    """)
-
-                    # Capture seq_ids in closure properly
-                    def fetch_taxonomy(query=tax_query, ids=seq_ids):
-                        with self.db_manager.get_session() as session:
-                            return session.execute(query, {"seq_ids": ids}).fetchall()
-
-                    tax_rows = self.db_manager._execute_with_retry(
-                        "msa_extract_taxonomy",
-                        fetch_taxonomy
+        def log_progress():
+            nonlocal last_log
+            now = time.time()
+            if now - last_log >= 30:
+                elapsed = now - start
+                processed = len(sequences_with_keys)
+                rate = processed / elapsed if elapsed > 0 else 0
+                if total_estimate > 0:
+                    pct = processed / total_estimate * 100
+                    eta = (total_estimate - processed) / rate if rate > 0 else 0
+                    logger.info(
+                        f"Progress: {processed:,}/{total_estimate:,} "
+                        f"({pct:.1f}%) — {rate:.0f} seq/s — ETA {eta/60:.1f} min"
                     )
                 else:
-                    # SQLite: chunk queries with retry
-                    for i in range(0, len(seq_ids), self.sql_variable_limit):
-                        chunk = seq_ids[i:i + self.sql_variable_limit]
-                        placeholders = ",".join([f":id{j}" for j in range(len(chunk))])
-                        params = {f"id{j}": chunk[j] for j in range(len(chunk))}
+                    logger.info(f"{processed:,} sequences — {rate:.0f} seq/s")
+                last_log = now
 
-                        chunk_tax_query = text(f"""
-                            SELECT
-                                st.seq_id,
-                                COALESCE(t.kingdom, '') AS kingdom,
-                                COALESCE(t.phylum, '') AS phylum,
-                                COALESCE(t.class_, '') AS class_,
-                                COALESCE(t.order_, '') AS order_,
-                                COALESCE(t.family, '') AS family,
-                                COALESCE(t.genus, '') AS genus,
-                                COALESCE(t.species, '') AS species
-                            FROM {seq_tax_table} st
-                            LEFT JOIN {taxonomy_table} t ON st.tax_id = t.tax_id
-                            WHERE st.backbone = 'CoL'
-                              AND st.seq_id IN ({placeholders})
-                        """)
+        select_cols = """
+                    s.seq_id,
+                    s.sequence,
+                    COALESCE(s.barcode, 'ITS') AS barcode,
+                    s.source_id,
+                    s.original_id,
+                    COALESCE(t.kingdom, '') AS kingdom,
+                    COALESCE(t.phylum, '') AS phylum,
+                    COALESCE(t.class_, '') AS class_,
+                    COALESCE(t.order_, '') AS order_,
+                    COALESCE(t.family, '') AS family,
+                    COALESCE(t.genus, '') AS genus,
+                    COALESCE(t.species, '') AS species"""
 
-                        # Capture variables properly for retry
-                        def fetch_tax_chunk(query=chunk_tax_query, p=params):
-                            with self.db_manager.get_session() as session:
-                                return session.execute(query, p).fetchall()
+        if self.db_type == "postgresql":
+            # YugabyteDB large-scan pattern: split the scan into yb_hash_code(seq_id) ranges (each
+            # range = a subset of tablets) and run one NON-STREAMING query per range.
+            #   * Non-streaming (fetchall): server-side cursors do not survive the connection pooler
+            #     (the streamed cursor was silently killed ~40s in and retried forever, 0 progress).
+            #   * Each range is bounded, so every storage RPC stays under the 60s per-RPC deadline
+            #     (client_read_write_timeout_ms). A single unbounded join / big SORT / all-CoL HASH
+            #     build exceeds 60s in one RPC and the TServer kills it ("Timed out waiting
+            #     kResponseSent" / "Perform RPC ... timed out").
+            #   * The hint forces lead-with-sequences + batched nested loop, so we never scan all
+            #     ~12.5M backbone='CoL' rows nor sort them (the planner's default, caused by a bad
+            #     CoL row-count estimate). Measured ~9 s / (1/48) slice -> ~5-8 min total.
+            # INNER JOIN on backbone='CoL' keeps the original semantics (only sequences that have a
+            # CoL taxonomy row are emitted).
+            n_chunks = 48
+            step = (65536 + n_chunks - 1) // n_chunks
+            logger.info("Extracting via %d yb_hash_code ranges (non-streaming)...", n_chunks)
+            for ci in range(n_chunks):
+                lo = ci * step
+                hi = min(65535, (ci + 1) * step - 1)
+                chunk_query = text(f"""
+                    /*+ Leading((s st)) IndexScan(s sequences_pkey) IndexScan(st seq_tax_pkey) YbBatchedNL(s st) */
+                    SELECT {select_cols}
+                    FROM {sequences_table} s
+                    JOIN {seq_tax_table} st ON st.seq_id = s.seq_id AND st.backbone = 'CoL'
+                    LEFT JOIN {taxonomy_table} t ON t.tax_id = st.tax_id
+                    WHERE yb_hash_code(s.seq_id) BETWEEN :lo AND :hi
+                      AND s.barcode_status != 'Duplicate'
+                """)
 
-                        chunk_results = self.db_manager._execute_with_retry(
-                            f"msa_extract_taxonomy_chunk_{i}",
-                            fetch_tax_chunk
-                        )
-                        tax_rows.extend(chunk_results)
+                def fetch_chunk(query=chunk_query, lo=lo, hi=hi):
+                    with self.db_manager.get_session() as session:
+                        return session.execute(query, {"lo": lo, "hi": hi}).fetchall()
 
-                for row in tax_rows:
-                    seq_row = seq_map.get(row.seq_id)
-                    if not seq_row:
-                        continue
+                rows = self.db_manager._execute_with_retry(
+                    f"msa_extract_hash_{lo}_{hi}",
+                    fetch_chunk,
+                )
+                for row in rows:
+                    sequences_with_keys.append(assemble(row))
+                log_progress()
+        else:
+            # SQLite (mini datasets): a single non-chunked query is fine.
+            chunk_query = text(f"""
+                SELECT {select_cols}
+                FROM {sequences_table} s
+                JOIN {seq_tax_table} st ON st.seq_id = s.seq_id AND st.backbone = 'CoL'
+                LEFT JOIN {taxonomy_table} t ON t.tax_id = st.tax_id
+                WHERE s.barcode_status != 'Duplicate'
+            """)
 
-                    item = {
-                        'seq_id': seq_row.seq_id,
-                        'sequence': seq_row.sequence,
-                        'barcode': seq_row.barcode,
-                        'kingdom': row.kingdom,
-                        'phylum': row.phylum,
-                        'class': row.class_,
-                        'order': row.order_,
-                        'family': row.family,
-                        'genus': row.genus,
-                        'species': row.species,
-                    }
+            def fetch_all():
+                with self.db_manager.get_session() as session:
+                    return session.execute(chunk_query).fetchall()
 
-                    # Rule 1: Streptophyta -> Tracheophyta
-                    if item['phylum'].lower() == "streptophyta":
-                        item['phylum'] = "Tracheophyta"
-
-                    # Rule 2: replace "incertae sedis" with empty string
-                    for k, v in item.items():
-                        if isinstance(v, str) and "incertae sedis" in v.lower():
-                            item[k] = ""
-
-                    sort_key = (
-                        str(seq_row.barcode),
-                        str(seq_row.source_id or ""),
-                        str(seq_row.original_id or ""),
-                        str(seq_row.seq_id)
-                    )
-                    sequences_with_keys.append((sort_key, item))
-
-                # Periodic logging
-                now = time.time()
-                if now - last_log >= 30:
-                    elapsed = now - start
-                    processed = len(sequences_with_keys)
-                    rate = processed / elapsed if elapsed > 0 else 0
-
-                    if total_estimate > 0:
-                        pct = processed / total_estimate * 100
-                        eta = (total_estimate - processed) / rate if rate > 0 else 0
-                        logger.info(
-                            f"Progress: {processed:,}/{total_estimate:,} "
-                            f"({pct:.1f}%) — {rate:.0f} seq/s — ETA {eta/60:.1f} min"
-                        )
-                    else:
-                        logger.info(f"{processed:,} sequences — {rate:.0f} seq/s")
-
-                    last_log = now
+            for row in self.db_manager._execute_with_retry("msa_extract_sqlite", fetch_all):
+                sequences_with_keys.append(assemble(row))
+                log_progress()
 
         elapsed = time.time() - start
         sequences_with_keys.sort(key=lambda item: item[0])

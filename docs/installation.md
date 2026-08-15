@@ -64,7 +64,7 @@ they are provisioned per rule.
 
 ## 5. Initialise the database schema (optional)
 
-- **SQLite** — created automatically under `data/db/` on first run.
+- **SQLite** — created automatically under `results/db/` on first run.
 - **PostgreSQL** — make sure the database, user, and schema already exist; the
   pipeline creates the tables on first run. You can pre-create them with:
   ```bash
@@ -97,4 +97,4 @@ snakemake --use-conda --cores <N>
 - **Database authentication errors** — double-check `.env` and the `database`
   block in `config/config.yaml`.
 - **Insufficient disk space** — the pipeline writes large FASTA/MSA/SATIVA
-  artefacts under `data/`. Use symlinks or update the paths in the config.
+  artefacts under `results/`. Use symlinks or update the paths in the config.

@@ -1,77 +1,141 @@
-# MSA Stage
+# MSA stage — bottom-up construction
 
-The MSA rules (`workflow/rules/msa.smk`) orchestrate everything between post-ITSx deduplication and the SATIVA manifest. Jobs are derived from manifests so only the necessary alignments run.
+The MSA stage turns the post-ITSx sequence set into reference alignments and one HMM
+profile per emergent taxonomic unit, then hands SATIVA the alignments worth validating.
 
-## Manifest generation
+Two rule files are involved:
 
-1. `prepare_msa` exports a CSV (`config["msa"]["csv_path"]`) containing curated sequences and taxonomy metadata directly from the DB.
-2. `checkpoint msa_task_manifest` reads that CSV and produces `data/processed/msa_task_manifest.json`, grouping sequences by barcode and taxonomic level according to:
-   - `msa.barcodes`
-   - `msa.hierarchy_levels`
-   - thresholds (`min_seq_threshold`, `max_seq_threshold`, `large_task_threshold`)
+- `rules/msa.smk` — reduced to `prepare_msa` (DB → `results/full.csv`) and the report rule.
+- `rules/bottomup_msa.smk` — the construction itself (six rules).
 
-Snakemake checkpoints ensure downstream rules dynamically enumerate tasks from this manifest.
+`msa.bottomup.enabled` selects it. The legacy top-down path (align a whole family, then
+descend when the alignment is poor) has been removed; bottom-up is the current logic.
+Full rationale and trade-offs: `INTEGRATION_DESIGN.md`.
 
-## Alignment + trimming
+## Why bottom-up
 
-For each `(barcode, level, clade)` triplet:
+Top-down aligned each family in one shot, dropped sequences that didn't overlap
+(`trimAl -seqoverlap`), then re-classified the ~3M discarded sequences against the HMM
+library — that re-classification was the dominant cost. Bottom-up changes two things:
 
-1. `msa_align_task` runs `workflow/scripts/MSA/run_alignment_task.py`, which:
-   - filters the CSV for the clade
-   - calls MAFFT with the configured tax columns
-   - writes `<clade>_msa.fasta`
-2. `msa_trim_task` trims each alignment with trimAl:
-   - `msa.trimal_seq_overlap`
-   - `msa.trimal_res_overlap`
-   Outputs: `.trimmed.fasta` + JSON describing removed sequences.
+- it builds from the **species level up** and merges upward only while the alignment
+  stays coherent, so references are cleaner and SATIVA gets real contrast to work with;
+- it trims with `trimAl -gappyout`, which drops sparse columns but **keeps every
+  sequence**, so the re-classification residual shrinks by ~1000× (only true singletons
+  are left to place).
 
-Sentinel rules (`msa_alignments_ready`, `msa_trimming_ready`) touch the flags defined in `msa.stage_markers.*` so later stages can wait on entire phases without re-evaluating every file.
+## Unit of work
 
-## HMM assembly + classification
+Scatter is per `(barcode, family)`; the whole intra-family tree (species → genus →
+family) runs inside a single job. Families are independent, so this parallelises across
+the node/cluster without a deep checkpoint DAG. Barcodes are never mixed — ITS, ITS1 and
+ITS2 are different regions and get separate trees.
 
-1. `msa_build_hmm_task` transforms each trimmed MSA into a profile HMM (via `workflow/scripts/MSA/build_hmm_task.py`).
-2. `msa_combine_barcode_hmms` aggregates clade HMMs into `<barcode>/all_profiles.hmm`.
-3. `msa_combine_global_hmm` concatenates every barcode-level HMM file into `msa.global_hmm_raw`, followed by `msa_filter_global_hmm` (HMMER hmmstat filter).
-4. `checkpoint msa_classification_manifest` splits sequences needing classification into batches defined by:
-   - `classification_batch_size`
-   - `classification_threads_per_worker`
-   - `classification_batches_dir`
-5. `msa_classify_batch` invokes `workflow/scripts/MSA/classify_sequences_task.py` (hmmscan) per batch.
-6. `msa_collect_assignments` merges batch outputs and tracks sequences still unresolved.
-7. `msa_integrate_assignments` updates the DB and summarises stats in `config["msa"]["assignment_integration_summary"]`.
+`checkpoint bottomup_split` (`split_families.py`) streams `results/full.csv` in chunks
+and writes one CSV per `(barcode, family)` plus `families_manifest.json`.
 
-## Reporting
+## The floor (per species)
 
-`run_msa` is the umbrella `script:` job (`workflow/scripts/MSA/run_msa.py`) that compiles end-to-end metrics into `data/processed/msa_run_report.json`. `analyze_msa_report` renders `reports/html/msa_analysis_report.html`.
+For each species, `build_family_msa.py`:
 
-## Key configuration fields
+1. clusters raw sequences by identity — `vsearch --cluster_fast`, `cluster_id = 0.97`;
+2. aligns each cluster (MAFFT) and trims it (`trimAl -gappyout`).
+
+Clustering first is deliberate: a genome can carry several divergent ITS copies, so one
+species can legitimately hold two very different barcodes. Each copy becomes its own leaf
+MSA instead of being forced into one bad alignment.
+
+Groups larger than `max_group` (300) are sub-sampled before alignment — past a few
+hundred sequences the alignment no longer improves — while every membership is still
+recorded for downstream bookkeeping.
+
+## The climb and the gate
+
+Leaves are merged upward with `mafft --merge`, which preserves the sub-alignments instead
+of re-aligning them. At each rank a quality gate decides whether to promote the merge:
+
+- `occ ≥ gate_occ` (default 40) — percentage of columns filled in ≥50% of sequences;
+- `ratio ≤ gate_ratio` (default 2.5) — alignment length ÷ median ungapped length.
+
+Pass → the group becomes a single reference at that rank. Fail → the sub-groups stay
+separate. The **stop level is emergent per lineage**: species for divergent fungi, often
+genus or family for plants. An MSA below `min_ref` (2 sequences) can't be validated on
+its own and goes to the residual.
+
+## Residual, contamination, cross-family climb
+
+- **`bottomup_residual`** (`residual_classify_integrate.py`) — the residual (singletons,
+  unplaced) is classified against the HMM profile library with `hmmsearch`, and each
+  orphan is added to its best MSA with `hmmalign` (mafft fallback). Small by construction.
+- **`bottomup_contamination`** (`coarse_contamination.py`) — a coarse cross-kingdom /
+  phylum check: each reference is classified against the full profile library and its
+  homology compared to its label. This catches gross contamination (e.g. a fungal
+  sequence labelled as a plant) that SATIVA structurally cannot see — SATIVA only detects
+  fine mislabels *inside* an already-coherent clade. Flagged MSAs are re-homed to their
+  true clade.
+- **`climb_lineage`** (`climb_lineage.py`) — an unbounded cross-family climb
+  (family → order → class → phylum) that merges family references while the same gate
+  passes. Runs after the residual step, on already-enriched MSAs.
+
+## Collection and SATIVA hand-off
+
+`bottomup_collect` (`collect_bottomup.py`) aggregates the per-family manifests and the
+climbed manifest into `bottomup_summary.json` and emits the SATIVA manifest. Only MSAs
+with real validation power are sent: at least `sativa_min_seqs` (4) sequences and, when
+`sativa_min_taxa > 1`, at least that many distinct taxa — a single-species MSA has
+nothing to contrast. Re-homed / emptied MSAs are excluded.
+
+## Rules and scripts
+
+| Rule | Script | Does |
+|---|---|---|
+| `bottomup_split` (checkpoint) | `split_families.py` | `full.csv` → one CSV per (barcode, family) + manifest |
+| `build_family` | `build_family_msa.py` | floor + gated climb → family MSAs + HMM profiles |
+| `bottomup_contamination` | `coarse_contamination.py` | cross-kingdom detection + re-homing |
+| `bottomup_residual` | `residual_classify_integrate.py` | `hmmsearch` reclassification + `hmmalign` integration |
+| `climb_lineage` | `climb_lineage.py` | unbounded family → … → phylum climb |
+| `bottomup_collect` | `collect_bottomup.py` | summary + SATIVA manifest |
+
+Dependency order (via inputs): `build_family` → `contamination` → `residual` →
+`climb_lineage` → `collect`. Outputs live under `results/MSA/bottomup/`.
+
+## Configuration
 
 ```yaml
 msa:
-  csv_path: "data/full.csv"
-  msa_dir: "data/MSA"
-  barcodes: ["ITS","ITS1","ITS2"]
-  hierarchy_levels: ["genus","family","order","class","phylum"]
-  tax_columns: ["kingdom","phylum","class","order","family","genus","species"]
-  min_seq_threshold: 20
-  max_seq_threshold: 1000
-  large_task_threshold: 2000
-  trimal_seq_overlap: 75
-  trimal_res_overlap: 0.5
-  classification_threads_per_worker: 1   # single-threaded hmmscan for reproducibility
-  classification_max_workers: 20
+  bottomup:
+    enabled: true
+    cluster_id: 0.97        # vsearch identity at the floor
+    gate_ratio: 2.5         # climb if (length / median length) <= this
+    gate_occ: 40.0          # ... and column occupancy (>=50% filled) >= this %
+    max_group: 300          # sub-sample cap per cluster/species
+    min_ref: 2              # smaller MSAs go to the residual
+    threads_per_family: 2   # few threads/family -> many families in parallel
+    climb_ranks: ["order","class","phylum"]   # cross-family climb; [] stops at family
+    sativa_min_seqs: 4
+    sativa_min_taxa: 1      # >1 skips single-species MSAs (can cut coverage sharply)
+    contamination_flag_ranks: ["kingdom","phylum"]
 ```
 
-Adjusting these values controls manifest size, trimming aggressiveness, and hmmscan throughput.
+`gate_ratio`, `gate_occ` and `cluster_id` are the calibration knobs: a tighter gate
+lowers the emergent stop level, giving more but smaller MSAs.
+
+## Determinism
+
+Reproducible by construction: inputs are sorted before `vsearch` (single thread), MAFFT
+runs as FFT-NS-2, single thread, input order preserved, `-gappyout` is deterministic, and
+merge order is sorted.
 
 ## Tips
 
-- Rebuild just one alignment:
-  ```bash
-  snakemake --use-conda data/MSA/ITS/alignments_family/Asteraceae_msa.fasta
-  ```
-- Inspect manifest content:
-  ```bash
-  jq '.' data/processed/msa_task_manifest.json | less
-  ```
-- Use `data/processed/msa_assignment_integration.json` to audit which sequences were classified vs deferred.
+```bash
+# Rebuild one family
+snakemake --use-conda results/MSA/bottomup/out/ITS__Russulaceae/manifest.json
+
+# Stop-level distribution and per-barcode counts
+jq '.stop_levels, .per_barcode' results/MSA/bottomup/bottomup_summary.json
+
+# Residual reinsertion (should be small; only unassigned is a true loss)
+jq '{residual:.n_residual, reinserted:.n_integrated, unassigned:.n_unassigned}' \
+   results/MSA/bottomup/residual_report.json
+```

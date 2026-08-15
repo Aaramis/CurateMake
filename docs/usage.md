@@ -35,11 +35,11 @@ Useful global flags:
 
 | Target | What it produces |
 | ------ | ---------------- |
-| `data/processed/formatting_summary.json` | Ingestion/formatting summary |
-| `data/processed/col_matching_report.json` | Catalogue of Life harmonisation |
-| `data/processed/itsx_process.json` | Aggregated ITSx summary |
-| `data/processed/msa_run_report.json` | Run-level MSA metrics |
-| `data/processed/sativa_analysis_report.json` | Aggregated SATIVA results |
+| `results/processed/formatting_summary.json` | Ingestion/formatting summary |
+| `results/processed/col_matching_report.json` | Catalogue of Life harmonisation |
+| `results/processed/itsx_process.json` | Aggregated ITSx summary |
+| `results/MSA/bottomup/bottomup_summary.json` | Bottom-up MSA construction summary |
+| `results/processed/sativa_analysis_report.json` | Aggregated SATIVA results |
 | `reports/html/msa_analysis_report.html` | Interactive MSA analytics |
 | `reports/html/sequence_flow_report.html` | Pipeline-level sequence flow |
 | `reports/html/sativa_taxonomy_report.html` | 4-way taxonomy comparison |
@@ -56,31 +56,31 @@ snakemake --use-conda format_all_databases
 
 ### Taxonomy harmonisation (Catalogue of Life)
 ```bash
-snakemake --use-conda data/processed/col_matching_report.json
+snakemake --use-conda results/processed/col_matching_report.json
 ```
 
 ### ITSx extraction for one barcode
 ```bash
-snakemake --use-conda data/processed/itsx_run_ITS1.done
+snakemake --use-conda results/processed/itsx_run_ITS1.done
 ```
 
-### MSA generation only
+### MSA construction only (bottom-up)
 ```bash
-snakemake --use-conda data/processed/msa_run_report.json
+snakemake --use-conda results/MSA/bottomup/bottomup_summary.json
 ```
 
 ### SATIVA validation without the final reports
 ```bash
-snakemake --use-conda data/processed/sativa_analysis_report.json
+snakemake --use-conda results/processed/sativa_analysis_report.json
 ```
 
 ## 4. Monitoring & troubleshooting
 
 - Logs are stored hierarchically under `logs/<module>/...`
-  (e.g. `logs/ITSX/run_itsx_ITS2.log`, `logs/MSA/align/...`).
+  (e.g. `logs/ITSX/run_itsx_ITS2.log`, `logs/MSA/bottomup/build/<family>.log`).
 - Benchmarks (runtime/memory) land in `benchmarks/<rule>/...` when
   `benchmarking.enabled` is true in `config/config.yaml`.
-- `data/processed/*_report.json` and `data/processed/*_manifest.json` expose the
+- `results/processed/*_report.json` and `results/MSA/bottomup/*.json` expose the
   structured metrics that feed the HTML reports.
 - To debug failing tasks: `snakemake --use-conda --cores <N> --keep-going -p`
   prints shell commands; cross-reference the matching log file.

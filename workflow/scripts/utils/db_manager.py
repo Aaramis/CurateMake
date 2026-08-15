@@ -31,6 +31,7 @@ Usage:
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Callable
 from contextlib import contextmanager
+import functools
 import logging
 import uuid
 import time
@@ -51,6 +52,18 @@ from db_profiler import DBProfiler, profile_db_operation
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _retry_db(method):
+    """Decorator: run a single-row write helper through _execute_with_retry so a transient
+    distributed-DB error (YugabyteDB tablet 'Connection refused' / deadline) is retried with
+    backoff instead of failing the whole rule. Methods stay atomic (one get_session block), so
+    a retry safely re-runs the whole operation; internally-handled IntegrityError (concurrent
+    insert race) returns normally and is not retried."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        return self._execute_with_retry(method.__name__, lambda: method(self, *args, **kwargs))
+    return wrapper
 
 
 class DatabaseManager:
@@ -200,25 +213,37 @@ class DatabaseManager:
                     )
                     raise
 
+                # Capped exponential backoff: without a sleep the retries burn
+                # through instantly and never survive a transient tablet outage
+                # (e.g. YugabyteDB "Connection refused" / deadline on a big DDL).
+                backoff = min(2 ** min(attempts, 5), 30)
                 logger.info(
-                    "DB operation %s: retry %s/%s...",
+                    "DB operation %s: retry %s/%s in %ss...",
                     operation_name,
                     attempts,
-                    self.writer_retry_attempts
+                    self.writer_retry_attempts,
+                    backoff
                 )
+                time.sleep(backoff)
 
     @profile_db_operation("create_schema")
     def create_schema(self) -> None:
         """Create database schema using SQLAlchemy models."""
+        # Pass schema for PostgreSQL if provided
+        schema = self.connection_params.get('schema') if self.db_type == 'postgresql' else None
         try:
-            # Pass schema for PostgreSQL if provided
-            schema = self.connection_params.get('schema') if self.db_type == 'postgresql' else None
-            init_database(self.engine, schema=schema)
+            # create_all is DDL -> same transient-tablet exposure as CREATE INDEX,
+            # so it must go through the retry (with backoff) like every other DB op.
+            self._execute_with_retry(
+                "create_schema",
+                lambda: init_database(self.engine, schema=schema),
+            )
             logger.info("Database schema created successfully")
         except Exception as e:
             logger.error(f"Failed to create schema: {e}")
             raise
 
+    @_retry_db
     @profile_db_operation("add_source")
     def add_source(self, name: str, file_path: str = None) -> str:
         """
@@ -256,6 +281,7 @@ class DatabaseManager:
                 logger.error(f"Failed to add source {name}: {e}")
                 raise
 
+    @_retry_db
     @profile_db_operation("add_taxonomy")
     def add_taxonomy(self, kingdom: str = None, phylum: str = None,
                      class_: str = None, order_: str = None, family: str = None,
@@ -331,6 +357,7 @@ class DatabaseManager:
                 logger.error(f"Failed to add taxonomy: {e}")
                 raise
 
+    @_retry_db
     def add_seq_tax(self, seq_id: str, tax_id: str, backbone: str,
                     status: str = 'Pending', confidence: float = None) -> None:
         """

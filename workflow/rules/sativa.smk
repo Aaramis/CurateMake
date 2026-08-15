@@ -66,11 +66,11 @@ def sativa_task_msa_path(wildcards):
 # ---------------------------------------------------------------------------
 # Manifest generation (checkpoint)
 # ---------------------------------------------------------------------------
-# SATIVA consumes the manifest produced by bottomup_collect (already in the right
+# SATIVA consumes the manifest produced by clustered_collect (already in the right
 # format, {taxon}=msa_id filesystem-safe).
 checkpoint sativa_task_manifest:
     input:
-        manifest=BU_SATIVA_MANIFEST
+        manifest=CL_SATIVA_MANIFEST
     output:
         manifest=SATIVA_MANIFEST
     log:

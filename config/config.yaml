@@ -46,21 +46,27 @@ database_formatting:
   # Lower values reduce query complexity and avoid RPC timeouts
   taxonomy_fetch_chunk_size: 10
 
-# Source datasets (adjust paths as needed)
+# Source datasets. Full production dumps are active; the mini_* test set is kept
+# commented for a quick swap back (uncomment mini / comment full to run the test).
 databases:
   unite:
-    path: "resources/UNITE/mini_UNITE_public.fasta.gz"
+    path: "resources/UNITE/UNITE_public_19.02.2025.fasta.gz"
+    # path: "resources/UNITE/mini_UNITE_public.fasta.gz"
 
   bold:
-    path: "resources/BOLD/mini_BOLD_Public.tar.gz"
+    path: "resources/BOLD/BOLD_Public.22-Aug-2025.tar.gz"
+    # path: "resources/BOLD/mini_BOLD_Public.tar.gz"
 
   planits:
-    path: "resources/PLANITS/mini_PLANiTS.zip"
+    path: "resources/PLANITS/PLANiTS_29-03-2020.zip"
+    # path: "resources/PLANITS/mini_PLANiTS.zip"
 
   caledna:
     files:
-      - "resources/CALeDNA/mini_PITS_fasta_and_taxonomy.zip"
-      - "resources/CALeDNA/mini_FITS_fasta_and_taxonomy.zip"
+      - "resources/CALeDNA/PITS_fasta_and_taxonomy.zip"
+      - "resources/CALeDNA/FITS_fasta_and_taxonomy.zip"
+      # - "resources/CALeDNA/mini_PITS_fasta_and_taxonomy.zip"
+      # - "resources/CALeDNA/mini_FITS_fasta_and_taxonomy.zip"
 
   # PERSONAL — user-provided custom sequences.
   # Expected FASTA header format (taxonomy embedded; missing ranks allowed):
@@ -120,58 +126,42 @@ CoL_api:
   # "3" = live CoL project (NOT reproducible) — discouraged.
   dataset: "3LR"
   max_requests_per_second: 400  # unthrottled (bounded by worker concurrency, not this rate)
-  max_workers: 20               # number of concurrent CoL requests (capped at 32 in code)
+  max_workers: 32               # concurrent CoL requests (32 = the code cap; network-bound,
+                                # does not compete with --cores, so max it out)
   batch_size: 1000
 
 
 # Multiple Sequence Alignment (MSA) configuration
 msa:
-  # Sequence extraction (prepare_msa). The MSA construction itself is bottom-up (below).
+  # Sequence extraction (prepare_msa). The MSA construction itself is sequence-first clustered (below).
   # Batch size for extraction (uses database_formatting.batch_size if not set):
   # batch_size: 10000
   create_indexes: false            # create DB indexes before extraction (can timeout on YugabyteDB)
   barcodes: ["ITS", "ITS1", "ITS2"]
   csv_path: "results/full.csv"
   output_report: "reports/html/msa_analysis_report.html"
-
-  # === Bottom-up MSA construction (cf. INTEGRATION_DESIGN.md) ===
-  # Floor: cluster (vsearch) -> MAFFT -> trimAl -gappyout; gated climb
-  # species->genus->family. Scatter per (barcode, family).
-  bottomup:
-    families_dir: "results/MSA/bottomup/families"
-    families_manifest: "results/MSA/bottomup/families_manifest.json"
-    out_dir: "results/MSA/bottomup/out"
-    summary: "results/MSA/bottomup/bottomup_summary.json"
-    cluster_id: 0.97       # vsearch identity threshold at the floor
-    gate_ratio: 2.5        # GATE: max cols/length ratio to climb (to calibrate)
-    gate_occ: 40.0         # GATE: min % of columns >=50% occupied to climb (to calibrate)
-    max_group: 300         # subsample per cluster/species (bounds the compute)
-    min_ref: 2             # min size of a reference MSA (otherwise -> residual hmmsearch)
-    threads_per_family: 2  # few threads/family -> many families in parallel
-    # Residual (singletons + unplaced) -> hmmsearch classification + integration
-    residual_report: "results/MSA/bottomup/residual_report.json"
-    residual_evalue: 1e-3
-    residual_threads: 8
-    # UNBOUNDED climb (cross-family gather): family -> order -> class -> phylum
-    # as long as the gate passes. [] = bounded at the family. Stop level stays emergent.
-    climbed_manifest: "results/MSA/bottomup/climbed_manifest.json"
-    climb_ranks: ["order", "class", "phylum"]
-    # SATIVA manifest: only validate MSAs with enough DIVERSITY (>=2 distinct taxa
-    # -> real mislabel-detection power), with a secondary size floor.
-    sativa_manifest: "results/MSA/bottomup/sativa_manifest.json"
-    sativa_min_seqs: 4     # size floor: only MSAs with >= this many sequences go to SATIVA
-    # COARSE contamination tier (cross-kingdom/phylum): classifies each MSA against the
-    # profile lib (top-k consensus) and compares homology to the label. Complements SATIVA
-    # (which only sees the fine intra-clade mislabels).
-    contamination_report: "results/MSA/bottomup/contamination_report.json"
-    contamination_flag_ranks: ["kingdom", "phylum"]
-    contamination_min_score: 80.0
-    contamination_top_k: 5
-    # O(M^2) all-vs-all -> scattered: reps split into batches, one hmmsearch per batch.
-    contamination_dir: "results/MSA/bottomup/contam"
-    contamination_batch_size: 200      # reps per hmmsearch job (smaller -> more parallel)
-    contamination_max_evalue: 1e-5
-    contamination_search_threads: 4    # threads per batch hmmsearch
+  # === Sequence-first clustered MSA construction (cf. clustered_msa.smk) ===
+  # Cluster the whole barcode by SEQUENCE (mmseqs2), merge clusters of similar taxonomy into
+  # kingdom-interleaved groups up to a SIZE cap (SATIVA tolerates gappy MSAs, so size is the real
+  # bound), align + trimAl -> SATIVA. A contaminant clusters with its true kin, so cross-clade /
+  # cross-kingdom contamination is visible to SATIVA (validated at scale, cf. SIMULATION_REPORT.md).
+  clustered:
+    out_dir: "results/MSA/clustered"
+    summary: "results/MSA/clustered/clustered_summary.json"
+    sativa_manifest: "results/MSA/clustered/sativa_manifest.json"
+    residual_report: "results/MSA/clustered/residual_report.json"
+    contamination_report: "results/MSA/clustered/contamination_report.json"
+    cluster_id: 0.97       # mmseqs2 identity (clean references cluster well at 0.97)
+    cluster_cov: 0.80      # mmseqs2 coverage
+    min_ref: 4             # clusters smaller than this are absorbed into the nearest cluster
+    max_group: 10000       # hard cap on sequences per SATIVA MSA (feasibility bound)
+    max_cluster_reps: 200  # cap the reps ONE cluster contributes to its MSA (0 = off). Bounds the MSA
+                           # when a giant near-identical cluster would otherwise blow past max_group;
+                           # all members are kept in group_members.tsv for verdict propagation.
+    sativa_min_seqs: 4     # size floor for a group to be sent to SATIVA
+    mmseqs_env: "mmseqs"           # conda env providing mmseqs2
+    tool_env: "its-pipeline-dev"   # conda env providing mafft + trimal + pandas
+    threads: 32
 
 
 # SATIVA configuration
@@ -188,7 +178,8 @@ sativa:
   rand_seed: 42
   barcodes: ["ITS", "ITS1", "ITS2"]
   tax_levels: ["family", "genus", "order", "species"]
-  max_parallel_jobs: 120
+  max_parallel_jobs: 100   # advisory only (not wired): SATIVA concurrency = --cores, since
+                           # each sativa_task is threads:1. Cap lower with --resources sativa_jobs=N.
   cleanup_temp_files: true
   temp_retention_hours: 24
   visualization_report: "reports/html/sativa_visualization_report.html"

@@ -28,8 +28,8 @@ labels with SATIVA — storing every record in a traceable relational database.
 | Ingestion & formatting | `format_databases.smk` | Load UNITE, BOLD, PLANiTS, CALeDNA, PERSONAL; QC; deduplicate |
 | Taxonomy harmonisation | `harmonize_taxo.smk` | Reconcile labels against Catalogue of Life |
 | ITSx extraction | `itsx.smk` | Extract ITS/ITS1/ITS2 regions per barcode |
-| MSA production | `msa.smk` | MAFFT alignments, trimAl trimming, HMM classification |
-| SATIVA validation | `sativa.smk` | Detect mislabels and write back corrections |
+| MSA construction | `bottomup_msa.smk` | Bottom-up per-family build (species → family), residual reclassification, coarse cross-kingdom check |
+| SATIVA validation | `sativa.smk` | Per-MSA mislabel detection (leave-one-out via EPA-ng), write back corrections |
 | Reporting | `reports.smk`, `benchmarking.smk` | Interactive HTML dashboards |
 
 ## Project Layout
@@ -41,7 +41,8 @@ workflow/scripts/         # Python helpers for ingestion, QC, alignment, validat
 workflow/envs/*.yaml      # per-rule Conda environments
 config/config.yaml        # master configuration (paths, resources, parameters)
 .env                      # secrets / DB credentials (project root, not tracked)
-data/                     # raw inputs + processed outputs
+resources/                # raw input databases
+results/                   # extracted regions, MSAs, SATIVA, processed outputs
 logs/ + benchmarks/       # runtime diagnostics
 docs/                     # this documentation set
 ```

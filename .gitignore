@@ -127,7 +127,11 @@ reports
 cache
 test.py
 analysis_plans
-# Raw input datasets live under resources/ — force-track them despite the
-# *.fasta / PLAN* / *.zip ignores above (mirrors the old !data/raw/** rule).
+# Raw input datasets under resources/: the multi-GB production dumps are NOT
+# tracked (BOLD_Public*, UNITE_public*, *_fasta_and_taxonomy.zip, PLANiTS_*, ...).
+# Only the small mini_* test set and personal_test.fasta stay in git.
 !resources/
-!resources/**
+resources/**
+!resources/**/
+!resources/**/mini_*
+!resources/PERSONAL/personal_test.fasta

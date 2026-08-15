@@ -506,36 +506,44 @@ class SequenceDeduplicator:
         # Count duplicates per tax_id using batched approach
         tax_id_counts: Dict[str, int] = {}
         batch_size = self.tax_id_batch_size * 10
-        offset = 0
+        # KEYSET pagination (WHERE seq_id > last ORDER BY seq_id), NOT LIMIT/OFFSET: on a distributed
+        # DB (YugabyteDB) OFFSET N re-scans N rows every batch -> O(N^2) over millions of duplicates,
+        # which hangs for days. The mark step already uses keyset; this summary must too.
+        last_seq_id = None
 
         while True:
-            # Fetch duplicate seq_ids in batches
-            seq_id_query = f"""
-                SELECT seq_id
-                FROM {sequences_table}
-                WHERE barcode_status = 'Duplicate'
-                LIMIT :limit OFFSET :offset
-            """
+            if last_seq_id is None:
+                seq_id_query = f"""
+                    SELECT seq_id FROM {sequences_table}
+                    WHERE barcode_status = 'Duplicate'
+                    ORDER BY seq_id LIMIT :limit
+                """
+                seq_id_params = {"limit": batch_size}
+            else:
+                seq_id_query = f"""
+                    SELECT seq_id FROM {sequences_table}
+                    WHERE barcode_status = 'Duplicate' AND seq_id > :last
+                    ORDER BY seq_id LIMIT :limit
+                """
+                seq_id_params = {"limit": batch_size, "last": last_seq_id}
 
             def fetch_seq_ids():
                 with self.db_manager.get_session() as session:
-                    result = session.execute(
-                        text(seq_id_query),
-                        {"limit": batch_size, "offset": offset}
-                    )
+                    result = session.execute(text(seq_id_query), seq_id_params)
                     return [row[0] for row in result]
 
             try:
                 seq_ids = self.db_manager._execute_with_retry(
-                    f"dedup_summary_seq_ids_offset_{offset}",
+                    "dedup_summary_seq_ids_keyset",
                     fetch_seq_ids
                 )
             except Exception as e:
-                logger.warning(f"Failed to fetch seq_ids for summary at offset {offset}: {e}")
+                logger.warning(f"Failed to fetch seq_ids for summary after {last_seq_id}: {e}")
                 break
 
             if not seq_ids:
                 break
+            last_seq_id = seq_ids[-1]
 
             # Fetch tax_ids for these seq_ids
             if self.db_manager.db_type == "postgresql":
@@ -559,15 +567,13 @@ class SequenceDeduplicator:
 
             try:
                 tax_ids = self.db_manager._execute_with_retry(
-                    f"dedup_summary_tax_ids_offset_{offset}",
+                    "dedup_summary_tax_ids_keyset",
                     fetch_tax_ids
                 )
                 for tax_id in tax_ids:
                     tax_id_counts[tax_id] = tax_id_counts.get(tax_id, 0) + 1
             except Exception as e:
-                logger.warning(f"Failed to fetch tax_ids for summary at offset {offset}: {e}")
-
-            offset += batch_size
+                logger.warning(f"Failed to fetch tax_ids for summary after {last_seq_id}: {e}")
 
         # Sort and return top N
         sorted_counts = sorted(tax_id_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
@@ -629,6 +635,17 @@ class SequenceDeduplicator:
 
         logger.info("Database optimization completed.")
 
+    def _duplicates_already_marked(self) -> bool:
+        """True if a prior run already marked duplicates (a 'Duplicate' barcode_status exists)."""
+        def check():
+            with self.db_manager.get_session() as session:
+                row = session.execute(text(
+                    f"SELECT 1 FROM {self.db_manager.sequences_table} "
+                    f"WHERE barcode_status = 'Duplicate' LIMIT 1"
+                )).first()
+                return row is not None
+        return self.db_manager._execute_with_retry("dedup_check_already_marked", check)
+
     def deduplicate_sequences(self):
         """Full end-to-end deduplication workflow."""
         start_time = time.time()
@@ -650,7 +667,13 @@ class SequenceDeduplicator:
             else:
                 logger.info("Skipping index creation for deduplication (deduplication.create_indexes=false)")
 
-            self.mark_duplicate_sequences()
+            # Resumable restart: if a previous run already marked duplicates (persisted in the DB),
+            # skip the expensive re-marking and go straight to summary/report. Lets a rule that died
+            # in post-processing (e.g. the summary) be re-run cheaply without redoing the whole mark.
+            if self._duplicates_already_marked():
+                logger.info("Duplicates already marked in the DB — skipping re-marking (resumable restart).")
+            else:
+                self.mark_duplicate_sequences()
             if self.skip_verify_integrity:
                 logger.info("Skipping integrity verification (deduplication.skip_verify_integrity=true)")
             else:
@@ -672,6 +695,9 @@ class SequenceDeduplicator:
             )
             self.stats["final_sequence_count"] = final_count
             self.stats["unique_sequences_kept"] = unique_kept
+            if not self.stats.get("duplicates_marked"):
+                # re-marking was skipped (resumable restart) -> derive the count for the report
+                self.stats["duplicates_marked"] = (self.stats.get("initial_sequence_count", 0) or 0) - unique_kept
 
             self.optimize_database()
 

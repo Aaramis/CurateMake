@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
-logger = logging.getLogger("generate_report_bottomup")
+logger = logging.getLogger("generate_msa_report")
 
 
 def load_json(path, default=None):

@@ -12,8 +12,9 @@ workflow/
 config/
   config.yaml          # main settings (paths, thresholds)
   .env.example         # credentials template (copy to project-root .env)
-data/
-  raw/  processed/  ITSx/  MSA/  SATIVA/
+resources/             # raw input databases
+results/
+  processed/  ITSx/  MSA/  SATIVA/  db/
 logs/  benchmarks/  reports/
 docs/                  # MkDocs source
 environment.yaml       # orchestration env (Snakemake)
@@ -40,9 +41,9 @@ Example:
 ```python
 rule example_task:
     input:
-        "data/processed/itsx_process.json"
+        "results/processed/itsx_process.json"
     output:
-        "data/processed/example.json"
+        "results/processed/example.json"
     params:
         option=config["example"]["option"]
     log:
@@ -55,11 +56,11 @@ rule example_task:
 
 ## Checkpoints
 
-The MSA and SATIVA stages use Snakemake **checkpoints** (`msa_task_manifest`,
-`msa_classification_manifest`, `sativa_task_manifest`) because the set of
-downstream jobs is only known after a manifest is generated at runtime. When you
-add per-clade or per-task rules, derive their inputs from the relevant manifest
-via the checkpoint helper functions in the rule file.
+The MSA and SATIVA stages use Snakemake **checkpoints** (`bottomup_split`,
+`sativa_task_manifest`) because the set of downstream jobs is only known after a
+manifest is generated at runtime (one job per family, then one per reference MSA).
+When you add per-family or per-task rules, derive their inputs from the relevant
+manifest via the checkpoint helper functions in the rule file.
 
 ## Configuration best practices
 

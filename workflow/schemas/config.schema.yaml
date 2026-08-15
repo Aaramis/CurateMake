@@ -36,7 +36,7 @@ properties:
   msa:
     type: object
     additionalProperties: true
-    required: [csv_path, barcodes, output_report, bottomup]
+    required: [csv_path, barcodes, output_report, clustered]
     properties:
       csv_path:
         type: string
@@ -49,7 +49,7 @@ properties:
         minItems: 1
         items:
           type: string
-      bottomup:
+      clustered:
         type: object
         additionalProperties: true
         properties:
@@ -57,54 +57,25 @@ properties:
             type: number
             minimum: 0
             maximum: 1
-          gate_ratio:
+          cluster_cov:
             type: number
             minimum: 0
-          gate_occ:
-            type: number
-            minimum: 0
-            maximum: 100
-          max_group:
-            type: integer
-            minimum: 1
+            maximum: 1
           min_ref:
             type: integer
             minimum: 1
-          threads_per_family:
+          max_group:
             type: integer
             minimum: 1
-          residual_threads:
+          max_cluster_reps:
             type: integer
-            minimum: 1
-          climb_ranks:
-            type: array
-            items:
-              type: string
-              enum: [genus, family, order, class, phylum, kingdom]
+            minimum: 0
           sativa_min_seqs:
             type: integer
             minimum: 1
-          contamination_flag_ranks:
-            type: array
-            items:
-              type: string
-          contamination_min_score:
-            type: number
-            minimum: 0
-          contamination_top_k:
+          threads:
             type: integer
             minimum: 1
-          contamination_batch_size:
-            type: integer
-            minimum: 1
-          contamination_search_threads:
-            type: integer
-            minimum: 1
-          # e-value knobs may be YAML strings (e.g. "1e-3" has no dot) -> allow both.
-          residual_evalue:
-            type: [number, string]
-          contamination_max_evalue:
-            type: [number, string]
 
   sativa:
     type: object

@@ -424,15 +424,16 @@ def main():
         logger.info(f"MSA stats: {n_seq} sequences, {aln_len} bp alignment length")
 
         # Step 2: Check thresholds
+        # Size-based skips (n_seq > max_seqs, aln_len > max_len) REMOVED on purpose
+        # (2026-08-14): SATIVA must run on EVERY group regardless of sequence count or
+        # alignment length. Only the genuine technical floors below are kept — SATIVA
+        # cannot build a reference tree from 0 or 1 sequence. max_seqs / max_len are no
+        # longer used to gate execution.
         skip_reasons = []
         if n_seq == 0:
             skip_reasons.append("MSA is empty (no sequences)")
         elif n_seq < 2:
             skip_reasons.append("fewer than 2 sequences (SATIVA requires at least 2)")
-        if n_seq > max_seqs:
-            skip_reasons.append(f"n_seq ({n_seq}) > max_seqs ({max_seqs})")
-        if aln_len > max_len:
-            skip_reasons.append(f"aln_len ({aln_len}) > max_len ({max_len})")
 
         if skip_reasons:
             logger.warning(f"Skipping: {'; '.join(skip_reasons)}")

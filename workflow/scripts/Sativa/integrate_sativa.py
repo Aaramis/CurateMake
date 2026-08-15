@@ -566,10 +566,19 @@ class ModificationClassifier:
 class DatabaseIntegrator:
     """Handle database operations for SATIVA integration"""
 
+    # Ranks that define a lineage, in the order used as the taxonomy cache key.
+    _LINEAGE_RANKS = ('kingdom', 'phylum', 'class_', 'order_', 'family', 'genus', 'species')
+
     def __init__(self, db_manager, col_validator: CoLValidator):
         self.db_manager = db_manager
         self.col_validator = col_validator
         self.classifier = ModificationClassifier()
+        # Per-clade memo of lineage -> tax_id. check_taxonomy_exists is not sargable
+        # (COALESCE around every rank defeats uq_taxonomy_lineage), so each miss is a
+        # full scan of taxonomy; the .mis files repeat each proposed lineage ~5x on
+        # average, so caching removes ~80% of those scans. Safe: a tax_id never changes
+        # once known, and a lineage created here is cached under the id just created.
+        self._tax_id_cache: Dict[tuple, str] = {}
 
     def _get_table(self, table_name: str) -> str:
         """Get schema-qualified table name"""
@@ -667,14 +676,24 @@ class DatabaseIntegrator:
     def get_or_create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str],
                               col_id: Optional[str] = None, col_dataset_key: Optional[str] = None) -> str:
         """Get existing taxonomy or create new one (stamping CoL provenance when given)."""
-        existing_tax_id = self.check_taxonomy_exists(taxonomy)
+        cache_key = tuple((taxonomy.get(rank) or '') for rank in self._LINEAGE_RANKS)
 
-        if existing_tax_id:
-            if col_id:
-                self._stamp_col_provenance(existing_tax_id, col_id, col_dataset_key)
-            return existing_tax_id
+        existing_tax_id = self._tax_id_cache.get(cache_key)
+        if existing_tax_id is None:
+            existing_tax_id = self.check_taxonomy_exists(taxonomy)
 
-        return self.create_taxonomy(taxonomy, parent_tax_id, col_id, col_dataset_key)
+            if existing_tax_id is None:
+                new_tax_id = self.create_taxonomy(taxonomy, parent_tax_id, col_id, col_dataset_key)
+                self._tax_id_cache[cache_key] = new_tax_id
+                return new_tax_id
+
+            self._tax_id_cache[cache_key] = existing_tax_id
+
+        # Stamping stays outside the cache: a later call may carry a col_id the first
+        # one did not, and _stamp_col_provenance only writes when col_id IS NULL.
+        if col_id:
+            self._stamp_col_provenance(existing_tax_id, col_id, col_dataset_key)
+        return existing_tax_id
 
 
     # ------------------------------------------------------------------ #
@@ -731,7 +750,11 @@ class DatabaseIntegrator:
         """seq_id -> (col_tax_id, taxonomy_dict) for sequences with a 'CoL' backbone."""
         st = self._get_table('seq_tax')
         tt = self._get_table('taxonomy')
-        sql = (f"SELECT st.seq_id, st.tax_id, t.kingdom, t.phylum, t.class_, t.order_, "
+        # pg_hint_plan: force the pkey (seq_id HASH) batched lookup. Without it YugabyteDB
+        # mis-estimates backbone='CoL' selectivity (~161k vs the real ~12.5M rows) and scans all
+        # CoL rows PER chunk instead of using seq_id — see prepare_msa for the same issue.
+        sql = (f"/*+ IndexScan(st seq_tax_pkey) */ "
+               f"SELECT st.seq_id, st.tax_id, t.kingdom, t.phylum, t.class_, t.order_, "
                f"t.family, t.genus, t.species FROM {st} st JOIN {tt} t ON st.tax_id = t.tax_id "
                f"WHERE {{clause}} AND st.backbone = 'CoL'")
         out = {}
@@ -745,9 +768,10 @@ class DatabaseIntegrator:
     def bulk_get_existing_seq_tax(self, seq_ids, backbone: str) -> Set[Tuple[str, str]]:
         """Set of (seq_id, tax_id) already linked under the given backbone."""
         st = self._get_table('seq_tax')
-        sql = f"SELECT seq_id, tax_id FROM {st} WHERE {{clause}} AND backbone = :bb"
+        # pg_hint_plan: force the pkey (seq_id HASH) batched lookup (see prepare_msa / bulk_get_col_taxonomy).
+        sql = f"/*+ IndexScan(st seq_tax_pkey) */ SELECT st.seq_id, st.tax_id FROM {st} st WHERE {{clause}} AND st.backbone = :bb"
         return {(r[0], r[1]) for r in self._chunked_rows(
-            seq_ids, sql, "seq_id", "sativa_bulk_existing", extra_params={"bb": backbone})}
+            seq_ids, sql, "st.seq_id", "sativa_bulk_existing", extra_params={"bb": backbone})}
 
     def decide_integration_action(self, modification: ModificationRecord,
                                    mod_type: ModificationType,

@@ -1,0 +1,222 @@
+# Compute resources
+itsx_cpu: 1200
+itsx_deterministic: false  # Set to true for reproducible results (slower, single-threaded)
+
+
+# Database configuration
+database:
+  # Backend type: "sqlite" (dev/small datasets) or "postgresql" (production/large datasets)
+  type: "sqlite"
+
+  # SQLite settings (development, datasets < 1M sequences)
+  sqlite:
+    path: "results/db"
+    name: "its_mini_database.db"
+
+  # PostgreSQL settings (production, datasets > 1M sequences).
+  # Credentials come from .env (POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER,
+  # POSTGRES_PASSWORD, POSTGRES_DB) — the Snakefile raises if any is missing.
+  postgresql:
+    host: "{{ env.POSTGRES_HOST }}"
+    port: "{{ env.POSTGRES_PORT }}"
+    user: "{{ env.POSTGRES_USER }}"
+    password: "{{ env.POSTGRES_PASSWORD }}"
+    database: "{{ env.POSTGRES_DB }}"
+    schema: "its_curate"
+    pool_size: 10
+    max_overflow: 20
+    echo: false
+
+  # Retry configuration for distributed databases (e.g., YugabyteDB)
+  # db_manager will automatically retry transient errors
+  writer_retry:
+    max_attempts: 100  # High value for distributed DBs with transient errors
+
+
+# Database formatting configuration
+# These parameters control ALL database operations through db_manager
+database_formatting:
+  # Universal batch size for bulk inserts and fetch operations
+  # Used by: bulk_insert_sequences, bulk_insert_taxonomies, bulk_insert_seq_tax
+  # Adjust based on your database performance (lower for slower networks)
+  batch_size: 10000
+
+  # Chunk size for complex taxonomy queries with multiple OR conditions
+  # Used for: fetching tax_ids for unique taxonomies
+  # Lower values reduce query complexity and avoid RPC timeouts
+  taxonomy_fetch_chunk_size: 10
+
+# Source datasets. Full production dumps are active; the mini_* test set is kept
+# commented for a quick swap back (uncomment mini / comment full to run the test).
+databases:
+  unite:
+    path: "resources/UNITE/mini_UNITE_public.fasta.gz"
+    # path: "resources/UNITE/mini_UNITE_public.fasta.gz"
+
+  bold:
+    path: "resources/BOLD/mini_BOLD_Public.tar.gz"
+    # path: "resources/BOLD/mini_BOLD_Public.tar.gz"
+
+  planits:
+    path: "resources/PLANITS/mini_PLANiTS.zip"
+    # path: "resources/PLANITS/mini_PLANiTS.zip"
+
+  caledna:
+    files:
+      - "resources/CALeDNA/mini_PITS_fasta_and_taxonomy.zip"
+      - "resources/CALeDNA/mini_FITS_fasta_and_taxonomy.zip"
+      # - "resources/CALeDNA/mini_PITS_fasta_and_taxonomy.zip"
+      # - "resources/CALeDNA/mini_FITS_fasta_and_taxonomy.zip"
+
+  # PERSONAL — user-provided custom sequences.
+  # Expected FASTA header format (taxonomy embedded; missing ranks allowed):
+  #   >ID;barcode=ITS;kingdom=Fungi;phylum=Basidiomycota;class=Agaricomycetes;order=Russulales;family=Russulaceae;genus=Russula;species=Russula_abietina
+  # Use "path" for a single file, or "files" for several. See docs/personal-database.md.
+  personal:
+    path: "resources/PERSONAL/personal_test.fasta"
+
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+
+# Benchmarking
+benchmarking:
+  enabled: true
+  output_dir: "benchmarks"
+
+
+# Sequence validation rules
+sequence_validation:
+  min_length: 50
+  max_n_fraction: 0.5
+  valid_chars: "ACGTURYSWKMBDHVN-"
+
+
+# Deduplication configuration
+deduplication:
+  # Create indexes before deduplication (improves query performance)
+  create_indexes: true
+
+  # Skip integrity verification after deduplication
+  # Set to true to avoid temp_file_limit errors on large datasets (YugabyteDB)
+  skip_verify_integrity: true
+
+  # Tax ID batch size for processing (reduces temp file usage in YugabyteDB)
+  # Each batch fetches sequences for N tax_ids at once
+  # Lower values = more queries but less DB memory/temp file usage
+  # Higher values = fewer queries but more DB memory/temp file usage
+  # Recommended: 50-200 for YugabyteDB, 500-1000 for local PostgreSQL
+  tax_id_batch_size: 100
+
+  # Logging frequency (purely informational)
+  barcode_log_every: 20
+
+
+# Catalogue of Life API configuration
+# The rate is set high: effective throughput is bounded by worker concurrency, not this
+# value. The client keeps a thread-safe limiter + 429/Retry-After handling as a safety net.
+CoL_api:
+  # Reproducibility: CoL release to pin. "3LR" = latest CoL release, resolved at run
+  # start and frozen for the whole run; its version + DOI are recorded in
+  # results/processed/col_matching_report.json (col_source). Set a specific release key
+  # (e.g. 315777 = COL26.7, DOI 10.48580/dgyhw) to replay the exact same version.
+  # "3" = live CoL project (NOT reproducible) — discouraged.
+  dataset: "3LR"
+  max_requests_per_second: 400  # unthrottled (bounded by worker concurrency, not this rate)
+  max_workers: 32               # concurrent CoL requests (32 = the code cap; network-bound,
+                                # does not compete with --cores, so max it out)
+  batch_size: 1000
+
+
+# Multiple Sequence Alignment (MSA) configuration
+msa:
+  # Sequence extraction (prepare_msa). The MSA construction itself is sequence-first clustered (below).
+  # Batch size for extraction (uses database_formatting.batch_size if not set):
+  # batch_size: 10000
+  create_indexes: false            # create DB indexes before extraction (can timeout on YugabyteDB)
+  barcodes: ["ITS", "ITS1", "ITS2"]
+  csv_path: "results/full.csv"
+  output_report: "reports/html/msa_analysis_report.html"
+  # === Sequence-first clustered MSA construction (cf. clustered_msa.smk) ===
+  # Cluster the whole barcode by SEQUENCE (mmseqs2), merge clusters of similar taxonomy into
+  # kingdom-interleaved groups up to a SIZE cap (SATIVA tolerates gappy MSAs, so size is the real
+  # bound), align + trimAl -> SATIVA. A contaminant clusters with its true kin, so cross-clade /
+  # cross-kingdom contamination is visible to SATIVA (validated at scale, cf. SIMULATION_REPORT.md).
+  clustered:
+    out_dir: "results/MSA/clustered"
+    summary: "results/MSA/clustered/clustered_summary.json"
+    sativa_manifest: "results/MSA/clustered/sativa_manifest.json"
+    residual_report: "results/MSA/clustered/residual_report.json"
+    contamination_report: "results/MSA/clustered/contamination_report.json"
+    cluster_id: 0.97       # mmseqs2 identity (clean references cluster well at 0.97)
+    cluster_cov: 0.80      # mmseqs2 coverage
+    min_ref: 4             # clusters smaller than this are absorbed into the nearest cluster
+    max_group: 10000       # hard cap on sequences per SATIVA MSA (feasibility bound)
+    max_cluster_reps: 200  # cap the reps ONE cluster contributes to its MSA (0 = off). Bounds the MSA
+                           # when a giant near-identical cluster would otherwise blow past max_group;
+                           # all members are kept in group_members.tsv for verdict propagation.
+    sativa_min_seqs: 4     # size floor for a group to be sent to SATIVA
+    mmseqs_env: "mmseqs"           # conda env providing mmseqs2
+    tool_env: "its-pipeline-dev"   # conda env providing mafft + trimal + pandas
+    threads: 32
+
+
+# SATIVA configuration
+sativa:
+  output_dir: "results/SATIVA"
+  sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"
+  timeout_seconds: 21600
+  max_seq_count: 20000
+  max_alignment_length: 5000
+  sativa_mode: "ultrafast"
+  confidence_threshold: 0.4
+  taxonomy_code: "BOT"
+  threads: 1
+  rand_seed: 42
+  barcodes: ["ITS", "ITS1", "ITS2"]
+  tax_levels: ["family", "genus", "order", "species"]
+  max_parallel_jobs: 100   # advisory only (not wired): SATIVA concurrency = --cores, since
+                           # each sativa_task is threads:1. Cap lower with --resources sativa_jobs=N.
+  cleanup_temp_files: true
+  temp_retention_hours: 24
+  visualization_report: "reports/html/sativa_visualization_report.html"
+
+
+# SATIVA integration configuration
+sativa_integration:
+  # CoL API configuration
+  col_api:
+    # Post-SATIVA CoL re-validation. Uses the SAME client as harmonize_taxo
+    # (col_taxonomic_matcher): EXACT search + synonym resolution + thread-safe rate
+    # limiting + pinned DOI'd release.
+    dataset: "3LR"               # pinned CoL release (see CoL_api.dataset)
+    max_requests_per_second: 150  # unthrottled (bottleneck = parallelism, not throughput)
+    timeout_per_request: 30
+
+  # Cache configuration
+  cache:
+    enabled: true
+    max_memory_entries: 100000
+    file_cache_path: "cache/col_validation_cache.pkl"
+
+  # Performance tuning
+  performance:
+    max_workers_files: 20
+    bulk_insert_size: 5000
+
+  # Reporting
+  reporting:
+    export_json: true
+    output_dir: "results/processed"
+
+  # Database
+  database:
+    create_warnings_table: true
+
+
+# Taxonomy sunburst report
+taxonomy_sunburst:
+  output: "reports/html/sativa_taxonomy_report.html"

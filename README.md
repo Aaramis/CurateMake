@@ -40,12 +40,12 @@ taxonomy themselves.
 
 | # | Stage | Rule file | Key outputs |
 |---|-------|-----------|-------------|
-| 1 | **Database bootstrap** — create the normalised schema (SQLite or PostgreSQL) | `rules/database.smk` | `data/db/*.db` or initialised schema |
-| 2 | **Ingestion & formatting** — load UNITE, BOLD, PLANiTS, CALeDNA, PERSONAL; sequence QC; taxonomy deduplication | `rules/format_databases.smk` | `data/processed/*_formatted_report.json`, `formatting_summary.json` |
-| 3 | **Taxonomy harmonisation** — reconcile labels against Catalogue of Life | `rules/harmonize_taxo.smk` | `data/processed/col_matching_report.json` |
-| 4 | **ITSx extraction** — extract ITS/ITS1/ITS2 regions per barcode, with deduplication before and after | `rules/itsx.smk` | `data/ITSx/<barcode>/`, `itsx_process.json` |
-| 5 | **MSA production** — per-clade MAFFT alignments, trimAl trimming, HMM profiles, global HMM classification of unaligned sequences | `rules/msa.smk` | `data/MSA/`, `msa_run_report.json` |
-| 6 | **SATIVA validation** — per-MSA mislabel detection and write-back of corrections | `rules/sativa.smk` | `data/SATIVA/`, `sativa_integration_report.json` |
+| 1 | **Database bootstrap** — create the normalised schema (SQLite or PostgreSQL) | `rules/database.smk` | `results/db/*.db` or initialised schema |
+| 2 | **Ingestion & formatting** — load UNITE, BOLD, PLANiTS, CALeDNA, PERSONAL; sequence QC; taxonomy deduplication | `rules/format_databases.smk` | `results/processed/*_formatted_report.json`, `formatting_summary.json` |
+| 3 | **Taxonomy harmonisation** — reconcile labels against Catalogue of Life | `rules/harmonize_taxo.smk` | `results/processed/col_matching_report.json` |
+| 4 | **ITSx extraction** — extract ITS/ITS1/ITS2 regions per barcode, with deduplication before and after | `rules/itsx.smk` | `results/ITSx/<barcode>/`, `itsx_process.json` |
+| 5 | **MSA construction** — bottom-up per-family build (species → family, quality-gated climb), residual reclassification, coarse cross-kingdom contamination check | `rules/bottomup_msa.smk` | `results/MSA/bottomup/`, `bottomup_summary.json` |
+| 6 | **SATIVA validation** — per-MSA mislabel detection (leave-one-out via EPA-ng) and write-back of corrections | `rules/sativa.smk` | `results/SATIVA/`, `sativa_integration_report.json` |
 | 7 | **Reporting** — interactive HTML dashboards and benchmark summaries | `rules/reports.smk`, `rules/benchmarking.smk` | `reports/html/*.html` |
 
 The full directed acyclic graph (DAG) is orchestrated by Snakemake, and each
@@ -168,13 +168,13 @@ upstream steps it requires:
 
 ```bash
 # Database ingestion and harmonisation only
-snakemake --use-conda data/processed/col_matching_report.json
+snakemake --use-conda results/processed/col_matching_report.json
 
 # ITSx extraction for a single barcode
-snakemake --use-conda data/processed/itsx_run_ITS2.done
+snakemake --use-conda results/processed/itsx_run_ITS2.done
 
-# MSA phase only
-snakemake --use-conda data/processed/msa_run_report.json
+# MSA construction only (bottom-up)
+snakemake --use-conda results/MSA/bottomup/bottomup_summary.json
 
 # Rebuild a single report
 snakemake --use-conda reports/html/sativa_taxonomy_report.html
@@ -187,8 +187,8 @@ Useful flags: `-n` (dry-run), `-r` (reasons), `-p` (print shell commands),
 
 ## Outputs
 
-- **Processed artefacts** — `data/processed/` (JSON run reports, manifests, CSVs)
-- **Alignments & validation** — `data/MSA/`, `data/SATIVA/`
+- **Processed artefacts** — `results/processed/` (JSON run reports, manifests, CSVs)
+- **Alignments & validation** — `results/MSA/bottomup/`, `results/SATIVA/`
 - **HTML reports** — `reports/html/`:
   - `index.html` — landing page linking every report
   - `sequence_flow_report.html` — end-to-end sequence flow

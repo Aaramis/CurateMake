@@ -127,16 +127,15 @@ databases:
 
 ## File Location
 
-Place your FASTA file(s) in the `data/raw/PERSONAL/` directory (recommended) or any accessible path.
+Place your FASTA file(s) in the `resources/PERSONAL/` directory (recommended) or any accessible path.
 
 ```
-data/
-  raw/
-    PERSONAL/
-      my_sequences.fasta
-    UNITE/
-    BOLD/
-    ...
+resources/
+  PERSONAL/
+    my_sequences.fasta
+  UNITE/
+  BOLD/
+  ...
 ```
 
 ## Running the Pipeline
@@ -157,7 +156,7 @@ Check that the PERSONAL database is included in the formatting step:
 
 ```bash
 # Look for the personal formatting report
-ls data/processed/personal_*_formatted_report.json
+ls results/processed/personal_*_formatted_report.json
 ```
 
 The report contains processing statistics:

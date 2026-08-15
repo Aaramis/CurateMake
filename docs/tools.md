@@ -14,7 +14,7 @@ Every Snakemake rule specifies its own Conda environment under `workflow/envs/`.
 - Rule: `col_taxonomic_matching`
 - Script: `workflow/scripts/col_taxonomic_matcher.py`
 - Config knobs: `CoL_api.*`
-- Output: `data/processed/col_matching_report.json` (writes `backbone = 'CoL'`
+- Output: `results/processed/col_matching_report.json` (writes `backbone = 'CoL'`
   rows into `seq_tax`)
 
 ## ITSx
@@ -22,22 +22,24 @@ Every Snakemake rule specifies its own Conda environment under `workflow/envs/`.
 - Env: `workflow/envs/itsx.yaml`
 - Rule: `run_itsx_barcode`
 - Config knobs: `itsx_cpu`, `itsx_deterministic`, `sequence_validation.*`
-- Outputs per barcode: `data/processed/itsx_run_<barcode>.done`, `logs/ITSX/run_itsx_<barcode>.log`
+- Outputs per barcode: `results/processed/itsx_run_<barcode>.done`, `logs/ITSX/run_itsx_<barcode>.log`
 
-## MAFFT + trimAl
+## MAFFT + trimAl + vsearch
 
 - Env: `workflow/envs/msa.yaml`
-- Used in `msa_align_task` and `msa_trim_task`
-- Parameters derived from `config["msa"]` (tax columns, trimming overlaps)
+- Used inside `build_family` (`build_family_msa.py`): `vsearch` clusters each species
+  at the floor, MAFFT aligns (`--merge` to climb without re-aligning), trimAl
+  `-gappyout` trims while keeping every sequence.
+- Parameters: `config["msa"]["bottomup"]` (`cluster_id`, `gate_ratio`, `gate_occ`, …).
 
 ## HMMER
 
 - Env: `workflow/envs/msa.yaml`
 - Used for:
-  - `msa_build_hmm_task`
-  - `msa_combine_barcode_hmms`
-  - `msa_filter_global_hmm`
-  - `msa_classify_batch` (hmmscan)
+  - `hmmbuild` — one profile per reference MSA (`build_family`)
+  - `hmmsearch` — residual reclassification and the coarse contamination check
+    (`bottomup_residual`, `bottomup_contamination`)
+  - `hmmalign` — integrate reclassified orphans into their MSA (mafft fallback)
 
 ## SATIVA
 
@@ -47,12 +49,12 @@ Every Snakemake rule specifies its own Conda environment under `workflow/envs/`.
   - `workflow/scripts/Sativa/collect_sativa_results.py`
   - `workflow/scripts/Sativa/integrate_sativa.py`
 - Config knobs: `sativa.*`, `sativa_integration.*`
-- Outputs: per-task logs under `logs/sativa/`, JSON summaries under `data/processed/`
+- Outputs: per-task logs under `logs/sativa/`, JSON summaries under `results/processed/`
 
 ## Reporting stack
 
 - `workflow/scripts/generate_sequence_flow_report.py`
-- `workflow/scripts/MSA/generate_report_MSA.py`
+- `workflow/scripts/MSA/generate_report_bottomup.py`
 - `workflow/scripts/generate_sativa_taxonomy_report.py`
 - Dependencies (plotly, pandas, jinja2, etc.) are bundled in `workflow/envs/sativa.yaml`.
 

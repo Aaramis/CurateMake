@@ -6,7 +6,7 @@ Snakemake rules for generating HTML reports
 import os
 
 
-_FLOW_BU = config["msa"].get("bottomup", {})
+_FLOW_CL = config["msa"].get("clustered", {})
 _FLOW_COMMON_IN = dict(
     final_integration=config["sativa_integration"]["reporting"]["output_dir"] + "/sativa_integration_report.json",
     formatting_summary="results/processed/formatting_summary.json",
@@ -20,7 +20,7 @@ _FLOW_COMMON_IN = dict(
 rule sequence_flow_report:
     """Flow report (bottom-up: reads the bottom-up summary)."""
     input:
-        bottomup_summary=_FLOW_BU.get("summary", "results/MSA/bottomup/bottomup_summary.json"),
+        bottomup_summary=_FLOW_CL.get("summary", "results/MSA/clustered/clustered_summary.json"),
         **_FLOW_COMMON_IN
     output:
         report="reports/html/sequence_flow_report.html"

@@ -62,7 +62,7 @@ Missing variables raise a clear error at start-up.
 database:
   type: "postgresql"        # or "sqlite"
   sqlite:
-    path: "data/db"
+    path: "results/db"
     name: "its_mini_database.db"
   postgresql:
     host: "{{ env.POSTGRES_HOST }}"
@@ -109,12 +109,12 @@ privileges in the target schema.
 
 - SQLite snapshot:
   ```bash
-  sqlite3 data/db/its_mini_database.db ".backup data/db/backup_$(date +%Y%m%d).db"
+  sqlite3 results/db/its_mini_database.db ".backup results/db/backup_$(date +%Y%m%d).db"
   ```
 - PostgreSQL dump:
   ```bash
   pg_dump -h "$POSTGRES_HOST" -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
   ```
 
-Keep `data/db/` (SQLite) or the remote schema under a retention policy if your
+Keep `results/db/` (SQLite) or the remote schema under a retention policy if your
 project requires it.
