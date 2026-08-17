@@ -16,6 +16,10 @@ Architecture:
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "utils"))
+from report_style import REPORT_CSS, CHART_COLORS  # shared CurateMake report styling
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import plotly.graph_objects as go
@@ -260,38 +264,38 @@ class TaxonomyAnalyzer:
 
     def get_modification_rate_by(self, level: str) -> pd.DataFrame:
         """Calculate modification rates grouped by specified taxonomic level or category."""
-        data = self.df.copy()
+        # Only the category labels are needed, so derive them as a Series rather
+        # than copying the whole frame once per level (9 levels x 4.4M rows).
         if level.lower() == 'barcode':
-            data['category'] = data['barcode']
+            category = self.df['barcode']
         elif level.lower() == 'source':
-            data['category'] = data['source'].fillna('Unknown')
+            category = self.df['source'].fillna('Unknown')
         else:
             try:
                 idx = TaxonomicLevel[level.upper()].value
             except KeyError:
                 raise ValueError(f"Unknown level: {level}")
-            data['category'] = data['original_path'].apply(
+            category = self.df['original_path'].apply(
                 lambda path: path[idx] if len(path) > idx else "Unclassified"
             )
 
-        if data.empty:
+        if self.df.empty:
             return pd.DataFrame(columns=['category', 'total', 'modified', 'percentage'])
 
-        stats = []
-        for cat in data['category'].unique():
-            subset = data[data['category'] == cat]
-            total = len(subset)
-            modified = subset['is_modified'].sum()
-            perc = (modified / total * 100) if total > 0 else 0
-            stats.append({
-                'category': cat,
-                'total': total,
-                'modified': modified,
-                'percentage': round(perc, 2)
-            })
-        result = pd.DataFrame(stats)
-        if result.empty:
+        # One grouped pass. Scanning the frame once per distinct category would be
+        # O(n_categories x n_rows) elementwise object comparisons, which does not
+        # finish at the genus and species levels (10^4-10^5 categories, millions of
+        # rows).
+        grouped = self.df['is_modified'].groupby(category, dropna=False).agg(['size', 'sum'])
+        if grouped.empty:
             return pd.DataFrame(columns=['category', 'total', 'modified', 'percentage'])
+
+        result = pd.DataFrame({
+            'category': grouped.index,
+            'total': grouped['size'].astype(int),
+            'modified': grouped['sum'].astype(int),
+            'percentage': (grouped['sum'] / grouped['size'] * 100).round(2),
+        }).reset_index(drop=True)
         return result.sort_values('percentage', ascending=False)
 
     def get_modifications_by_level(self) -> pd.DataFrame:
@@ -339,14 +343,8 @@ class TaxonomyAnalyzer:
 class VisualizationEngine:
     """Generates interactive visualizations using Plotly."""
 
-    COLORS = {
-        'primary': '#2563eb',
-        'secondary': '#7c3aed',
-        'success': '#10b981',
-        'warning': '#f59e0b',
-        'danger': '#ef4444',
-        'info': '#06b6d4'
-    }
+    # Chart palette comes from the shared report styling, so the figures match the page.
+    COLORS = CHART_COLORS
 
     def __init__(self, analyzer: TaxonomyAnalyzer):
         self.analyzer = analyzer
@@ -824,84 +822,7 @@ class ReportGenerator:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SATIVA Analysis Report</title>
-    <style>
-        body {{
-            font-family: 'Arial', 'Helvetica', sans-serif;
-            line-height: 1.6;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            background-color: white;
-            padding: 40px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        h1 {{
-            color: #1e40af;
-            border-bottom: 3px solid #2563eb;
-            padding-bottom: 10px;
-            margin-bottom: 30px;
-        }}
-        h2 {{
-            color: #1e40af;
-            margin-top: 40px;
-            margin-bottom: 20px;
-        }}
-        h3 {{
-            color: #374151;
-            margin-top: 30px;
-        }}
-        .summary-box {{
-            background-color: #eff6ff;
-            border-left: 4px solid #2563eb;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 4px;
-        }}
-        .metric {{
-            display: inline-block;
-            margin: 10px 20px 10px 0;
-        }}
-        .metric-label {{
-            font-weight: bold;
-            color: #374151;
-        }}
-        .metric-value {{
-            font-size: 1.2em;
-            color: #2563eb;
-        }}
-        .interpretation {{
-            background-color: #f0fdf4;
-            border-left: 4px solid #10b981;
-            padding: 15px;
-            margin: 20px 0;
-            border-radius: 4px;
-        }}
-        .timestamp {{
-            color: #6b7280;
-            font-size: 0.9em;
-            text-align: right;
-            margin-top: 40px;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-        }}
-        th, td {{
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #e5e7eb;
-        }}
-        th {{
-            background-color: #f9fafb;
-            font-weight: bold;
-            color: #374151;
-        }}
-    </style>
+    <style>{REPORT_CSS}</style>
 </head>
 <body>
     <div class="container">
@@ -1130,119 +1051,137 @@ class SativaPipeline:
         if not self.SessionFactory:
             self.SessionFactory = sessionmaker(bind=self.engine)
 
-        # Query 1: Fetch Sativa assignments with retry
-        def fetch_sativa_rows():
-            session = self.SessionFactory()
-            try:
-                return session.query(
-                    SeqTax.seq_id.label("seq_id"),
-                    DBSequence.barcode.label("barcode"),
-                    Source.name.label("source_name"),
-                    SeqTax.confidence.label("confidence"),
-                    Taxonomy.kingdom.label("kingdom"),
-                    Taxonomy.phylum.label("phylum"),
-                    Taxonomy.class_.label("class_"),
-                    Taxonomy.order_.label("order_"),
-                    Taxonomy.family.label("family"),
-                    Taxonomy.genus.label("genus"),
-                    Taxonomy.species.label("species")
-                ).join(DBSequence, SeqTax.seq_id == DBSequence.seq_id
-                ).join(Source, DBSequence.source_id == Source.source_id
-                ).join(Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
-                ).filter(SeqTax.backbone == 'Sativa').all()
-            finally:
-                session.close()
+        # ------------------------------------------------------------------
+        # A server-side join over seq_tax (16M rows) is fatal on YugabyteDB: the
+        # backend is killed mid-query, whether the result is materialised at once
+        # or streamed. Single-table reads of the same data are reliable, so each
+        # table is read on its own -- streamed, sliced, retried per slice -- and
+        # joined here. taxonomy/sources are small enough to hold as dicts;
+        # sequences is narrowed to the seq_ids Sativa uses.
+        # ------------------------------------------------------------------
+        import time as _time
+        from sqlalchemy import select
 
-        if self.db_manager:
-            sativa_rows = self.db_manager._execute_with_retry("viz_fetch_sativa_rows", fetch_sativa_rows)
-        else:
-            sativa_rows = fetch_sativa_rows()
+        # Same retry budget as every other DB operation in the pipeline
+        # (config: database.writer_retry.max_attempts, read by db_manager).
+        attempts = getattr(self.db_manager, 'writer_retry_attempts', 0) or 3
+
+        def stream(stmt, label):
+            """Read one single-table SELECT, retrying the slice from scratch if
+            the backend drops the connection (transient on a degraded cluster)."""
+            last_exc = None
+            for attempt in range(1, attempts + 1):
+                rows = []
+                try:
+                    with self.engine.connect().execution_options(
+                        stream_results=True, max_row_buffer=20000
+                    ) as conn:
+                        for row in conn.execute(stmt):
+                            rows.append(tuple(row))
+                    return rows
+                except Exception as exc:  # noqa: BLE001 - any driver error is retryable here
+                    last_exc = exc
+                    # Same capped exponential backoff as db_manager._execute_with_retry.
+                    backoff = min(2 ** min(attempt, 5), 30)
+                    logger.warning(
+                        "%s: attempt %s/%s failed after %s rows (%s), retry in %ss",
+                        label, attempt, attempts, len(rows), type(exc).__name__, backoff
+                    )
+                    _time.sleep(backoff)
+            raise RuntimeError(f"{label}: giving up after {attempts} attempts") from last_exc
+
+        # Small lookup tables, held in memory for the join below.
+        tax_map: Dict[str, List[str]] = {
+            row[0]: [v for v in row[1:] if v]
+            for row in stream(
+                select(Taxonomy.tax_id, Taxonomy.kingdom, Taxonomy.phylum, Taxonomy.class_,
+                       Taxonomy.order_, Taxonomy.family, Taxonomy.genus, Taxonomy.species),
+                "taxonomy")
+        }
+        source_map = {row[0]: row[1] for row in stream(select(Source.source_id, Source.name),
+                                                       "sources")}
+
+        # Query 1 (was a 4-table join): the Sativa assignments themselves.
+        sativa_rows = stream(
+            select(SeqTax.seq_id, SeqTax.tax_id, SeqTax.confidence)
+            .where(SeqTax.backbone == 'Sativa'),
+            "seq_tax/Sativa")
 
         if not sativa_rows:
             logger.warning("No Sativa assignments found in the database.")
 
-        # Query 2: Fetch original taxonomies (CoL/Raw) with retry
-        def fetch_original_rows():
-            session = self.SessionFactory()
-            try:
-                return session.query(
-                    SeqTax.seq_id.label("seq_id"),
-                    SeqTax.backbone.label("backbone"),
-                    Taxonomy.kingdom.label("kingdom"),
-                    Taxonomy.phylum.label("phylum"),
-                    Taxonomy.class_.label("class_"),
-                    Taxonomy.order_.label("order_"),
-                    Taxonomy.family.label("family"),
-                    Taxonomy.genus.label("genus"),
-                    Taxonomy.species.label("species")
-                ).join(Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
-                ).filter(SeqTax.backbone.in_(["CoL", "Raw"])).all()
-            finally:
-                session.close()
+        needed_seq_ids = {row[0] for row in sativa_rows}
 
-        if self.db_manager:
-            original_rows = self.db_manager._execute_with_retry("viz_fetch_original_rows", fetch_original_rows)
-        else:
-            original_rows = fetch_original_rows()
+        # Query 3 (was a 3-table join), read here because the warned sequences
+        # also need a source name resolved from the sequences table below.
+        warning_rows = stream(
+            select(SativaWarning.seq_id, SativaWarning.barcode,
+                   SativaWarning.sativa_original_taxonomy,
+                   SativaWarning.sativa_proposed_taxonomy,
+                   SativaWarning.sativa_confidence),
+            "sativa_warnings")
+        wanted_seq_ids = needed_seq_ids | {row[0] for row in warning_rows}
 
-        # Build original taxonomy map
-        priority = {'CoL': 0, 'Raw': 1}
+        # sequences is the one table too big to read in a single pass, so walk
+        # it one (source, barcode) slice at a time and keep only what we need.
+        seq_info: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+        barcodes = [row[0] for row in stream(select(DBSequence.barcode).distinct(), "barcodes")]
+        for source_id, source_name in source_map.items():
+            for barcode in barcodes:
+                for row in stream(
+                    select(DBSequence.seq_id).where(DBSequence.source_id == source_id,
+                                                    DBSequence.barcode == barcode),
+                    f"sequences/{source_name}/{barcode}"
+                ):
+                    if row[0] in wanted_seq_ids:
+                        seq_info[row[0]] = (barcode, source_name)
+        logger.info("Resolved %s/%s sequence ids", len(seq_info), len(wanted_seq_ids))
+
+        # Query 2 (was a 2-table join): the original taxonomy of each sequence.
+        # Reading 'CoL' before 'Raw' and never overwriting reproduces the old
+        # priority sort (CoL wins over Raw); only the seq_ids Sativa touched are
+        # kept, which is what the lookup below actually asks for.
         original_map: Dict[str, List[str]] = {}
-        for row in sorted(original_rows, key=lambda r: priority.get(r.backbone, 99)):
-            if row.seq_id not in original_map:
-                original_map[row.seq_id] = self._build_taxonomy_path(row)
+        for backbone in ('CoL', 'Raw'):
+            for row in stream(
+                select(SeqTax.seq_id, SeqTax.tax_id).where(SeqTax.backbone == backbone),
+                f"seq_tax/{backbone}"
+            ):
+                seq_id, tax_id = row
+                if seq_id in needed_seq_ids and seq_id not in original_map:
+                    original_map[seq_id] = tax_map.get(tax_id, [])
 
         # Create SequenceResult objects from Sativa rows
         seq_results: List[SequenceResult] = []
-        for row in sativa_rows:
-            proposed_path = self._build_taxonomy_path(row)
-            original_path = original_map.get(row.seq_id, [])
+        for seq_id, tax_id, confidence in sativa_rows:
+            barcode, source_name = seq_info.get(seq_id, (None, None))
             seq_results.append(
                 self._create_sequence_result(
-                    seq_id=row.seq_id,
-                    barcode=row.barcode,
-                    source=row.source_name,
-                    original_path=original_path,
-                    proposed_path=proposed_path,
-                    confidence=row.confidence if row.confidence is not None else 0.0
+                    seq_id=seq_id,
+                    barcode=barcode,
+                    source=source_name,
+                    original_path=original_map.get(seq_id, []),
+                    proposed_path=tax_map.get(tax_id, []),
+                    confidence=confidence if confidence is not None else 0.0
                 )
             )
 
         processed_ids = {res.seq_id for res in seq_results}
 
-        # Query 3: Fetch warning rows with retry
-        def fetch_warning_rows():
-            session = self.SessionFactory()
-            try:
-                return session.query(
-                    SativaWarning.seq_id,
-                    SativaWarning.barcode,
-                    SativaWarning.sativa_original_taxonomy,
-                    SativaWarning.sativa_proposed_taxonomy,
-                    SativaWarning.sativa_confidence,
-                    Source.name.label("source_name")
-                ).join(DBSequence, SativaWarning.seq_id == DBSequence.seq_id
-                ).join(Source, DBSequence.source_id == Source.source_id, isouter=True).all()
-            finally:
-                session.close()
-
-        if self.db_manager:
-            warning_rows = self.db_manager._execute_with_retry("viz_fetch_warning_rows", fetch_warning_rows)
-        else:
-            warning_rows = fetch_warning_rows()
-
-        # Process warning rows
-        for warn in warning_rows:
-            if warn.seq_id in processed_ids:
+        # Process warning rows (read above, source name joined in memory; the
+        # outer join is preserved by defaulting to None when unresolved).
+        for warn_seq_id, warn_barcode, warn_original, warn_proposed, warn_confidence in warning_rows:
+            if warn_seq_id in processed_ids:
                 continue
+            _, warn_source = seq_info.get(warn_seq_id, (None, None))
             seq_results.append(
                 self._create_sequence_result(
-                    seq_id=warn.seq_id,
-                    barcode=warn.barcode,
-                    source=warn.source_name,
-                    original_path=self._parse_taxonomy_string(warn.sativa_original_taxonomy),
-                    proposed_path=self._parse_taxonomy_string(warn.sativa_proposed_taxonomy),
-                    confidence=warn.sativa_confidence or 0.0
+                    seq_id=warn_seq_id,
+                    barcode=warn_barcode,
+                    source=warn_source,
+                    original_path=self._parse_taxonomy_string(warn_original),
+                    proposed_path=self._parse_taxonomy_string(warn_proposed),
+                    confidence=warn_confidence or 0.0
                 )
             )
 

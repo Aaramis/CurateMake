@@ -46,6 +46,8 @@ rule analyze_msa_report:
         report=config["msa"]["output_report"]
     log:
         "logs/msa_report/analyze_msa_report.log"
+    benchmark:
+        "benchmarks/msa/analyze_msa_report.benchmark.txt"
     conda:
         "../envs/msa.yaml"
     shell:

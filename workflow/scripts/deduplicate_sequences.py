@@ -37,6 +37,10 @@ class SequenceDeduplicator:
         self.update_batch_size = max(1, int(dedup_config.get("update_batch_size", 500)))
         self.tax_id_batch_size = max(1, int(dedup_config.get("tax_id_batch_size", 100)))
 
+        # Duplicates per tax_id, accumulated while marking. Recomputing this from the
+        # database afterwards means walking every duplicate row a second time.
+        self._dup_by_tax: Dict[str, int] = {}
+
         self.stats = {
             "initial_sequence_count": 0,
             "final_sequence_count": 0,
@@ -138,6 +142,74 @@ class SequenceDeduplicator:
             apply_update,
         )
 
+    # yb_hash_code() spans this range; it is fixed by YugabyteDB.
+    YB_HASH_SPACE = 65536
+    # Starting slice count. Few wide slices beat many narrow ones: each slice pays a fixed
+    # index-scan cost, so over-slicing multiplies it (measured: 64 slices -> 0.7 ms/id,
+    # 512 slices -> 5.6 ms/id). Failures subdivide from here.
+    HASH_SLICES = 64
+
+    def _iter_seq_ids(self, extra_where: str, params: Dict[str, Any], label: str):
+        """Yield lists of seq_id matching `extra_where`, in slices.
+
+        Paginating with `ORDER BY seq_id LIMIT n` has no index to satisfy the ordering, so
+        every page re-sorts the whole subset -- 25 ms per id, 16 h for a single barcode.
+        Walking the table's own hash space instead needs no ordering, and each range is an
+        independent, retryable query. A range the backend refuses is halved rather than
+        abandoned. SQLite has neither yb_hash_code nor the problem, so it reads in one go.
+        """
+        sequences_table = self.db_manager.sequences_table
+
+        if self.db_manager.db_type != "postgresql":
+            query = f"SELECT seq_id FROM {sequences_table} WHERE {extra_where}"
+
+            def fetch_all():
+                with self.db_manager.get_session() as session:
+                    return [row[0] for row in session.execute(text(query), params)]
+
+            ids = self.db_manager._execute_with_retry(f"{label}_all", fetch_all)
+            if ids:
+                yield ids
+            return
+
+        def read_range(lo: int, hi: int, depth: int = 0):
+            query = f"""
+                SELECT seq_id FROM {sequences_table}
+                WHERE {extra_where}
+                  AND yb_hash_code(seq_id) >= :hash_lo
+                  AND yb_hash_code(seq_id) < :hash_hi
+            """
+
+            def fetch():
+                with self.db_manager.get_session() as session:
+                    result = session.execute(text(query),
+                                             {**params, "hash_lo": lo, "hash_hi": hi})
+                    return [row[0] for row in result]
+
+            try:
+                # Two attempts, then split: a range that keeps failing is more likely too
+                # large than transiently unlucky.
+                last_exc = None
+                for _ in range(2):
+                    try:
+                        return fetch()
+                    except Exception as exc:  # noqa: BLE001
+                        last_exc = exc
+                        time.sleep(5)
+                raise last_exc
+            except Exception:
+                if hi - lo <= 1:
+                    raise
+                mid = (lo + hi) // 2
+                logger.warning("%s: hash range [%s,%s) refused, splitting", label, lo, hi)
+                return read_range(lo, mid, depth + 1) + read_range(mid, hi, depth + 1)
+
+        step = max(1, self.YB_HASH_SPACE // self.HASH_SLICES)
+        for start in range(0, self.YB_HASH_SPACE, step):
+            ids = read_range(start, min(start + step, self.YB_HASH_SPACE))
+            if ids:
+                yield ids
+
     def _mark_duplicates_for_barcode_streaming(self, barcode: Optional[str]) -> Tuple[int, int, int]:
         """
         Mark duplicate sequences for a barcode using seq_id batching:
@@ -157,48 +229,17 @@ class SequenceDeduplicator:
             barcode_filter = "barcode = :barcode"
             params = {"barcode": barcode}
 
-        # Step 1: Fetch seq_ids for this barcode in batches (no JOIN)
-        # Keyset pagination (WHERE seq_id > :last ORDER BY seq_id): deterministic across
-        # separate transactions/pages — required on distributed backends (YugabyteDB),
-        # where OFFSET without a stable ORDER BY can skip or duplicate rows between pages.
-        # Marking is deferred to Step 4, so the keyset walk sees a stable snapshot.
-        seq_id_batch_size = self.tax_id_batch_size * 10  # Larger batches for seq_ids
-        last_seq_id = None
+        # Step 1: enumerate the seq_ids of this barcode, sliced over the table's own
+        # hash space (see _iter_seq_ids: an ORDER BY page would re-sort the whole subset).
         all_rows = []
+        n_slices = 0
 
-        while True:
-            keyset_filter = "" if last_seq_id is None else "AND seq_id > :last_seq_id"
-            seq_id_query = f"""
-                SELECT seq_id
-                FROM {sequences_table}
-                WHERE barcode_status != 'Duplicate'
-                  AND {barcode_filter}
-                  {keyset_filter}
-                ORDER BY seq_id
-                LIMIT :limit
-            """
-
-            def fetch_seq_ids(_last=last_seq_id):
-                query_params = {**params, "limit": seq_id_batch_size}
-                if _last is not None:
-                    query_params["last_seq_id"] = _last
-                with self.db_manager.get_session() as session:
-                    result = session.execute(text(seq_id_query), query_params)
-                    return [row[0] for row in result]
-
-            try:
-                seq_ids = self.db_manager._execute_with_retry(
-                    f"dedup_fetch_seq_ids_{barcode}_after_{last_seq_id}",
-                    fetch_seq_ids
-                )
-            except Exception as e:
-                logger.error(f"Failed to fetch seq_ids after {last_seq_id}: {e}")
-                break
-
-            if not seq_ids:
-                break
-
-            logger.info(f"Fetching data for {len(seq_ids)} sequences (after seq_id {last_seq_id}) for barcode {barcode}...")
+        for seq_ids in self._iter_seq_ids(
+            f"barcode_status != 'Duplicate' AND {barcode_filter}", params,
+            f"dedup_seq_ids_{barcode}"
+        ):
+            n_slices += 1
+            logger.info(f"Slice {n_slices}: fetching data for {len(seq_ids)} sequences of barcode {barcode}...")
 
             # Step 2: Fetch sequences and tax_ids for this batch of seq_ids
             if self.db_manager.db_type == "postgresql":
@@ -223,17 +264,12 @@ class SequenceDeduplicator:
 
             try:
                 rows = self.db_manager._execute_with_retry(
-                    f"dedup_fetch_data_{barcode}_after_{last_seq_id}",
+                    f"dedup_fetch_data_{barcode}_slice_{n_slices}",
                     fetch_sequences
                 )
                 all_rows.extend(rows)
             except Exception as e:
-                logger.error(f"Failed to fetch data for seq_id batch after {last_seq_id}: {e}")
-
-            # Advance the keyset cursor. Short page => last page reached.
-            last_seq_id = seq_ids[-1]
-            if len(seq_ids) < seq_id_batch_size:
-                break
+                logger.error(f"Failed to fetch data for slice {n_slices}: {e}")
 
         if not all_rows:
             logger.info(f"No sequences found for barcode {barcode}")
@@ -289,6 +325,7 @@ class SequenceDeduplicator:
                 continue
             batch_seen.add(seq_id)
             batch_ids.append(seq_id)
+            self._dup_by_tax[tax_id] = self._dup_by_tax.get(tax_id, 0) + 1
             batch_limit = self.update_batch_size
             if self.db_manager.db_type == "sqlite":
                 batch_limit = min(batch_limit, 900)
@@ -496,88 +533,15 @@ class SequenceDeduplicator:
         return False
 
     def _get_top_duplicated_tax_ids_streaming(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Most duplicated tax_ids, taken from the counts gathered while marking.
+
+        This used to re-read every duplicate row from the database with an ordered keyset
+        walk -- the same pattern that makes enumeration quadratic here, and it cost more
+        than a third of the whole step for a ten-row summary. The marking pass already
+        sees each duplicate exactly once, so the tally is free.
         """
-        Get top duplicated tax_ids using batched streaming to avoid temp_file_limit.
-        Fetches duplicate seq_ids in batches, then aggregates in Python.
-        """
-        sequences_table = self.db_manager.sequences_table
-        seq_tax_table = self.db_manager.seq_tax_table
-
-        # Count duplicates per tax_id using batched approach
-        tax_id_counts: Dict[str, int] = {}
-        batch_size = self.tax_id_batch_size * 10
-        # KEYSET pagination (WHERE seq_id > last ORDER BY seq_id), NOT LIMIT/OFFSET: on a distributed
-        # DB (YugabyteDB) OFFSET N re-scans N rows every batch -> O(N^2) over millions of duplicates,
-        # which hangs for days. The mark step already uses keyset; this summary must too.
-        last_seq_id = None
-
-        while True:
-            if last_seq_id is None:
-                seq_id_query = f"""
-                    SELECT seq_id FROM {sequences_table}
-                    WHERE barcode_status = 'Duplicate'
-                    ORDER BY seq_id LIMIT :limit
-                """
-                seq_id_params = {"limit": batch_size}
-            else:
-                seq_id_query = f"""
-                    SELECT seq_id FROM {sequences_table}
-                    WHERE barcode_status = 'Duplicate' AND seq_id > :last
-                    ORDER BY seq_id LIMIT :limit
-                """
-                seq_id_params = {"limit": batch_size, "last": last_seq_id}
-
-            def fetch_seq_ids():
-                with self.db_manager.get_session() as session:
-                    result = session.execute(text(seq_id_query), seq_id_params)
-                    return [row[0] for row in result]
-
-            try:
-                seq_ids = self.db_manager._execute_with_retry(
-                    "dedup_summary_seq_ids_keyset",
-                    fetch_seq_ids
-                )
-            except Exception as e:
-                logger.warning(f"Failed to fetch seq_ids for summary after {last_seq_id}: {e}")
-                break
-
-            if not seq_ids:
-                break
-            last_seq_id = seq_ids[-1]
-
-            # Fetch tax_ids for these seq_ids
-            if self.db_manager.db_type == "postgresql":
-                tax_query = f"""
-                    SELECT tax_id FROM {seq_tax_table}
-                    WHERE seq_id = ANY(:seq_ids)
-                """
-                tax_params = {"seq_ids": seq_ids}
-            else:
-                placeholders = ", ".join([f":sid{i}" for i in range(len(seq_ids))])
-                tax_query = f"""
-                    SELECT tax_id FROM {seq_tax_table}
-                    WHERE seq_id IN ({placeholders})
-                """
-                tax_params = {f"sid{i}": sid for i, sid in enumerate(seq_ids)}
-
-            def fetch_tax_ids():
-                with self.db_manager.get_session() as session:
-                    result = session.execute(text(tax_query), tax_params)
-                    return [row[0] for row in result]
-
-            try:
-                tax_ids = self.db_manager._execute_with_retry(
-                    "dedup_summary_tax_ids_keyset",
-                    fetch_tax_ids
-                )
-                for tax_id in tax_ids:
-                    tax_id_counts[tax_id] = tax_id_counts.get(tax_id, 0) + 1
-            except Exception as e:
-                logger.warning(f"Failed to fetch tax_ids for summary after {last_seq_id}: {e}")
-
-        # Sort and return top N
-        sorted_counts = sorted(tax_id_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
-        return [{"tax_id": tax_id, "duplicate_count": count} for tax_id, count in sorted_counts]
+        top = sorted(self._dup_by_tax.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        return [{"tax_id": tax_id, "duplicate_count": count} for tax_id, count in top]
 
     def get_deduplication_summary(self) -> dict:
         """Build a detailed deduplication summary."""

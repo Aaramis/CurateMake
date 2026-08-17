@@ -28,6 +28,8 @@ rule sequence_flow_report:
         processed_dir="results/processed"
     log:
         "logs/reports/sequence_flow_report.log"
+    benchmark:
+        "benchmarks/reports/sequence_flow_report.benchmark.txt"
     conda:
         "../envs/sativa.yaml"
     script:

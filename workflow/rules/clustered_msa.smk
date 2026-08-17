@@ -51,6 +51,8 @@ rule clustered_build_barcode:
     threads: CL_THREADS
     log:
         "logs/clustered/{barcode}.log",
+    benchmark:
+        "benchmarks/clustered/build_{barcode}.benchmark.txt"
     shell:
         r"""
         python {params.script} \
@@ -75,6 +77,8 @@ rule clustered_collect:
         contamination=CL_CONTAM_REPORT,
     log:
         "logs/clustered/collect.log",
+    benchmark:
+        "benchmarks/clustered/collect.benchmark.txt"
     shell:
         """
         python workflow/scripts/MSA/collect_clustered.py \

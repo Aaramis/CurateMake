@@ -18,6 +18,7 @@ Compatible: PostgreSQL + SQLite via DatabaseManager
 import sys
 import json
 import logging
+import re
 import time
 import requests
 from pathlib import Path
@@ -45,6 +46,30 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _attach_snakemake_log(snakemake) -> None:
+    """Send this script's log to the rule's `log:` file.
+
+    basicConfig alone writes to stderr, which Snakemake does not capture for
+    `script:` directives, so a failing clade would otherwise leave no diagnostic.
+    """
+    try:
+        log_attr = getattr(snakemake, 'log', None)
+        if not log_attr:
+            return
+        log_file = log_attr[0] if isinstance(log_attr, (list, tuple)) else log_attr
+        if any(getattr(h, 'baseFilename', None) == str(Path(log_file).absolute())
+               for h in logger.handlers):
+            return
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(log_file, mode="w")
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s | %(levelname)s | %(name)s | %(message)s'))
+        logger.addHandler(handler)
+    except Exception as exc:  # noqa: BLE001 - logging must never break the job
+        logger.warning("could not attach file logging: %s", exc)
+
 
 DISPLAY_TAXONOMY_LEVELS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 DB_TAXONOMY_LEVEL_KEYS = ["kingdom", "phylum", "class_", "order_", "family", "genus", "species"]
@@ -334,12 +359,22 @@ class SativaMisParser:
 
     MISSING_TAX_TOKENS = {"", "na", "n/a", "none", "null", "unknown", "unidentified"}
 
+    # SATIVA merges taxa whose sequences it cannot tell apart into one pseudo-taxon named
+    # `__TAXCLUSTER<n>__<name>` (epa_trainer.check_identical_ranks), where <name> is just
+    # the first member of the merged set. Downstream normalisation turns the underscores
+    # into spaces, hence both forms. It is an internal marker, not a taxonomic name: the
+    # only thing it asserts is that the rank could NOT be resolved, so it is treated as
+    # unclassified. The raw proposal is still recorded in sativa_warnings.
+    _TAXCLUSTER_RE = re.compile(r"^_*TAXCLUSTER\d*_*\s*", re.IGNORECASE)
+
     @staticmethod
     def _normalize_tax_token(value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
         if not cleaned:
+            return None
+        if SativaMisParser._TAXCLUSTER_RE.match(cleaned):
             return None
         if cleaned.lower() in SativaMisParser.MISSING_TAX_TOKENS:
             return None
@@ -1431,6 +1466,7 @@ def integrate_one_clade(snakemake):
     The sativa_warnings table and all ORM tables are created earlier by the schema
     step, so nothing is created here.
     """
+    _attach_snakemake_log(snakemake)
     start_time = time.time()
     config = snakemake.config
     barcode = snakemake.wildcards.barcode
@@ -1473,8 +1509,12 @@ def integrate_one_clade(snakemake):
                 col_validator, db_manager, config['sativa_integration'])
             merge_stats(stats, file_stats)
         except Exception as e:
-            logger.error(f"[{taxon}] integration failed: {e}")
+            # Do NOT swallow this: writing out_report below would mark the clade as
+            # integrated, and Snakemake would report success for a clade whose rows
+            # never reached the database.
+            logger.exception("[%s] integration failed: %s", taxon, e)
             stats['failed_files'] += 1
+            raise
     else:
         logger.info(f"[{taxon}] no .mis file — nothing to integrate")
 

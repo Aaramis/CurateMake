@@ -17,8 +17,62 @@ n_groups, n_msa, ref_seqs, residual}}.
 """
 import argparse
 import json
+import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
+
+_KINGDOM_RE = re.compile(r"kingdom=([^|\s]+)")
+
+# An MSA narrower than this cannot support a phylogenetic placement: SATIVA's verdicts
+# on it are noise. Reported, never acted upon -- the point is to make it visible.
+NARROW_COLUMNS = 100
+LOW_OCCUPANCY_PCT = 20.0
+
+
+def measure_msa(msa_path):
+    """Exact width, occupancy and kingdom mix of one aligned FASTA.
+
+    One pass per file. Width and occupancy are what decide whether a SATIVA placement on
+    this MSA means anything; the kingdom mix says how broad a reference frame the group
+    provides.
+    """
+    width = None
+    gaps = residues = n_seqs = 0
+    kingdoms = Counter()
+    pending = []
+    try:
+        with open(msa_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith(">"):
+                    if pending:
+                        seq = "".join(pending)
+                        if width is None:
+                            width = len(seq)
+                        gaps += seq.count("-")
+                        residues += len(seq)
+                        pending = []
+                    n_seqs += 1
+                    m = _KINGDOM_RE.search(line)
+                    kingdoms[m.group(1) if m else "NA"] += 1
+                else:
+                    pending.append(line.strip())
+            if pending:
+                seq = "".join(pending)
+                if width is None:
+                    width = len(seq)
+                gaps += seq.count("-")
+                residues += len(seq)
+    except OSError:
+        return None
+
+    return {
+        "n_seqs": n_seqs,
+        "width": width or 0,
+        "occupancy_pct": round(100.0 * (1 - gaps / residues), 1) if residues else 0.0,
+        "n_kingdoms": len(kingdoms),
+        "kingdoms": dict(kingdoms.most_common()),
+    }
 
 
 def main() -> None:
@@ -53,29 +107,75 @@ def main() -> None:
     n_msa_total = len(tasks)
     barcodes = sorted(per_barcode)
 
+    # --- real per-MSA metrics (one pass over each alignment) ----------------
+    per_msa = []
+    for t in tasks:
+        entry = {
+            "msa_id": t.get("taxon"),
+            "barcode": t.get("barcode"),
+            "taxon_label": t.get("taxon_label"),
+            "n_group": t.get("n", 0),                       # sequences in the merged group
+            "n_msa_seqs": t.get("n_msa_seqs", t.get("n", 0)),  # sequences actually aligned
+        }
+        entry["represented_pct"] = (round(100.0 * entry["n_msa_seqs"] / entry["n_group"], 1)
+                                    if entry["n_group"] else 0.0)
+        m = measure_msa(t.get("msa_path", ""))
+        if m:
+            entry.update(m)
+        per_msa.append(entry)
+
+    n_group_total = sum(e["n_group"] for e in per_msa)
+    n_aligned_total = sum(e["n_msa_seqs"] for e in per_msa)
+    widths = [e["width"] for e in per_msa if e.get("width")]
+    occs = [e["occupancy_pct"] for e in per_msa if "occupancy_pct" in e]
+    alignment_quality = {
+        "n_measured": len(widths),
+        "width_min": min(widths) if widths else 0,
+        "width_median": sorted(widths)[len(widths) // 2] if widths else 0,
+        "width_max": max(widths) if widths else 0,
+        "occupancy_min_pct": min(occs) if occs else 0.0,
+        "occupancy_median_pct": sorted(occs)[len(occs) // 2] if occs else 0.0,
+        "narrow_threshold": NARROW_COLUMNS,
+        "low_occupancy_threshold_pct": LOW_OCCUPANCY_PCT,
+        "n_narrow": sum(1 for w in widths if w < NARROW_COLUMNS),
+        "n_low_occupancy": sum(1 for o in occs if o < LOW_OCCUPANCY_PCT),
+        # sequences whose SATIVA verdict rests on an alignment too narrow to support it
+        "seqs_in_narrow": sum(e["n_msa_seqs"] for e in per_msa
+                              if e.get("width", 0) and e["width"] < NARROW_COLUMNS),
+    }
+    representation = {
+        "n_group_total": n_group_total,
+        "n_aligned_total": n_aligned_total,
+        # the rest get their verdict propagated via group_members.tsv, not by placement
+        "n_propagated": n_group_total - n_aligned_total,
+        "propagated_pct": (round(100.0 * (n_group_total - n_aligned_total) / n_group_total, 1)
+                           if n_group_total else 0.0),
+        "n_msa_at_cap": sum(1 for e in per_msa if e["n_msa_seqs"] >= 10000),
+    }
+
     summary = {
         "strategy": "clustered",
         "n_families": n_clusters,          # sequence clusters (the decomposition unit here)
         "total_sequences": total_seqs,
-        "n_no_family": 0,
         "n_msa_total": n_msa_total,
         "n_residual_total": n_residual,
-        "n_no_family_recovered": 0,
-        "n_reinserted_total": 0,
-        "n_unassigned_total": n_residual,
-        "gate_pass_total": 0,
-        "climbed": {},
-        "stop_levels": {"clustered": n_msa_total},
         "sativa_selected": n_msa_total,
         "per_barcode": per_barcode,
-        "residual_files": [],
-        "per_family": [],
+        "per_msa": per_msa,
+        "alignment_quality": alignment_quality,
+        "representation": representation,
     }
 
-    residual_stub = {"n_residual": n_residual, "n_classified": 0, "n_integrated": 0,
-                     "n_unassigned": n_residual, "n_profiles": 0, "n_no_family": 0, "per_msa": {}}
-    contamination_stub = {"n_flagged": 0, "n_msa": n_msa_total, "n_rehomed_msa": 0,
-                          "flagged": [], "emptied_msa": []}
+    # The clustered strategy has no residual-reclassification and no coarse-contamination
+    # tier. These files stay (they are declared rule inputs) but say so explicitly instead
+    # of reporting zeros that read as "checked, nothing found".
+    not_applicable = {
+        "applicable": False,
+        "reason": "not part of the sequence-first clustered strategy; "
+                  "every sequence is placed at clustering time",
+    }
+    residual_stub = dict(not_applicable, n_residual=n_residual)
+    contamination_stub = dict(not_applicable, n_msa=n_msa_total)
     sativa_manifest = {
         "generated_at": datetime.now().isoformat(),
         "source": "clustered",

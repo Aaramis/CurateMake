@@ -17,6 +17,10 @@ import json
 import logging
 import sys
 from pathlib import Path
+
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent / "utils"))
+from report_style import REPORT_CSS  # shared CurateMake report styling
 from datetime import datetime
 import plotly.graph_objects as go
 import numpy as np
@@ -101,12 +105,16 @@ def extract_database_sequences(formatting_report):
             sequences_by_db["caledna_FITS"] = processed_seqs
             caledna_total += processed_seqs
         else:
-            # Extract the base name (unite, bold, planits)
+            # Keep every other source under its own name. A whitelist would silently drop
+            # any database it does not know about, so the source nodes would no longer sum
+            # to the merge total.
             base_name = db_name.lower()
             for known in ['unite', 'bold', 'planits']:
                 if known in base_name:
                     sequences_by_db[known] = processed_seqs
                     break
+            else:
+                sequences_by_db[db_name] = processed_seqs
 
     sequences_by_db["CALeDNA"] = caledna_total
     return sequences_by_db
@@ -244,7 +252,12 @@ def main():
                 f"BOLD={sequences_by_db.get('bold', 0)}, "
                 f"PLANiTS={sequences_by_db.get('planits', 0)}, "
                 f"CALeDNA={sequences_by_db.get('CALeDNA', 0)}")
-    logger.info(f"  Total initial: {total_sequence_ini:,}")
+    # CALeDNA is reported both split (PITS/FITS) and merged; count it once.
+    n_databases_integrated = len([n for n in sequences_by_db
+                                  if n not in ('caledna_PITS', 'caledna_FITS')
+                                  and sequences_by_db[n]])
+    logger.info(f"  Total initial: {total_sequence_ini:,} from "
+                f"{n_databases_integrated} database(s): {sorted(sequences_by_db)}")
 
     # --- Pre-ITSx deduplication ---
     unique_sequences_pre = safe_get(reports["itsx_deduplicate_pre"],
@@ -257,6 +270,22 @@ def main():
                                              ['detailed_summary', 'duplicates_by_barcode', 'ITS1'], 0)
     duplicate_sequences_pre_ITS2 = safe_get(reports["itsx_deduplicate_pre"],
                                              ['detailed_summary', 'duplicates_by_barcode', 'ITS2'], 0)
+
+    # A pre-ITSx dedup report rebuilt from the database after ITSx carries post-ITSx
+    # counts: it would put more sequences out of the merge node than went in. The number
+    # of sequences that actually survived this pass is what ITSx was then fed, which the
+    # extraction report records first-hand, so derive the split from there instead.
+    dedup_pre_is_measured = "_note" not in (reports.get("itsx_deduplicate_pre") or {})
+    if not dedup_pre_is_measured:
+        _fed_to_itsx = safe_get(reports["itsx_prepare"], ['stats', 'total_sequences'], 0)
+        if _fed_to_itsx:
+            unique_sequences_pre = _fed_to_itsx
+            duplicate_sequences_pre = max(0, total_sequence_ini - _fed_to_itsx)
+            # per-barcode duplicate counts are not recoverable this way
+            duplicate_sequences_pre_ITS = duplicate_sequences_pre_ITS1 = duplicate_sequences_pre_ITS2 = 0
+            logger.warning("  pre-ITSx dedup report was reconstructed after the fact; "
+                           "deriving the split from the ITSx extraction report instead "
+                           f"({unique_sequences_pre:,} kept, {duplicate_sequences_pre:,} duplicates)")
 
     # Fallback when no pre-ITSx deduplication is available (mini datasets)
     if unique_sequences_pre == 0:
@@ -317,11 +346,40 @@ def main():
     duplicate_sequences_post_ITS2 = safe_get(reports["itsx_deduplicate_post"],
                                               ['detailed_summary', 'duplicates_by_barcode', 'ITS2'], 0)
 
-    # Deduplication deltas
-    diff_post_pre_ITS1 = duplicate_sequences_post_ITS1 - duplicate_sequences_pre_ITS1
-    diff_post_pre_ITS2 = duplicate_sequences_post_ITS2 - duplicate_sequences_pre_ITS2
-    diff_post_pre_ITS = duplicate_sequences_post_ITS - duplicate_sequences_pre_ITS
-    duplicate_sequences_post_tot = duplicate_sequences_post - duplicate_sequences_pre
+    # Deduplication deltas. They only mean anything if the pre-ITSx report is a genuine
+    # measurement: a report rebuilt from the database after the post-ITSx pass necessarily
+    # carries post-ITSx counts, which would make every delta zero by construction. Such a
+    # report is flagged with a `_note`, and the deltas are then reported as unavailable
+    # rather than as a measured zero.
+    # How many sequences the post-ITSx pass marked: the final duplicate count minus what
+    # the first pass had already marked. This total is sound either way.
+    duplicate_sequences_post_tot = max(0, duplicate_sequences_post - duplicate_sequences_pre)
+
+    if dedup_pre_is_measured:
+        diff_post_pre_ITS1 = duplicate_sequences_post_ITS1 - duplicate_sequences_pre_ITS1
+        diff_post_pre_ITS2 = duplicate_sequences_post_ITS2 - duplicate_sequences_pre_ITS2
+        diff_post_pre_ITS = duplicate_sequences_post_ITS - duplicate_sequences_pre_ITS
+    else:
+        # The subtraction above is the right one, but its baseline here is a post-ITSx
+        # snapshot: it would return zero by construction rather than by measurement. Draw
+        # no ribbon and let the table say "unavailable"; the per-barcode split comes back
+        # on its own as soon as a genuine pre-ITSx report exists.
+        diff_post_pre_ITS1 = diff_post_pre_ITS2 = diff_post_pre_ITS = 0
+
+    def _fmt_delta(value):
+        return f"{value:,}" if dedup_pre_is_measured else "unavailable"
+
+    pre_dup_ITS1 = _fmt_delta(duplicate_sequences_pre_ITS1)
+    pre_dup_ITS2 = _fmt_delta(duplicate_sequences_pre_ITS2)
+    pre_dup_ITS = _fmt_delta(duplicate_sequences_pre_ITS)
+
+    new_dup_ITS1 = _fmt_delta(diff_post_pre_ITS1)
+    new_dup_ITS2 = _fmt_delta(diff_post_pre_ITS2)
+    new_dup_ITS = _fmt_delta(diff_post_pre_ITS)
+    new_dup_total = f"{duplicate_sequences_post_tot:,}"
+    if not dedup_pre_is_measured:
+        logger.warning("  pre-ITSx dedup report was reconstructed: new-duplicate counts "
+                       "cannot be derived and are reported as unavailable")
 
     logger.info(f"  Post-ITSx dedup: {unique_sequences_post:,} unique, "
                 f"{duplicate_sequences_post:,} duplicates (new: {duplicate_sequences_post_tot:,})")
@@ -337,26 +395,26 @@ def main():
 
     # --- MSA Processing ---
     _bu_summary = reports.get("bottomup_summary") or {}
-    # Clustered MSA: no cross-barcode reassignment. "treated" = sequences in the reference MSAs;
-    # "unprocessed" = residual (groups too small for SATIVA). No residual re-insertion tier.
+    # Clustered MSA: one clustering per barcode. A sequence either ends up in a reference
+    # MSA or it does not -- there is no cross-barcode reassignment and no re-insertion
+    # tier -- so the quantity worth showing is how many were dropped along the way.
     _pb = _bu_summary.get("per_barcode", {})
-    MSA_treat_ITS1 = safe_get(_pb, ['ITS1', 'ref_seqs'], 0)
-    MSA_treat_ITS2 = safe_get(_pb, ['ITS2', 'ref_seqs'], 0)
-    MSA_treat_ITS = safe_get(_pb, ['ITS', 'ref_seqs'], 0)
-    MSA_unprocessed_ITS1 = safe_get(_pb, ['ITS1', 'residual'], 0)
-    MSA_unprocessed_ITS2 = safe_get(_pb, ['ITS2', 'residual'], 0)
-    MSA_unprocessed_ITS = safe_get(_pb, ['ITS', 'residual'], 0)
-    MSA_ITS1_ITS1 = safe_get(_pb, ['ITS1', 'reinserted'], 0)
-    MSA_ITS2_ITS2 = safe_get(_pb, ['ITS2', 'reinserted'], 0)
-    MSA_ITS_ITS = safe_get(_pb, ['ITS', 'reinserted'], 0)
-    MSA_ITS1_ITS2 = MSA_ITS1_ITS = MSA_ITS2_ITS1 = 0
-    MSA_ITS2_ITS = MSA_ITS_ITS1 = MSA_ITS_ITS2 = 0
+    MSA_post_ITS1 = safe_get(_pb, ['ITS1', 'ref_seqs'], 0)
+    MSA_post_ITS2 = safe_get(_pb, ['ITS2', 'ref_seqs'], 0)
+    MSA_post_ITS = safe_get(_pb, ['ITS', 'ref_seqs'], 0)
 
-    MSA_post_ITS1 = MSA_ITS1_ITS1 + MSA_ITS2_ITS1 + MSA_ITS_ITS1 + MSA_treat_ITS1
-    MSA_post_ITS2 = MSA_ITS2_ITS2 + MSA_ITS1_ITS2 + MSA_ITS_ITS2 + MSA_treat_ITS2
-    MSA_post_ITS = MSA_ITS_ITS + MSA_ITS1_ITS + MSA_ITS2_ITS + MSA_treat_ITS
+    # Dropped between extraction and the reference MSAs: clusters below min_ref that could
+    # not be absorbed, groups below sativa_min_seqs, members beyond max_cluster_reps.
+    MSA_dropped_ITS1 = max(0, MSA_pre_ITS1 - MSA_post_ITS1)
+    MSA_dropped_ITS2 = max(0, MSA_pre_ITS2 - MSA_post_ITS2)
+    MSA_dropped_ITS = max(0, MSA_pre_ITS - MSA_post_ITS)
 
-    logger.info(f"  MSA final: ITS1={MSA_post_ITS1}, ITS2={MSA_post_ITS2}, ITS={MSA_post_ITS}")
+    msa_drop_rate_ITS1 = (100 * MSA_dropped_ITS1 / MSA_pre_ITS1) if MSA_pre_ITS1 else 0.0
+    msa_drop_rate_ITS2 = (100 * MSA_dropped_ITS2 / MSA_pre_ITS2) if MSA_pre_ITS2 else 0.0
+    msa_drop_rate_ITS = (100 * MSA_dropped_ITS / MSA_pre_ITS) if MSA_pre_ITS else 0.0
+
+    logger.info(f"  MSA final: ITS1={MSA_post_ITS1}, ITS2={MSA_post_ITS2}, ITS={MSA_post_ITS} "
+                f"(dropped: {MSA_dropped_ITS1 + MSA_dropped_ITS2 + MSA_dropped_ITS:,})")
 
     # ========================================
     # CONFIGURATION DU GRAPHIQUE
@@ -407,15 +465,26 @@ def main():
         (f"ITS1<br>{MSA_pre_ITS1:,}", 6/NB_COL, (NB_ROW-1)/NB_ROW, MSA_pre_ITS1, COLORS['its1'], 55),
         (f"ITS2<br>{MSA_pre_ITS2:,}", 6/NB_COL, (NB_ROW-2)/NB_ROW, MSA_pre_ITS2, COLORS['its2'], 55),
         (f"ITS<br>{MSA_pre_ITS:,}", 6/NB_COL, (NB_ROW-3)/NB_ROW, MSA_pre_ITS, COLORS['its'], 55),
-        # Colonne 7 - MSA untreated
-        (f"Untreated ITS1<br>{MSA_unprocessed_ITS1:,}", 7/NB_COL, (NB_ROW-1.25)/NB_ROW, MSA_unprocessed_ITS1, COLORS['its1'], 50),
-        (f"Untreated ITS2<br>{MSA_unprocessed_ITS2:,}", 7/NB_COL, (NB_ROW-2.25)/NB_ROW, MSA_unprocessed_ITS2, COLORS['its2'], 50),
-        (f"Untreated ITS<br>{MSA_unprocessed_ITS:,}", 7/NB_COL, (NB_ROW-3.25)/NB_ROW, MSA_unprocessed_ITS, COLORS['its'], 50),
+        # Colonne 7 - sequences dropped before the reference MSAs (terminal nodes)
+        (f"Not aligned ITS1<br>{MSA_dropped_ITS1:,}", 7/NB_COL, (NB_ROW-1.25)/NB_ROW, MSA_dropped_ITS1, COLORS['no_detection'], 50),
+        (f"Not aligned ITS2<br>{MSA_dropped_ITS2:,}", 7/NB_COL, (NB_ROW-2.25)/NB_ROW, MSA_dropped_ITS2, COLORS['no_detection'], 50),
+        (f"Not aligned ITS<br>{MSA_dropped_ITS:,}", 7/NB_COL, (NB_ROW-3.25)/NB_ROW, MSA_dropped_ITS, COLORS['no_detection'], 50),
         # Colonne 8 - MSA final
         (f"ITS1<br>{MSA_post_ITS1:,}", 8/NB_COL, (NB_ROW-0.75)/NB_ROW, MSA_post_ITS1, COLORS['its1'], 50),
         (f"ITS2<br>{MSA_post_ITS2:,}", 8/NB_COL, (NB_ROW-1.75)/NB_ROW, MSA_post_ITS2, COLORS['its2'], 50),
         (f"ITS<br>{MSA_post_ITS:,}", 8/NB_COL, (NB_ROW-2.75)/NB_ROW, MSA_post_ITS, COLORS['its'], 50),
     ]
+
+    # Any source beyond the four laid out above (CALeDNA/UNITE/BOLD/PLANiTS) is appended
+    # here rather than inserted, so the indices the links below rely on stay valid.
+    _extra_sources = [(n, v) for n, v in sequences_by_db.items()
+                      if n not in ('CALeDNA', 'caledna_PITS', 'caledna_FITS',
+                                   'unite', 'bold', 'planits') and v]
+    _extra_source_idx = {}
+    for _i, (_name, _val) in enumerate(_extra_sources):
+        _extra_source_idx[_name] = len(nodes_data)
+        nodes_data.append((f"{_name}<br>{_val:,}", 0/NB_COL, (NB_ROW-5)/NB_ROW,
+                           _val, COLORS['source'], 50))
 
     # ========================================
     # LINK DEFINITION
@@ -453,25 +522,17 @@ def main():
         (14, 16, MSA_pre_ITS1, COLORS['its1']),
         (14, 17, MSA_pre_ITS2, COLORS['its2']),
         (14, 18, MSA_pre_ITS, COLORS['its']),
-        # MSA -> Untreated
-        (16, 19, MSA_unprocessed_ITS1, COLORS['its1']),
-        (17, 20, MSA_unprocessed_ITS2, COLORS['its2']),
-        (18, 21, MSA_unprocessed_ITS, COLORS['its']),
-        # MSA -> Treated
-        (16, 22, MSA_treat_ITS1, COLORS['its1']),
-        (17, 23, MSA_treat_ITS2, COLORS['its2']),
-        (18, 24, MSA_treat_ITS, COLORS['its']),
-        # Untreated -> MSA_post (re-classification)
-        (19, 22, MSA_ITS1_ITS1, COLORS['its1']),
-        (19, 23, MSA_ITS1_ITS2, COLORS['its2']),
-        (19, 24, MSA_ITS1_ITS, COLORS['its']),
-        (20, 22, MSA_ITS2_ITS1, COLORS['its1']),
-        (20, 23, MSA_ITS2_ITS2, COLORS['its2']),
-        (20, 24, MSA_ITS2_ITS, COLORS['its']),
-        (21, 22, MSA_ITS_ITS1, COLORS['its1']),
-        (21, 23, MSA_ITS_ITS2, COLORS['its2']),
-        (21, 24, MSA_ITS_ITS, COLORS['its']),
+        # MSA prep -> dropped (terminal)
+        (16, 19, MSA_dropped_ITS1, COLORS['no_detection']),
+        (17, 20, MSA_dropped_ITS2, COLORS['no_detection']),
+        (18, 21, MSA_dropped_ITS, COLORS['no_detection']),
+        # MSA prep -> reference MSAs
+        (16, 22, MSA_post_ITS1, COLORS['its1']),
+        (17, 23, MSA_post_ITS2, COLORS['its2']),
+        (18, 24, MSA_post_ITS, COLORS['its']),
     ]
+    links_data += [(_idx, 4, sequences_by_db[_name], COLORS['source'])
+                   for _name, _idx in _extra_source_idx.items()]
 
     # ========================================
     # FIGURE RENDERING
@@ -485,7 +546,9 @@ def main():
             'font': {'size': 24, 'color': '#2c3e50', 'family': 'Arial, sans-serif'}
         },
         xaxis=dict(visible=False, range=[-0.05, 1.05]),
-        yaxis=dict(visible=False, range=[0, 1.1]),
+        # Bottom padding: the lowest nodes sit at y=(NB_ROW-4)/NB_ROW and carry a
+        # three-line label drawn below the marker, which needs room under them.
+        yaxis=dict(visible=False, range=[-0.08, 1.1]),
         paper_bgcolor='rgba(248,249,250,1)',
         plot_bgcolor='rgba(248,249,250,1)',
         margin=dict(t=100, b=50, l=50, r=50),
@@ -583,7 +646,13 @@ def main():
     )
 
     # Use an iframe for embedding
-    sankey_iframe = f'<iframe src="sequence_flow_sankey.html" style="width: 100%; height: 850px; border: none;" title="Sequence Flow Sankey Diagram"></iframe>'
+    # Embed the figure in the report itself rather than pointing an iframe at the
+    # standalone file: a relative src makes the report show whichever
+    # sequence_flow_sankey.html sits next to it, so a report moved or shared on its own
+    # silently displays a stale diagram beside up-to-date numbers.
+    sankey_iframe = fig.to_html(full_html=False, include_plotlyjs='cdn',
+                                default_width='100%', default_height='800px',
+                                config={'responsive': True})
 
     # Build the full HTML layout with detailed sections
     html_content = f"""<!DOCTYPE html>
@@ -593,220 +662,7 @@ def main():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sequence Flow Report - CurateMake Pipeline</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6;
-            color: #2c3e50;
-            background-color: #f8f9fa;
-        }}
-
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 60px 20px;
-            text-align: center;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }}
-
-        .header h1 {{
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }}
-
-        .header p {{
-            font-size: 1.2em;
-            opacity: 0.95;
-        }}
-
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 40px 20px;
-        }}
-
-        .section {{
-            background: white;
-            border-radius: 10px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }}
-
-        .section h2 {{
-            color: #667eea;
-            font-size: 1.8em;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 3px solid #667eea;
-        }}
-
-        .section h3 {{
-            color: #764ba2;
-            font-size: 1.4em;
-            margin: 25px 0 15px 0;
-        }}
-
-        .stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin: 20px 0;
-        }}
-
-        .stat-card {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 25px;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }}
-
-        .stat-value {{
-            font-size: 2.5em;
-            font-weight: bold;
-            margin: 10px 0;
-        }}
-
-        .stat-label {{
-            font-size: 0.9em;
-            opacity: 0.9;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }}
-
-        .info-box {{
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 15px 20px;
-            margin: 20px 0;
-            border-radius: 5px;
-        }}
-
-        .info-box.warning {{
-            background: #fff3e0;
-            border-left-color: #ff9800;
-        }}
-
-        .info-box.success {{
-            background: #e8f5e9;
-            border-left-color: #4caf50;
-        }}
-
-        .info-box h4 {{
-            color: #1976d2;
-            margin-bottom: 10px;
-            font-size: 1.1em;
-        }}
-
-        .info-box.warning h4 {{
-            color: #f57c00;
-        }}
-
-        .info-box.success h4 {{
-            color: #388e3c;
-        }}
-
-        .tool-description {{
-            background: #f5f5f5;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 15px 0;
-        }}
-
-        .tool-description h4 {{
-            color: #667eea;
-            margin-bottom: 10px;
-            font-size: 1.2em;
-        }}
-
-        .tool-description ul {{
-            margin-left: 20px;
-            margin-top: 10px;
-        }}
-
-        .tool-description li {{
-            margin: 8px 0;
-        }}
-
-        .stage-details {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin: 20px 0;
-        }}
-
-        .stage-card {{
-            background: #fafafa;
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-        }}
-
-        .stage-card h5 {{
-            color: #667eea;
-            margin-bottom: 10px;
-        }}
-
-        .number {{
-            font-weight: bold;
-            color: #764ba2;
-            font-family: 'Courier New', monospace;
-        }}
-
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-        }}
-
-        th, td {{
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }}
-
-        th {{
-            background-color: #667eea;
-            color: white;
-            font-weight: 600;
-        }}
-
-        tr:hover {{
-            background-color: #f5f5f5;
-        }}
-
-        .footer {{
-            text-align: center;
-            padding: 30px;
-            color: #666;
-            font-size: 0.9em;
-            border-top: 1px solid #ddd;
-            margin-top: 40px;
-        }}
-
-        #sankey-diagram {{
-            margin: 30px 0;
-            min-height: 700px;
-        }}
-
-        @media (max-width: 768px) {{
-            .stage-details {{
-                grid-template-columns: 1fr;
-            }}
-
-            .header h1 {{
-                font-size: 1.8em;
-            }}
-        }}
-    </style>
+    <style>{REPORT_CSS}</style>
 </head>
 <body>
     <div class="header">
@@ -894,7 +750,7 @@ def main():
                 </tr>
                 <tr>
                     <td>Databases integrated</td>
-                    <td class="number">4</td>
+                    <td class="number">{n_databases_integrated}</td>
                 </tr>
             </table>
         </div>
@@ -1026,8 +882,8 @@ def main():
                 </div>
                 <div class="stage-card">
                     <h5>New Duplicates</h5>
-                    <p class="number">{duplicate_sequences_post_tot:,}</p>
-                    <p>Introduced by ITSx augmentation</p>
+                    <p class="number">{new_dup_total}</p>
+                    <p>Marked by the post-ITSx pass</p>
                 </div>
             </div>
 
@@ -1040,21 +896,21 @@ def main():
                 </tr>
                 <tr>
                     <td>ITS1</td>
-                    <td class="number">{duplicate_sequences_pre_ITS1:,}</td>
+                    <td class="number">{pre_dup_ITS1}</td>
                     <td class="number">{duplicate_sequences_post_ITS1:,}</td>
-                    <td class="number">{diff_post_pre_ITS1:,}</td>
+                    <td class="number">{new_dup_ITS1}</td>
                 </tr>
                 <tr>
                     <td>ITS2</td>
-                    <td class="number">{duplicate_sequences_pre_ITS2:,}</td>
+                    <td class="number">{pre_dup_ITS2}</td>
                     <td class="number">{duplicate_sequences_post_ITS2:,}</td>
-                    <td class="number">{diff_post_pre_ITS2:,}</td>
+                    <td class="number">{new_dup_ITS2}</td>
                 </tr>
                 <tr>
                     <td>ITS</td>
-                    <td class="number">{duplicate_sequences_pre_ITS:,}</td>
+                    <td class="number">{pre_dup_ITS}</td>
                     <td class="number">{duplicate_sequences_post_ITS:,}</td>
-                    <td class="number">{diff_post_pre_ITS:,}</td>
+                    <td class="number">{new_dup_ITS}</td>
                 </tr>
             </table>
         </div>
@@ -1101,78 +957,39 @@ def main():
             </div>
 
             <h3>MSA Processing Statistics</h3>
+            <p>Each barcode is clustered independently; a sequence either reaches a reference
+               MSA or is dropped before it. Sequences drop out when their cluster stays below
+               <code>min_ref</code> and cannot be absorbed into a neighbour, when the merged
+               group stays below <code>sativa_min_seqs</code>, or when their cluster has
+               already contributed <code>max_cluster_reps</code> representatives.</p>
             <table>
                 <tr>
                     <th>Barcode</th>
-                    <th>Input</th>
-                    <th>Processed</th>
-                    <th>Unprocessed</th>
-                    <th>Reassigned</th>
-                    <th>Final Output</th>
+                    <th>Extracted</th>
+                    <th>In reference MSAs</th>
+                    <th>Not aligned</th>
+                    <th>Drop rate</th>
                 </tr>
                 <tr>
                     <td>ITS1</td>
                     <td class="number">{MSA_pre_ITS1:,}</td>
-                    <td class="number">{MSA_treat_ITS1:,}</td>
-                    <td class="number">{MSA_unprocessed_ITS1:,}</td>
-                    <td class="number">{MSA_ITS1_ITS1 + MSA_ITS2_ITS1 + MSA_ITS_ITS1:,}</td>
                     <td class="number">{MSA_post_ITS1:,}</td>
+                    <td class="number">{MSA_dropped_ITS1:,}</td>
+                    <td class="number">{msa_drop_rate_ITS1:.1f}%</td>
                 </tr>
                 <tr>
                     <td>ITS2</td>
                     <td class="number">{MSA_pre_ITS2:,}</td>
-                    <td class="number">{MSA_treat_ITS2:,}</td>
-                    <td class="number">{MSA_unprocessed_ITS2:,}</td>
-                    <td class="number">{MSA_ITS1_ITS2 + MSA_ITS2_ITS2 + MSA_ITS_ITS2:,}</td>
                     <td class="number">{MSA_post_ITS2:,}</td>
+                    <td class="number">{MSA_dropped_ITS2:,}</td>
+                    <td class="number">{msa_drop_rate_ITS2:.1f}%</td>
                 </tr>
                 <tr>
                     <td>ITS</td>
                     <td class="number">{MSA_pre_ITS:,}</td>
-                    <td class="number">{MSA_treat_ITS:,}</td>
-                    <td class="number">{MSA_unprocessed_ITS:,}</td>
-                    <td class="number">{MSA_ITS1_ITS + MSA_ITS2_ITS + MSA_ITS_ITS:,}</td>
                     <td class="number">{MSA_post_ITS:,}</td>
-                </tr>
-            </table>
-
-            <h3>Cross-Barcode Reassignments</h3>
-            <p>HMM classification can identify sequences originally annotated as one barcode type that better match another:</p>
-            <table>
-                <tr>
-                    <th>Original → Reassigned</th>
-                    <th>Count</th>
-                    <th>Interpretation</th>
-                </tr>
-                <tr>
-                    <td>ITS1 → ITS2</td>
-                    <td class="number">{MSA_ITS1_ITS2:,}</td>
-                    <td>Potential misannotation or extraction error</td>
-                </tr>
-                <tr>
-                    <td>ITS1 → ITS</td>
-                    <td class="number">{MSA_ITS1_ITS:,}</td>
-                    <td>May contain flanking regions</td>
-                </tr>
-                <tr>
-                    <td>ITS2 → ITS1</td>
-                    <td class="number">{MSA_ITS2_ITS1:,}</td>
-                    <td>Potential misannotation or extraction error</td>
-                </tr>
-                <tr>
-                    <td>ITS2 → ITS</td>
-                    <td class="number">{MSA_ITS2_ITS:,}</td>
-                    <td>May contain flanking regions</td>
-                </tr>
-                <tr>
-                    <td>ITS → ITS1</td>
-                    <td class="number">{MSA_ITS_ITS1:,}</td>
-                    <td>Partial ITS sequence</td>
-                </tr>
-                <tr>
-                    <td>ITS → ITS2</td>
-                    <td class="number">{MSA_ITS_ITS2:,}</td>
-                    <td>Partial ITS sequence</td>
+                    <td class="number">{MSA_dropped_ITS:,}</td>
+                    <td class="number">{msa_drop_rate_ITS:.1f}%</td>
                 </tr>
             </table>
         </div>

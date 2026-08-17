@@ -36,6 +36,30 @@ def _sanitize_label(value: str) -> str:
     return _SANITIZE_PATTERN.sub("_", value)
 
 
+def _clean_sativa_tmp(sativa_script: Path, output_name: Optional[str]) -> None:
+    """Remove the scratch directory SATIVA leaves behind when it does not exit cleanly.
+
+    sativa.py creates <sativa_home>/tmp/<name>_<timestamp>/ and deletes it itself when
+    the analysis finishes or aborts on a user error, but not when it hits a fatal error,
+    raises, or is killed (timeout, OOM). Those runs are the ones that fill the disk: a
+    single leftover jplace reaches 900 MB.
+
+    Matching is scoped to this task's own directory: the name it passed to sativa.py
+    followed by sativa's millisecond timestamp. Anchoring on those digits matters, since
+    a bare "<name>_*" prefix would also catch a sibling whose taxon merely extends this
+    one ("Abies" would match "Abies alba") and delete the scratch of a task still running.
+    """
+    if not output_name:
+        return
+    tmp_root = sativa_script.resolve().parent / "tmp"
+    if not tmp_root.is_dir():
+        return
+    own = re.compile(rf"^{re.escape(_sanitize_label(output_name))}_\d+$")
+    for leftover in tmp_root.glob(f"{_sanitize_label(output_name)}_*"):
+        if leftover.is_dir() and own.match(leftover.name):
+            shutil.rmtree(leftover, ignore_errors=True)
+
+
 def _normalize_tax_value(value: str) -> str:
     """Ensure taxonomy ranks are never empty to keep SATIVA Newick parsing happy.
 
@@ -322,6 +346,12 @@ def run_sativa(
     except Exception as e:
         logger.error(f"Unexpected error running SATIVA: {e}")
         raise
+
+    finally:
+        # Covers every exit sativa.py does not clean up after itself: fatal error,
+        # uncaught exception, and the timeout above (where the child is killed and
+        # never reaches its own clean_tempdir).
+        _clean_sativa_tmp(sativa_script, output_name)
 
 
 def main():

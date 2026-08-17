@@ -52,6 +52,12 @@ def sativa_integration_inputs(_wildcards):
     return [_sativa_integration_path(task) for task in _sativa_tasks()]
 
 
+# NOTE on SATIVA memory (2026-08-14/15): a sativa_task peaks around ~20 GB RSS. The cost is
+# driven by the reference tree epa-ng builds internally for the leave-one-out placement
+# (ref.nwk + its conditional likelihood vectors), NOT by the size of the input MSA -- an
+# estimate derived from the input file size underestimates it several-fold and is not safe
+# to schedule on. Throttle by job count instead: `--resources sativa_jobs=N`, with
+# N ~= memory_budget_GB / 20. LAUNCH.sh does this.
 def sativa_task_msa_path(wildcards):
     for task in _sativa_tasks():
         if (

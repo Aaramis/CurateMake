@@ -14,17 +14,22 @@ Plotly handles all interactivity client-side (no page reloads).
 import sys
 import json
 import logging
+import time
 import yaml
 import os
 from pathlib import Path
+
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent / "utils"))
+from report_style import REPORT_CSS  # shared CurateMake report styling
 from datetime import datetime
 from typing import Dict, List, Tuple, Any
-from collections import defaultdict
+from collections import Counter, defaultdict
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from sqlalchemy import func, case, text
+from sqlalchemy import func, case, select, text
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
@@ -39,6 +44,29 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _attach_snakemake_log(snakemake) -> None:
+    """Send this script's log to the rule's `log:` file.
+
+    basicConfig alone writes to stderr, which Snakemake does not capture for
+    `script:` directives, leaving the rule opaque while it runs.
+    """
+    try:
+        log_attr = getattr(snakemake, 'log', None)
+        if not log_attr:
+            return
+        log_file = log_attr[0] if isinstance(log_attr, (list, tuple)) else log_attr
+        if any(getattr(h, 'baseFilename', None) == str(Path(log_file).absolute())
+               for h in logger.handlers):
+            return
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(log_file, mode="w")
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s | %(levelname)s | %(name)s | %(message)s'))
+        logger.addHandler(handler)
+    except Exception as exc:  # noqa: BLE001 - logging must never break the job
+        logger.warning("could not attach file logging: %s", exc)
 
 
 # ============================================
@@ -195,120 +223,193 @@ def get_kpi_metrics(engine, db_manager=None) -> Dict[str, int]:
 # DATA QUERY HELPERS
 # ============================================
 
+# ---------------------------------------------------------------------------
+# Single-table reads
+#
+# Distributed joins over seq_tax are fatal on this YugabyteDB cluster. Measured
+# here: a 2-table join with a server-side GROUP BY dies after 42s, a 3-table one
+# after 158s (Rpc timeout); batching the IN list only makes it slow instead of
+# fatal (4400+ round trips for Sativa alone). Single-table reads of the very same
+# data are reliable, so every table is read on its own and joined in memory.
+#
+# main() calls query_and_prepare_data four times (Raw, CoL, CoL, Sativa) and only
+# the sequence-level filters differ between them, so the reference tables and the
+# sequences map are read once and cached for the life of the process.
+# ---------------------------------------------------------------------------
+
+ROW_BUFFER = 20000                 # client-side fetch buffer; does not drive failures
+TARGET_ROWS_PER_SLICE = 1_000_000  # starting point only -- see _read_seq_tax
+YB_HASH_SPACE = 65536              # yb_hash_code() spans 0..65535, fixed by YugabyteDB
+
+_READ_CACHE: Dict[str, Any] = {}
+
+
+def _make_stream(engine, attempts: int):
+    """Build the single-table reader: streams a SELECT, retries if the backend drops."""
+    def stream(stmt, label: str, max_attempts: int = None):
+        budget = attempts if max_attempts is None else max_attempts
+        last_exc = None
+        for attempt in range(1, budget + 1):
+            rows = []
+            try:
+                with engine.connect().execution_options(
+                    stream_results=True, max_row_buffer=ROW_BUFFER
+                ) as conn:
+                    for row in conn.execute(stmt):
+                        rows.append(tuple(row))
+                return rows
+            except Exception as exc:  # noqa: BLE001 - any driver error is retryable here
+                last_exc = exc
+                # Same capped exponential backoff as db_manager._execute_with_retry.
+                backoff = min(2 ** min(attempt, 5), 30)
+                logger.warning("%s: attempt %s/%s failed after %s rows (%s), retry in %ss",
+                               label, attempt, budget, len(rows), type(exc).__name__, backoff)
+                time.sleep(backoff)
+        raise RuntimeError(f"{label}: giving up after {budget} attempts") from last_exc
+    return stream
+
+
+def _clean_rank(value):
+    """NULL and '' both mean 'no rank recorded'."""
+    return value if value not in (None, '') else 'Unknown'
+
+
+def _reference_maps(stream):
+    """tax_id -> ranks, source_id -> name, and the barcode list. Identical every call."""
+    if 'reference' not in _READ_CACHE:
+        tax_map = {
+            row[0]: tuple(_clean_rank(v) for v in row[1:])
+            for row in stream(select(Taxonomy.tax_id, Taxonomy.kingdom, Taxonomy.phylum,
+                                     Taxonomy.class_, Taxonomy.order_, Taxonomy.family,
+                                     Taxonomy.genus), "taxonomy")
+        }
+        source_map = {row[0]: row[1]
+                      for row in stream(select(Source.source_id, Source.name), "sources")}
+        barcodes = [row[0] for row in stream(select(Sequence.barcode).distinct(), "barcodes")]
+        logger.info("reference data: %s taxonomies, %s sources, barcodes=%s",
+                    len(tax_map), len(source_map), barcodes)
+        _READ_CACHE['reference'] = (tax_map, source_map, barcodes)
+    return _READ_CACHE['reference']
+
+
+def _sequence_map(stream, source_map, barcodes):
+    """seq_id -> (barcode, source_name, is_original, is_duplicate), read once.
+
+    Read in full rather than once per filter combination: the four calls differ
+    only in which of these flags they require, so filtering in memory costs
+    nothing and saves three complete passes over the 12M-row table.
+    """
+    if 'sequences' in _READ_CACHE:
+        return _READ_CACHE['sequences']
+
+    seq_map = {}
+    for source_id, source_name in source_map.items():
+        for barcode in barcodes:
+            rows = stream(
+                select(Sequence.seq_id, Sequence.parent_seq_id, Sequence.barcode_status)
+                .where(Sequence.source_id == source_id, Sequence.barcode == barcode),
+                f"sequences/{source_name}/{barcode}")
+            for seq_id, parent_seq_id, barcode_status in rows:
+                seq_map[seq_id] = (barcode, source_name,
+                                   parent_seq_id is None, barcode_status == 'Duplicate')
+            logger.info("sequences/%s/%s: %s rows (%s cached)",
+                        source_name, barcode, len(rows), len(seq_map))
+
+    _READ_CACHE['sequences'] = seq_map
+    return seq_map
+
+
+def _read_seq_tax(stream, backbone: str, on_rows):
+    """Walk seq_tax for one backbone over the table's own hash space.
+
+    The right number of slices is not knowable up front: it depends on table size,
+    row width and cluster health, and the cluster lost a tserver twice during the
+    full run. So size the first pass from an actual row count, then let failures
+    subdivide -- a slice the backend refuses is halved and retried, so only the
+    parts that actually fail get split. On a healthy cluster this is one query.
+    """
+    total = stream(select(func.count()).select_from(SeqTax)
+                   .where(SeqTax.backbone == backbone), f"count/{backbone}")[0][0]
+    slices = max(1, -(-total // TARGET_ROWS_PER_SLICE))
+    step = max(1, YB_HASH_SPACE // slices)
+    logger.info("seq_tax/%s: %s rows -> starting with %s slice(s) of %s hash values",
+                backbone, total, -(-YB_HASH_SPACE // step), step)
+
+    def walk(lo, hi):
+        stmt = select(SeqTax.seq_id, SeqTax.tax_id).where(
+            SeqTax.backbone == backbone,
+            func.yb_hash_code(SeqTax.seq_id) >= lo,
+            func.yb_hash_code(SeqTax.seq_id) < hi,
+        )
+        try:
+            # Two probes, not the full retry budget: a slice that keeps failing is
+            # more likely too large than transiently unlucky, and halving it is the
+            # useful response. Real transients are absorbed by those two attempts.
+            rows = stream(stmt, f"seq_tax/{backbone}/[{lo},{hi})", max_attempts=2)
+        except Exception:
+            if hi - lo <= 1:
+                raise
+            mid = (lo + hi) // 2
+            logger.warning("seq_tax/%s: [%s,%s) refused, splitting in two", backbone, lo, hi)
+            walk(lo, mid)
+            walk(mid, hi)
+            return
+        on_rows(rows)
+        logger.info("seq_tax/%s: [%s,%s) -> %s rows", backbone, lo, hi, len(rows))
+
+    for start in range(0, YB_HASH_SPACE, step):
+        walk(start, min(start + step, YB_HASH_SPACE))
+
+
 def query_and_prepare_data(engine, backbone_filter: str, parent_seq_id_null: bool = False,
                            non_duplicate: bool = False, db_manager=None) -> pd.DataFrame:
     """
-    Query sequences with specific filters using batched IN queries to avoid server
-    connection drops on large datasets.
+    Count sequences per lineage for one backbone, without any distributed join.
 
     Args:
         engine: Database engine
         backbone_filter: Backbone to filter ('Raw', 'CoL', 'Sativa')
-        parent_seq_id_null: If True, only get original sequences (parent_seq_id IS NULL)
+        parent_seq_id_null: If True, only original sequences (parent_seq_id IS NULL)
         non_duplicate: If True, filter out duplicates
-        db_manager: Optional DatabaseManager for retry support
+        db_manager: Optional DatabaseManager, used for its configured retry budget
 
     Returns:
-        DataFrame with sequences and taxonomy
+        One row per (source, barcode, lineage) with a 'count' column.
     """
-    SessionFactory = sessionmaker(bind=engine)
-    batch_size = 1000
+    attempts = getattr(db_manager, 'writer_retry_attempts', 0) or 3
+    stream = _make_stream(engine, attempts)
 
-    # Step 1: fetch seq_ids from seq_tax only (single-table indexed scan, no distributed join)
-    # Sequence-level filters (parent_seq_id_null, non_duplicate) are applied in Step 2
-    # so that the heavy join only happens on small batches.
-    def fetch_seq_ids():
-        session = SessionFactory()
-        try:
-            return [r[0] for r in session.query(SeqTax.seq_id).filter(
-                SeqTax.backbone == backbone_filter
-            ).all()]
-        finally:
-            session.close()
+    tax_map, source_map, barcodes = _reference_maps(stream)
+    seq_map = _sequence_map(stream, source_map, barcodes)
 
-    op_name_ids = f"query_prepare_data_{backbone_filter}_ids"
-    if db_manager:
-        seq_ids = db_manager._execute_with_retry(op_name_ids, fetch_seq_ids)
-    else:
-        seq_ids = fetch_seq_ids()
+    counts = Counter()
 
-    if not seq_ids:
+    def fold(rows):
+        """Fold rows into counts as they arrive: the 12.5M CoL rows never become a frame."""
+        for seq_id, tax_id in rows:
+            info = seq_map.get(seq_id)
+            if info is None:
+                continue
+            barcode, source_name, is_original, is_duplicate = info
+            if parent_seq_id_null and not is_original:
+                continue
+            if non_duplicate and is_duplicate:
+                continue
+            ranks = tax_map.get(tax_id)
+            if ranks is None:
+                continue
+            counts[(source_name, barcode) + ranks] += 1
+
+    _read_seq_tax(stream, backbone_filter, fold)
+
+    if not counts:
         logger.warning(f"No sequences found for backbone={backbone_filter}")
-        return pd.DataFrame(columns=['seq_id', 'source_name', 'barcode', 'kingdom',
-                                    'phylum', 'class_', 'order_', 'family', 'genus', 'backbone'])
+        return pd.DataFrame(columns=['source_name', 'barcode'] + TAXO_LEVELS + ['count'])
 
-    total_batches = (len(seq_ids) + batch_size - 1) // batch_size
-    logger.info(f"Fetching {len(seq_ids)} sequences for backbone={backbone_filter} in {total_batches} batch(es)")
-
-    # Step 2: fetch full taxonomy data in batches using IN on seq_ids
-    all_rows = []
-    for batch_num, i in enumerate(range(0, len(seq_ids), batch_size), 1):
-        batch_ids = seq_ids[i:i + batch_size]
-
-        def fetch_batch():
-            session = SessionFactory()
-            try:
-                q = session.query(
-                    Sequence.seq_id,
-                    Source.name.label('source_name'),
-                    Sequence.barcode,
-                    Taxonomy.kingdom,
-                    Taxonomy.phylum,
-                    Taxonomy.class_.label('class_'),
-                    Taxonomy.order_.label('order_'),
-                    Taxonomy.family,
-                    Taxonomy.genus,
-                    SeqTax.backbone
-                ).join(
-                    Source, Sequence.source_id == Source.source_id
-                ).join(
-                    SeqTax, Sequence.seq_id == SeqTax.seq_id
-                ).join(
-                    Taxonomy, SeqTax.tax_id == Taxonomy.tax_id
-                ).filter(
-                    SeqTax.backbone == backbone_filter,
-                    Sequence.seq_id.in_(batch_ids)
-                )
-                if parent_seq_id_null:
-                    q = q.filter(Sequence.parent_seq_id.is_(None))
-                if non_duplicate:
-                    q = q.filter(Sequence.barcode_status != 'Duplicate')
-                return q.all()
-            finally:
-                session.close()
-
-        op_name = f"query_prepare_data_{backbone_filter}_batch_{i}"
-        if db_manager:
-            rows = db_manager._execute_with_retry(op_name, fetch_batch)
-        else:
-            rows = fetch_batch()
-
-        all_rows.extend(rows)
-        if batch_num % 10 == 0 or batch_num == total_batches:
-            logger.info(f"  {backbone_filter}: {batch_num}/{total_batches} batches ({len(all_rows)} rows so far)")
-
-    if not all_rows:
-        logger.warning(f"No sequences found for backbone={backbone_filter}")
-        return pd.DataFrame(columns=['seq_id', 'source_name', 'barcode', 'kingdom',
-                                    'phylum', 'class_', 'order_', 'family', 'genus', 'backbone'])
-
-    df = pd.DataFrame([{
-        'seq_id': r.seq_id,
-        'source_name': r.source_name,
-        'barcode': r.barcode,
-        'kingdom': r.kingdom,
-        'phylum': r.phylum,
-        'class_': r.class_,
-        'order_': r.order_,
-        'family': r.family,
-        'genus': r.genus,
-        'backbone': r.backbone
-    } for r in all_rows])
-
-    # Fill NULLs with "Unknown"
-    for col in TAXO_LEVELS:
-        df[col] = df[col].fillna('Unknown').replace('', 'Unknown')
-
+    df = pd.DataFrame([key + (n,) for key, n in counts.items()],
+                      columns=['source_name', 'barcode'] + TAXO_LEVELS + ['count'])
+    logger.info("backbone=%s: %s sequences folded into %s aggregated rows",
+                backbone_filter, int(df['count'].sum()), len(df))
     return df
 
 
@@ -325,13 +426,17 @@ def prepare_sunburst_data(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    # Build hierarchical paths
-    df['path'] = df[TAXO_LEVELS].apply(
-        lambda row: '-'.join(row.astype(str)), axis=1
-    )
+    # Build hierarchical paths by vectorised concatenation: this runs once per
+    # (source, barcode) combination -- 28 times per frame -- so a row-wise
+    # `.apply(..., axis=1)` here costs minutes on a multi-million-row frame.
+    df = df.copy()
+    df['path'] = df[TAXO_LEVELS[0]].astype(str)
+    for _col in TAXO_LEVELS[1:]:
+        df['path'] = df['path'] + '-' + df[_col].astype(str)
 
-    # Group and count sequences
-    df_sunburst = df.groupby('path').size().reset_index(name='count')
+    # Rows arrive pre-aggregated (one row per lineage x source x barcode), so the
+    # sequence count is the sum of 'count', not the number of rows.
+    df_sunburst = df.groupby('path', as_index=False)['count'].sum()
     df_sunburst['kingdom'] = df_sunburst['path'].str.split('-').str[0]
     df_sunburst['level'] = df_sunburst['path'].str.split('-').str.len()
 
@@ -659,122 +764,7 @@ def generate_html_report(kpis: Dict, fig_comparison: go.Figure, metadata_compari
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Taxonomic Distribution Report - CurateMake</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #2c3e50;
-        }}
-
-        .container {{ max-width: 1800px; margin: 0 auto; }}
-
-        .header {{
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-            padding: 30px 20px;
-        }}
-
-        .header h1 {{
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }}
-
-        .timestamp {{
-            background: rgba(255,255,255,0.2);
-            padding: 8px 16px;
-            border-radius: 20px;
-            display: inline-block;
-            margin-top: 10px;
-            font-size: 0.9em;
-        }}
-
-        /* KPI Cards */
-        .kpi-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 40px;
-        }}
-
-        .kpi-card {{
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            text-align: center;
-            transition: transform 0.3s ease;
-        }}
-
-        .kpi-card:hover {{ transform: translateY(-5px); }}
-
-        .kpi-icon {{ font-size: 2.5em; margin-bottom: 10px; }}
-
-        .kpi-value {{
-            font-size: 2.5em;
-            font-weight: bold;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin: 10px 0;
-        }}
-
-        .kpi-label {{
-            color: #7f8c8d;
-            font-size: 0.95em;
-            font-weight: 500;
-        }}
-
-        /* Sections */
-        .section {{
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        }}
-
-        .section h2 {{
-            color: #2c3e50;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 3px solid #667eea;
-            font-size: 1.8em;
-        }}
-
-        .info-box {{
-            background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-            border-left: 4px solid #2196f3;
-            padding: 15px 20px;
-            margin: 20px 0;
-            border-radius: 8px;
-        }}
-
-        .plot-container {{
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-            margin: 20px 0;
-        }}
-
-        .footer {{
-            text-align: center;
-            color: white;
-            margin-top: 40px;
-            padding: 20px;
-            opacity: 0.8;
-        }}
-
-        @media (max-width: 768px) {{
-            .kpi-grid {{ grid-template-columns: 1fr; }}
-        }}
-    </style>
+    <style>{REPORT_CSS}</style>
 </head>
 <body>
     <div class="container">
@@ -898,6 +888,7 @@ def main():
 
     # Configuration
     if 'snakemake' in globals():
+        _attach_snakemake_log(snakemake)
         output_path = Path(snakemake.output.report)
         db_manager = get_database_manager(snakemake.config)
         engine = db_manager.engine

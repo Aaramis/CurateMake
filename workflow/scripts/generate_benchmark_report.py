@@ -12,6 +12,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from pathlib import Path
+
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent / "utils"))
+from report_style import REPORT_CSS, CHART_SEQUENCE, human_duration  # shared CurateMake report styling
+
+# One colour per pipeline module, from the shared palette.
+MODULE_COLORS = {m: CHART_SEQUENCE[i % len(CHART_SEQUENCE)] for i, m in enumerate(
+    ['database', 'format_databases', 'harmonize_taxo', 'itsx', 'msa', 'sativa', 'reports'])}
 from typing import Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 import logging
@@ -36,6 +44,10 @@ def parse_benchmark_file(filepath: Path) -> Dict[str, Any]:
         return {
             'seconds': row['s'],
             'time_formatted': row['h:m:s'],
+            # Benchmark files carry no timestamp; the file's mtime is when the job
+            # finished, which gives a start once the duration is subtracted.
+            'end_ts': filepath.stat().st_mtime,
+            'start_ts': filepath.stat().st_mtime - row['s'],
             'max_rss_mb': row['max_rss'],
             'max_vms_mb': row['max_vms'],
             'max_uss_mb': row['max_uss'],
@@ -50,9 +62,21 @@ def parse_benchmark_file(filepath: Path) -> Dict[str, Any]:
         return None
 
 
-def collect_benchmarks(benchmark_dir: Path) -> Dict[str, Dict]:
-    """Collect every benchmark file and organize them by module."""
+def format_duration(seconds: float) -> str:
+    """Seconds as h:mm:ss, matching the h:m:s column of a Snakemake benchmark file."""
+    total = int(round(seconds))
+    return f"{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}"
 
+
+def collect_benchmarks(benchmark_dir: Path) -> Dict[str, Dict]:
+    """Collect every benchmark file and organize them by module.
+
+    Scattered rules write one benchmark per job into a sub-directory
+    (benchmarks/sativa/integrate_tasks/<taxon>.benchmark.txt). Those jobs are the bulk
+    of the pipeline's compute, so the walk is recursive and each family is folded into a
+    single row: time and I/O summed over the jobs, memory taken as the peak of any one of
+    them, and the job count kept so the row cannot be mistaken for a single execution.
+    """
     benchmarks = {}
 
     for module_dir in benchmark_dir.iterdir():
@@ -60,14 +84,43 @@ def collect_benchmarks(benchmark_dir: Path) -> Dict[str, Dict]:
             continue
 
         module_name = module_dir.name
-        benchmarks[module_name] = {}
+        rules: Dict[str, Dict] = {}
 
+        # Rules with one benchmark file, directly under the module directory.
         for bench_file in module_dir.glob('*.benchmark.txt'):
-            rule_name = bench_file.stem.replace('.benchmark', '')
-
             data = parse_benchmark_file(bench_file)
             if data:
-                benchmarks[module_name][rule_name] = data
+                data['n_jobs'] = 1
+                data['wall_seconds'] = data['seconds']
+                rules[bench_file.stem.replace('.benchmark', '')] = data
+
+        # Scattered rules: one sub-directory per rule, one benchmark file per job.
+        for family_dir in sorted(d for d in module_dir.iterdir() if d.is_dir()):
+            jobs = [parse_benchmark_file(f)
+                    for f in family_dir.rglob('*.benchmark.txt')]
+            jobs = [j for j in jobs if j]
+            if not jobs:
+                continue
+            agg = {
+                'seconds': sum(j['seconds'] for j in jobs),
+                'max_rss_mb': max(j['max_rss_mb'] for j in jobs),
+                'max_uss_mb': max(j['max_uss_mb'] for j in jobs),
+                'max_pss_mb': max(j['max_pss_mb'] for j in jobs),
+                'io_in_mb': sum(j['io_in_mb'] for j in jobs),
+                'io_out_mb': sum(j['io_out_mb'] for j in jobs),
+                'cpu_time': sum(j['cpu_time'] for j in jobs),
+                'n_jobs': len(jobs),
+            }
+            agg['mean_load'] = (sum(j['mean_load'] for j in jobs) / len(jobs))
+            agg['time_formatted'] = format_duration(agg['seconds'])
+            # Jobs of a scattered rule run concurrently: what a user waits for is the
+            # span from the first start to the last finish, not the sum of durations.
+            agg['start_ts'] = min(j['start_ts'] for j in jobs)
+            agg['end_ts'] = max(j['end_ts'] for j in jobs)
+            agg['wall_seconds'] = agg['end_ts'] - agg['start_ts']
+            rules[f"{family_dir.name} ({len(jobs)} jobs)"] = agg
+
+        benchmarks[module_name] = rules
 
     return benchmarks
 
@@ -84,8 +137,15 @@ def create_summary_stats(benchmarks: Dict) -> pd.DataFrame:
             rows.append({
                 'Module': module,
                 'Rule': rule,
+                'Jobs': data.get('n_jobs', 1),
+                'Start ts': data.get('start_ts'),
+                'End ts': data.get('end_ts'),
                 'Time (s)': data['seconds'],
                 'Time': data['time_formatted'],
+                'Wall-clock (s)': data.get('wall_seconds', data['seconds']),
+                'Wall-clock': format_duration(data.get('wall_seconds', data['seconds'])),
+                'Parallelism': round(data['seconds'] / data['wall_seconds'], 1)
+                               if data.get('wall_seconds') else 1.0,
                 'Memory (MB)': data['max_rss_mb'],
                 'USS (MB)': data['max_uss_mb'],
                 'PSS (MB)': data['max_pss_mb'],
@@ -101,58 +161,46 @@ def create_summary_stats(benchmarks: Dict) -> pd.DataFrame:
 
 
 def create_gantt_timeline(df: pd.DataFrame) -> go.Figure:
+    """Real calendar timeline: each rule drawn on the dates it actually ran.
+
+    Start and end come from the benchmark files themselves (mtime is the moment the file
+    was written, i.e. when the job finished; subtracting the duration gives the start).
+    Cross-checked against the timestamps Snakemake writes in its own log: the two agree
+    to the second. A scattered rule spans from its first job's start to its last one's end,
+    so overlapping bars are genuine parallelism and gaps are genuine pauses.
     """
-    Create a Gantt-style chart that simulates the execution order.
-    Since real timestamps are unavailable, a sequential timeline is emulated.
-    """
+    if 'Start ts' not in df or df['Start ts'].isna().all():
+        return go.Figure()
 
-    # Build a logical execution order based on modules
-    module_order = ['database', 'format_databases', 'harmonize_taxo', 'itsx', 'msa', 'sativa', 'reports']
+    d = df.dropna(subset=['Start ts', 'End ts']).copy()
+    # Epoch -> wall-clock in the machine's timezone. pd.to_datetime(unit='s') would
+    # yield naive UTC, drawing every bar shifted by the UTC offset relative to the
+    # timestamps in the logs the reader compares the chart against.
+    d['Start'] = d['Start ts'].map(datetime.fromtimestamp)
+    d['Finish'] = d['End ts'].map(datetime.fromtimestamp)
+    d['Task'] = d['Module'] + '/' + d['Rule']
+    d = d.sort_values('Start')
 
-    # Sort the DataFrame by module order
-    df['Module_Order'] = df['Module'].map({m: i for i, m in enumerate(module_order)})
-    df_sorted = df.sort_values(['Module_Order', 'Time (s)'], ascending=[True, False])
+    # px.timeline needs a non-zero span to draw anything; sub-minute rules would vanish.
+    _floor = pd.Timedelta(minutes=2)
+    d.loc[d['Finish'] - d['Start'] < _floor, 'Finish'] = d['Start'] + _floor
 
-    # Calculate simulated cumulative timestamps
-    start_time = datetime(2025, 1, 1, 0, 0, 0)
-    current_time = start_time
-
-    gantt_data = []
-    for idx, row in df_sorted.iterrows():
-        end_time = current_time + timedelta(seconds=row['Time (s)'])
-        gantt_data.append({
-            'Task': f"{row['Module']}/{row['Rule']}",
-            'Start': current_time,
-            'Finish': end_time,
-            'Module': row['Module'],
-            'Duration': row['Time'],
-            'Memory': f"{row['Memory (MB)']:.0f} MB"
-        })
-        current_time = end_time
-
-    gantt_df = pd.DataFrame(gantt_data)
-
-    # Render the Gantt chart
     fig = px.timeline(
-        gantt_df,
-        x_start='Start',
-        x_end='Finish',
-        y='Task',
-        color='Module',
-        hover_data=['Duration', 'Memory'],
-        title='Pipeline execution timeline (sequential simulation)'
+        d, x_start='Start', x_end='Finish', y='Task', color='Module',
+        color_discrete_map=MODULE_COLORS,
+        hover_data={'Wall-clock': True, 'Time': True, 'Jobs': True,
+                    'Start': '|%Y-%m-%d %H:%M', 'Finish': '|%Y-%m-%d %H:%M'},
     )
-
-    fig.update_yaxes(autorange="reversed")
+    span_days = (d['Finish'].max() - d['Start'].min()).total_seconds() / 86400
+    fig.update_yaxes(autorange="reversed", title=None)
+    fig.update_xaxes(title="Date", tickformat="%d %b", dtick=86400000.0 * 2)
     fig.update_layout(
-        height=max(400, len(gantt_df) * 25),
-        xaxis_title='Cumulative time',
-        showlegend=True,
-        hovermode='closest'
+        title=(f"Pipeline timeline &#8212; {d['Start'].min():%d %b} to {d['Finish'].max():%d %b} "
+               f"({span_days:.0f} days); overlapping bars ran in parallel"),
+        height=max(420, len(d) * 26),
+        showlegend=True, hovermode='closest', bargap=0.25,
     )
-
     return fig
-
 
 def create_scatter_matrix(df: pd.DataFrame) -> go.Figure:
     """
@@ -563,7 +611,18 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
 
     # Global statistics
     total_time = df['Time (s)'].sum()
-    total_time_fmt = str(timedelta(seconds=int(total_time)))
+    total_time_fmt = human_duration(total_time)
+    # Cumulative compute counts every job; what the pipeline actually took is the span
+    # from the earliest start to the latest finish (gaps between stages included, since
+    # a benchmark file cannot tell a pause from a long job).
+    _starts = [d['start_ts'] for m in benchmarks.values() for d in m.values() if d.get('start_ts')]
+    _ends = [d['end_ts'] for m in benchmarks.values() for d in m.values() if d.get('end_ts')]
+    elapsed_span = (max(_ends) - min(_starts)) if _starts and _ends else total_time
+    elapsed_span_fmt = human_duration(elapsed_span)
+    longest_step = df['Wall-clock (s)'].max() if 'Wall-clock (s)' in df else 0
+    longest_step_rule = (df.loc[df['Wall-clock (s)'].idxmax(), 'Rule']
+                         if 'Wall-clock (s)' in df and len(df) else '')
+    longest_step_fmt = human_duration(longest_step)
     total_memory_peak = df['Memory (MB)'].max()
     total_io = df['Total I/O (MB)'].sum()
     avg_cpu_efficiency = df['CPU Efficiency (%)'].mean()
@@ -611,6 +670,24 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
     module_standalone = output_path.parent / "benchmark_modules.html"
     module_fig.write_html(str(module_standalone), include_plotlyjs='cdn', config={'responsive': True})
 
+    # Embed each figure in the report itself. The standalone files stay, but a report
+    # that points iframes at them by relative path shows whatever sits next to it --
+    # a stale chart beside fresh numbers as soon as it is moved or shared alone.
+    # plotly.js is loaded once in <head>; a fragment that carried it would only define
+    # the library at its own position in the document, leaving every figure above it blank.
+    def _inline(fig):
+        return fig.to_html(full_html=False, default_width='100%', default_height='700px',
+                           include_plotlyjs=False, config={'responsive': True})
+
+    fig_gantt_html = _inline(gantt_fig)
+    fig_scatter_html = _inline(scatter_fig)
+    fig_heatmap_html = _inline(heatmap_fig)
+    fig_efficiency_html = _inline(efficiency_fig)
+    fig_dist_html = _inline(dist_fig)
+    fig_box_html = _inline(box_fig)
+    fig_bottleneck_html = _inline(bottleneck_fig)
+    fig_module_html = _inline(module_fig)
+
     # Top bottlenecks for the table
     top_bottlenecks_html = bottleneck_df.head(10)[
         ['Module', 'Rule', 'Time', 'Memory (MB)', 'Total I/O (MB)', 'Bottleneck_Score']
@@ -624,226 +701,8 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Benchmark Report - Pipeline CurateMake</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #2c3e50;
-        }}
-
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-        }}
-
-        .header {{
-            text-align: center;
-            color: white;
-            margin-bottom: 40px;
-            padding: 40px 20px;
-        }}
-
-        .header h1 {{
-            font-size: 3em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }}
-
-        .header p {{
-            font-size: 1.2em;
-            opacity: 0.9;
-        }}
-
-        .timestamp {{
-            background: rgba(255,255,255,0.2);
-            padding: 8px 16px;
-            border-radius: 20px;
-            display: inline-block;
-            margin-top: 10px;
-            font-size: 0.9em;
-        }}
-
-        /* KPI Cards */
-        .kpi-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 40px;
-        }}
-
-        .kpi-card {{
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            text-align: center;
-            transition: transform 0.3s ease;
-        }}
-
-        .kpi-card:hover {{
-            transform: translateY(-5px);
-        }}
-
-        .kpi-icon {{
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }}
-
-        .kpi-value {{
-            font-size: 2.5em;
-            font-weight: bold;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin: 10px 0;
-        }}
-
-        .kpi-label {{
-            color: #7f8c8d;
-            font-size: 0.95em;
-            font-weight: 500;
-        }}
-
-        /* Section */
-        .section {{
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        }}
-
-        .section h2 {{
-            color: #2c3e50;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 3px solid #667eea;
-            font-size: 1.8em;
-        }}
-
-        .section h3 {{
-            color: #34495e;
-            margin: 25px 0 15px 0;
-            font-size: 1.3em;
-        }}
-
-        .section p {{
-            color: #555;
-            margin-bottom: 15px;
-            line-height: 1.8;
-        }}
-
-        /* Info Box */
-        .info-box {{
-            background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-            border-left: 4px solid #2196f3;
-            padding: 15px 20px;
-            margin: 20px 0;
-            border-radius: 8px;
-        }}
-
-        .info-box strong {{
-            color: #1976d2;
-        }}
-
-        .warning-box {{
-            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-            border-left: 4px solid #ff9800;
-            padding: 15px 20px;
-            margin: 20px 0;
-            border-radius: 8px;
-        }}
-
-        .warning-box strong {{
-            color: #f57c00;
-        }}
-
-        /* Chart Container */
-        .chart-container {{
-            margin: 30px 0;
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-        }}
-
-        iframe {{
-            border: none;
-            border-radius: 10px;
-        }}
-
-        /* Tables */
-        .table-wrapper {{
-            width: 100%;
-            overflow-x: auto; 
-        }}
-
-        .data-table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            background: white;
-            border-radius: 10px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            table-layout: fixed;   /* fixed-width columns prevent layout blow-up */
-            font-size: 0.9em;      /* optional: slightly more compact */
-        }}
-
-        .data-table th {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px;
-            text-align: left;
-            font-weight: 600;
-        }}
-
-        .data-table td {{
-            padding: 12px 15px;
-            border-bottom: 1px solid #ecf0f1;
-            word-wrap: break-word; /* prevents very long values from stretching the layout */
-        }}
-
-        .data-table tr:hover {{
-            background-color: #f8f9fa;
-        }}
-
-        .data-table tr:last-child td {{
-            border-bottom: none;
-        }}
-
-        /* Footer */
-        .footer {{
-            text-align: center;
-            color: white;
-            margin-top: 50px;
-            padding: 20px;
-            opacity: 0.8;
-        }}
-
-
-
-
-        /* Responsive */
-        @media (max-width: 768px) {{
-            .header h1 {{
-                font-size: 2em;
-            }}
-
-            .kpi-grid {{
-                grid-template-columns: 1fr;
-            }}
-        }}
-    </style>
+    <style>{REPORT_CSS}</style>
+    <script src="https://cdn.plot.ly/plotly-3.3.0.min.js" charset="utf-8"></script>
 </head>
 <body>
     <div class="container">
@@ -857,25 +716,29 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
 
         <!-- KPI Cards -->
         <div class="kpi-grid">
+            <div class="kpi-card primary">
+                <div class="kpi-value">{elapsed_span_fmt}</div>
+                <div class="kpi-label">Elapsed &mdash; first job to last</div>
+            </div>
             <div class="kpi-card">
-                <div class="kpi-icon">⏱️</div>
+                <div class="kpi-value">{longest_step_fmt}</div>
+                <div class="kpi-label">Longest single step<br><code>{longest_step_rule}</code></div>
+            </div>
+            <div class="kpi-card">
                 <div class="kpi-value">{total_time_fmt}</div>
-                <div class="kpi-label">Total execution time</div>
+                <div class="kpi-label">Cumulative compute<br>all {int(df['Jobs'].sum()):,} jobs summed</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-icon">💾</div>
-                <div class="kpi-value">{int(total_memory_peak)} MB</div>
-                <div class="kpi-label">Peak memory usage</div>
+                <div class="kpi-value">{total_memory_peak/1024:.0f} GB</div>
+                <div class="kpi-label">Peak memory, highest single job</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-icon">💿</div>
-                <div class="kpi-value">{int(total_io)} MB</div>
-                <div class="kpi-label">Total disk I/O</div>
+                <div class="kpi-value">{total_io/1024:.0f} GB</div>
+                <div class="kpi-label">Disk I/O, read and written</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-icon">🎯</div>
-                <div class="kpi-value">{avg_cpu_efficiency:.1f}%</div>
-                <div class="kpi-label">Average CPU efficiency</div>
+                <div class="kpi-value">{avg_cpu_efficiency/100:.1f}&#215;</div>
+                <div class="kpi-label">Mean parallelism<br>threads busy per job</div>
             </div>
         </div>
 
@@ -885,7 +748,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
             <p>
                 This report reviews the performance of <strong>{len(df)} rules</strong> spread across
                 <strong>{df['Module'].nunique()} modules</strong> in the CurateMake pipeline. The total execution
-                time is <strong>{total_time_fmt}</strong> with a peak memory consumption of
+                span is <strong>{elapsed_span_fmt}</strong> from the first job to the last, totalling <strong>{total_time_fmt}</strong> of cumulative compute across all jobs, with a peak memory consumption of
                 <strong>{int(total_memory_peak)} MB</strong>.
             </p>
 
@@ -904,7 +767,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
                 Each module groups related Snakemake rules that perform focused tasks.
             </p>
             <div class="chart-container">
-                <iframe src="benchmark_modules.html" width="100%" height="550"></iframe>
+                {fig_module_html}
             </div>
         </div>
 
@@ -912,16 +775,17 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
         <div class="section">
             <h2>📅 Execution timeline</h2>
             <p>
-                This visualization presents the simulated execution order for pipeline rules.
-                Although Snakemake can run tasks in parallel, the timeline illustrates a logical sequential
+                Each rule is drawn on the dates it actually ran, so bars that overlap were
+                genuinely running at the same time and gaps are real pauses between stages.
                 order based on module dependencies.
             </p>
             <div class="warning-box">
-                <strong>⚠️ Note:</strong> Timestamps are simulated because the benchmark files do not include
-                real execution times. The timeline reflects each task duration but not the exact parallelism.
+                <strong>Source:</strong> start and end are read from the benchmark files themselves
+                (file mtime = job end, minus its duration = start), cross-checked against Snakemake's
+                own log timestamps.
             </div>
             <div class="chart-container">
-                <iframe src="benchmark_gantt.html" width="100%" height="800"></iframe>
+                {fig_gantt_html}
             </div>
         </div>
 
@@ -938,7 +802,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
                 represent the most resource-intensive rules (time + memory + I/O) and are ideal optimization targets.
             </div>
             <div class="chart-container">
-                <iframe src="benchmark_scatter.html" width="100%" height="650"></iframe>
+                {fig_scatter_html}
             </div>
         </div>
 
@@ -956,7 +820,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
                 "I/O" and "Time" means I/O may not be the limiting factor.
             </div>
             <div class="chart-container">
-                <iframe src="benchmark_heatmap.html" width="100%" height="550"></iframe>
+                {fig_heatmap_html}
             </div>
         </div>
 
@@ -974,7 +838,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
                 for parallelization or code optimization.
             </div>
             <div class="chart-container">
-                <iframe src="benchmark_efficiency.html" width="100%" height="950"></iframe>
+                {fig_efficiency_html}
             </div>
         </div>
 
@@ -986,7 +850,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
                 The red line marks the median value, helping to visualize variability and outliers.
             </p>
             <div class="chart-container">
-                <iframe src="benchmark_distributions.html" width="100%" height="750"></iframe>
+                {fig_dist_html}
             </div>
 
             <h3>📊 Box plots by module</h3>
@@ -994,7 +858,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
                 The box plots compare metric distributions between modules, highlighting both intra- and inter-module variability.
             </p>
             <div class="chart-container">
-                <iframe src="benchmark_boxplots.html" width="100%" height="550"></iframe>
+                {fig_box_html}
             </div>
         </div>
 
@@ -1021,7 +885,7 @@ def generate_html_report(benchmarks: Dict, output_path: Path):
 
             <h3>🎯 Radar view of the top 5 bottlenecks</h3>
             <div class="chart-container">
-                <iframe src="benchmark_bottlenecks.html" width="100%" height="550"></iframe>
+                {fig_bottleneck_html}
             </div>
 
             <h3>📋 Top 10 identified bottlenecks</h3>
