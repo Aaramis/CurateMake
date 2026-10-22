@@ -409,7 +409,11 @@ def recover(seqs, rows, best, hmms, work, width, hmmer_bin, mmseqs_env, min_id, 
             cross=None, bucket_of=None, align_jobs=1):
     missing = [sid for sid in seqs if sid not in rows]
     if not missing:
-        return 0
+        # An empty dict, NOT 0: the caller reads .get("rescued_cross_barcode") on whatever
+        # comes back, and both are falsy where the result is only tested for truthiness.
+        # Returning 0 here crashed the run whenever every read was projected, which never
+        # happens on the full database and always happens on a small clean dataset.
+        return {}
     q = work / "unassigned.fasta"
     with open(q, "w") as f:
         for sid in missing:
