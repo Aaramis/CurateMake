@@ -267,6 +267,15 @@ class MSASequenceExtractor:
             #     CoL row-count estimate). Measured ~9 s / (1/48) slice -> ~5-8 min total.
             # INNER JOIN on backbone='CoL' keeps the original semantics (only sequences that have a
             # CoL taxonomy row are emitted).
+            # Imported here, not at module scope: this module keeps every db_manager import
+            # lazy so it stays usable without the database layer loaded (see the DB init below).
+            _utils = Path(__file__).resolve().parent.parent / "utils"
+            if str(_utils) not in sys.path:
+                sys.path.insert(0, str(_utils))
+            from db_manager import pg_hint
+            hint = pg_hint([("s", "sequences_pkey"), ("st", "seq_tax_pkey")],
+                           batched=("s", "st"), leading=("s", "st"))
+
             n_chunks = 48
             step = (65536 + n_chunks - 1) // n_chunks
             logger.info("Extracting via %d yb_hash_code ranges (non-streaming)...", n_chunks)
@@ -274,7 +283,7 @@ class MSASequenceExtractor:
                 lo = ci * step
                 hi = min(65535, (ci + 1) * step - 1)
                 chunk_query = text(f"""
-                    /*+ Leading((s st)) IndexScan(s sequences_pkey) IndexScan(st seq_tax_pkey) YbBatchedNL(s st) */
+                    {hint}
                     SELECT {select_cols}
                     FROM {sequences_table} s
                     JOIN {seq_tax_table} st ON st.seq_id = s.seq_id AND st.backbone = 'CoL'

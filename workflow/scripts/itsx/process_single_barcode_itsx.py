@@ -32,6 +32,7 @@ from datetime import datetime
 from dataclasses import dataclass, asdict
 
 from sqlalchemy import text
+from sqlalchemy import insert as sa_insert
 from sqlalchemy.exc import OperationalError, IntegrityError, SQLAlchemyError
 
 try:
@@ -253,6 +254,10 @@ class BarcodeITSxProcessor:
         if not updates:
             return 0
 
+        # Imported here, not at module scope: sys.path only gains scripts/utils in
+        # main(), and Snakemake runs this file from a temp copy under .snakemake/scripts.
+        from db_manager import pg_hint
+
         # Deduplicate updates (keep last status for each seq_id)
         deduped = {}
         for status, seq_id in updates:
@@ -274,7 +279,20 @@ class BarcodeITSxProcessor:
         logger.info(f"Updating {len(unique_updates)} sequence statuses in {len(chunks)} chunks")
 
         # ONE TRANSACTION PER CHUNK (PostgreSQL compatibility)
-        for chunk_idx, chunk in enumerate(chunks, 1):
+        #
+        # `chunks` is consumed as a QUEUE, not a fixed list: a chunk that fails is halved and
+        # both halves are pushed back. _get_parent_metadata below already worked this way;
+        # this method did not, so a single transient failure killed the whole rule. It is a
+        # real scenario -- on 2026-08-27/28 the cluster returned "Rpc timeout, passed:
+        # 15.062s, timeout: 15.000s" on a 9 946-id UPDATE while being perfectly healthy
+        # minutes later (measured: the same query over 10 000 ids plans as an Index Scan and
+        # runs in 0.04 s). Retrying the identical statement is NOT the answer -- a deadline
+        # is deterministic for the size that hit it -- so shrink and continue instead.
+        pending = list(chunks)
+        chunk_idx = 0
+        while pending:
+            chunk = pending.pop(0)
+            chunk_idx += 1
             seq_ids = [seq_id for _, seq_id in chunk]
             status_value = chunk[0][0]  # Assume same status for chunk
 
@@ -284,9 +302,10 @@ class BarcodeITSxProcessor:
                     # Use database-specific syntax for array parameters
                     if self.db.db_type == "postgresql":
                         query = text(f"""
-                            UPDATE {self.db.sequences_table}
+                            {pg_hint([("s", "sequences_pkey")])}
+                            UPDATE {self.db.sequences_table} AS s
                             SET barcode_status = :status
-                            WHERE seq_id = ANY(:seq_ids)
+                            WHERE s.seq_id = ANY(:seq_ids)
                         """)
                         result = session.execute(query, {"status": status_value, "seq_ids": seq_ids})
                     else:  # SQLite
@@ -305,10 +324,24 @@ class BarcodeITSxProcessor:
                     return result.rowcount
 
             # Execute with automatic retry handling from db_manager
-            rowcount = self.db._execute_with_retry(
-                f"bulk_update_status_chunk_{chunk_idx}",
-                update_chunk
-            )
+            try:
+                rowcount = self.db._execute_with_retry(
+                    f"bulk_update_status_chunk_{chunk_idx}",
+                    update_chunk,
+                    retry_deadline=False,  # the except below resplits; see db_manager
+                )
+            except Exception as e:
+                if len(chunk) == 1:
+                    logger.error(
+                        f"Failed to update status for single seq_id {chunk[0][1]}: {e}")
+                    raise
+                mid = len(chunk) // 2
+                logger.warning(
+                    f"Status update chunk size {len(chunk)} failed; "
+                    f"splitting into {mid} and {len(chunk) - mid}")
+                pending.insert(0, chunk[mid:])
+                pending.insert(0, chunk[:mid])
+                continue
             total_updated += rowcount
 
         logger.info(f"Updated {total_updated} sequences to status '{status_value}'")
@@ -360,8 +393,13 @@ class BarcodeITSxProcessor:
                 barcode_condition = "AND s.barcode = :barcode"
             params['barcode'] = self.barcode
 
+        # Imported here, not at module scope: sys.path only gains scripts/utils in
+        # main(), and Snakemake runs this file from a temp copy under .snakemake/scripts.
+        from db_manager import pg_hint
+
         # INNER JOIN to get only sequences with CoL taxonomy
         query = text(f"""
+            {pg_hint([("s", "sequences_pkey"), ("st", "seq_tax_pkey")], batched=("s", "st"), leading=("s", "st"))}
             SELECT s.seq_id, s.source_id, s.original_id, st.tax_id
             FROM {self.db.sequences_table} s
             JOIN {self.db.seq_tax_table} st ON s.seq_id = st.seq_id
@@ -413,7 +451,8 @@ class BarcodeITSxProcessor:
         try:
             metadata = self.db._execute_with_retry(
                 "parent_metadata_streaming",
-                streaming_fetch
+                streaming_fetch,
+                retry_deadline=False,  # falls back to chunked mode below
             )
             logger.info(f"Fetched metadata for {len(metadata)} parent sequences (streaming mode)")
             return metadata
@@ -435,6 +474,8 @@ class BarcodeITSxProcessor:
         # Split into chunks with retry logic for failed chunks
         pending = [unique_parent_ids[i:i + chunk_size] for i in range(0, len(unique_parent_ids), chunk_size)]
 
+        from db_manager import pg_hint  # see the note in _bulk_update_status
+
         logger.info(f"Fetching metadata in {len(pending)} chunks (fallback mode)")
 
         while pending:
@@ -446,6 +487,7 @@ class BarcodeITSxProcessor:
                     if self.db.db_type == "postgresql":
                         # INNER JOIN with backbone='CoL' filter
                         query = text(f"""
+                            {pg_hint([("s", "sequences_pkey"), ("st", "seq_tax_pkey")], batched=("s", "st"), leading=("s", "st"))}
                             SELECT s.seq_id, s.source_id, s.original_id, st.tax_id
                             FROM {self.db.sequences_table} s
                             JOIN {self.db.seq_tax_table} st ON s.seq_id = st.seq_id
@@ -476,7 +518,8 @@ class BarcodeITSxProcessor:
                 # Execute with automatic retry handling
                 chunk_metadata = self.db._execute_with_retry(
                     f"parent_metadata_chunk_{len(chunk)}",
-                    fetch_chunk
+                    fetch_chunk,
+                    retry_deadline=False,  # the except below resplits
                 )
                 metadata.update(chunk_metadata)
 
@@ -546,30 +589,24 @@ class BarcodeITSxProcessor:
 
         # Execute with retry logic
         def insert_operation():
-            with self.db.get_session() as session:
-                # Bulk insert sequences
-                if seq_inserts:
-                    session.execute(
-                        text(f"""
-                            INSERT INTO {self.db.sequences_table}
-                            (seq_id, source_id, original_id, sequence, length,
-                             barcode, barcode_status, parent_seq_id)
-                            VALUES (:seq_id, :source_id, :original_id, :sequence, :length,
-                                    :barcode, :barcode_status, :parent_seq_id)
-                        """),
-                        seq_inserts
-                    )
+            # Core table INSERTs, not text(): SQLAlchemy can only fold a list of parameter
+            # dicts into multi-row VALUES statements for a construct it built itself. Given
+            # a text() it falls back to cursor.executemany(), which psycopg2 runs as one
+            # round trip PER ROW -- on a distributed database that is what this step was
+            # paying. Measured on this cluster against a table carrying the same 7 indexes
+            # and constraints, 10k sequences + 10k seq_tax: 26.7 s via text() vs 1.0 s here.
+            # SQLAlchemy also pages the VALUES internally (1000 rows), so a 10k batch never
+            # becomes the single oversized statement that closes the backend. Table-level
+            # insert() stays Core-only, hence identical on SQLite; the models already carry
+            # the schema db_manager set on them.
+            from db_models import Sequence as SequenceModel, SeqTax as SeqTaxModel
 
-                # Insert seq_tax relationships
+            with self.db.get_session() as session:
+                if seq_inserts:
+                    session.execute(sa_insert(SequenceModel.__table__), seq_inserts)
+
                 if seq_tax_inserts:
-                    session.execute(
-                        text(f"""
-                            INSERT INTO {self.db.seq_tax_table}
-                            (seq_id, tax_id, backbone, status)
-                            VALUES (:seq_id, :tax_id, :backbone, :status)
-                        """),
-                        seq_tax_inserts
-                    )
+                    session.execute(sa_insert(SeqTaxModel.__table__), seq_tax_inserts)
 
                 return len(seq_inserts)
 

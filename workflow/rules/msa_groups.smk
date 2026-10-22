@@ -1,6 +1,13 @@
-# workflow/rules/clustered_msa.smk
+# workflow/rules/msa_groups.smk
 """
-Sequence-first MSA construction — the ONLY MSA strategy.
+Aggregation of the per-barcode MSA manifests into the single manifest SATIVA consumes.
+
+The MSAs themselves are built by ehmm_msa.smk (backbone + ensemble-HMM projection), the only
+strategy the pipeline keeps. A from-scratch per-group MAFFT variant ("clustered") lived here
+until 2026-08-25; it was removed after eHMM won on both accuracy and cost. Everything below is
+strategy-agnostic: it only merges manifests.
+
+Historical note kept on purpose — the old docstring described why groups span kingdoms:
 
 Per barcode: mmseqs2-cluster the WHOLE barcode -> absorb tiny clusters -> merge clusters of similar
 taxonomy into kingdom-interleaved groups up to a size cap -> MAFFT + trimAl -> SATIVA manifest. No
@@ -20,12 +27,12 @@ import os
 FULL_CSV = config["msa"]["csv_path"]
 BU_BARCODES = config["msa"].get("barcodes", ["ITS", "ITS1", "ITS2"])
 
-_cl = config["msa"].get("clustered", {})
-CL_OUT = _cl.get("out_dir", "results/MSA/clustered")
-CL_SATIVA_MANIFEST = _cl.get("sativa_manifest", "results/MSA/clustered/sativa_manifest.json")
-CL_SUMMARY = _cl.get("summary", "results/MSA/clustered/clustered_summary.json")
-CL_RESIDUAL_REPORT = _cl.get("residual_report", "results/MSA/clustered/residual_report.json")
-CL_CONTAM_REPORT = _cl.get("contamination_report", "results/MSA/clustered/contamination_report.json")
+_cl = config["msa"].get("groups", {})
+CL_OUT = _cl.get("out_dir", "results/MSA/groups")
+CL_SATIVA_MANIFEST = _cl.get("sativa_manifest", "results/MSA/groups/sativa_manifest.json")
+CL_SUMMARY = _cl.get("summary", "results/MSA/groups/groups_summary.json")
+CL_RESIDUAL_REPORT = _cl.get("residual_report", "results/MSA/groups/residual_report.json")
+CL_CONTAM_REPORT = _cl.get("contamination_report", "results/MSA/groups/contamination_report.json")
 CL_CLUSTER_ID = float(_cl.get("cluster_id", 0.97))
 CL_CLUSTER_COV = float(_cl.get("cluster_cov", 0.80))
 CL_MIN_REF = int(_cl.get("min_ref", 4))
@@ -35,36 +42,11 @@ CL_SATIVA_MIN_SEQS = int(_cl.get("sativa_min_seqs", 4))
 CL_MMSEQS_ENV = _cl.get("mmseqs_env", "mmseqs")
 CL_TOOL_ENV = _cl.get("tool_env", "its-pipeline-dev")
 CL_THREADS = int(_cl.get("threads", 32))
-
-_SCRIPT = "workflow/scripts/MSA/build_msas_clustered.py"
-
-
-rule clustered_build_barcode:
-    """Cluster + merge (kingdom-interleaved) + align one barcode -> its SATIVA manifest + MSAs."""
-    input:
-        csv=FULL_CSV,
-    output:
-        manifest=os.path.join(CL_OUT, "{barcode}", "sativa_manifest.json"),
-    params:
-        outdir=lambda w: os.path.join(CL_OUT, w.barcode),
-        script=_SCRIPT,
-    threads: CL_THREADS
-    log:
-        "logs/clustered/{barcode}.log",
-    benchmark:
-        "benchmarks/clustered/build_{barcode}.benchmark.txt"
-    shell:
-        r"""
-        python {params.script} \
-            --full-csv {input.csv} --barcode {wildcards.barcode} --out-dir {params.outdir} \
-            --cluster-id {CL_CLUSTER_ID} --cluster-cov {CL_CLUSTER_COV} \
-            --min-ref {CL_MIN_REF} --max-group {CL_MAX_GROUP} --max-cluster-reps {CL_MAX_CLUSTER_REPS} \
-            --sativa-min-seqs {CL_SATIVA_MIN_SEQS} --threads {threads} \
-            --mmseqs-env {CL_MMSEQS_ENV} --tool-env {CL_TOOL_ENV} > {log} 2>&1
-        """
+CL_KMER_PER_SEQ = int(_cl.get("cluster_kmer_per_seq", 300))  # linclust sensitivity knob
 
 
-rule clustered_collect:
+
+rule collect_groups:
     """Aggregate per-barcode manifests -> the single SATIVA manifest sativa.smk consumes + the
     summary / residual / contamination reports the downstream reports read."""
     input:
@@ -76,12 +58,12 @@ rule clustered_collect:
         residual=CL_RESIDUAL_REPORT,
         contamination=CL_CONTAM_REPORT,
     log:
-        "logs/clustered/collect.log",
+        "logs/msa_groups/collect.log",
     benchmark:
-        "benchmarks/clustered/collect.benchmark.txt"
+        "benchmarks/msa_groups/collect.benchmark.txt"
     shell:
         """
-        python workflow/scripts/MSA/collect_clustered.py \
+        python workflow/scripts/MSA/collect_groups.py \
             --barcode-manifests {input.manifests} \
             --sativa-manifest {output.manifest} \
             --output-summary {output.summary} \

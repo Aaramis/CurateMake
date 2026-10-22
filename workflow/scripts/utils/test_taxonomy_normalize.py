@@ -5,7 +5,8 @@ Run: python workflow/scripts/utils/test_taxonomy_normalize.py
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from taxonomy_normalize import clean_rank, clean_species, is_placeholder, is_domain
+from taxonomy_normalize import (clean_rank, clean_species, is_placeholder, is_domain,
+                                clean_kingdom, is_legacy_kingdom, EUKARYOTE_KINGDOMS)
 
 # (input, expected) for is_domain
 DOMAIN_CASES = [
@@ -69,6 +70,28 @@ SPECIES_CASES = [
 ]
 
 
+# (input, expected) for clean_kingdom -- see _LEGACY_KINGDOM_TOKENS for the rationale.
+KINGDOM_CASES = [
+    # kingdoms the pipeline keeps
+    ("Fungi", "Fungi"), ("Plantae", "Plantae"), ("Animalia", "Animalia"),
+    ("Chromista", "Chromista"), ("Protozoa", "Protozoa"),
+    # BOLD junk: 6493 sequences on the 2026-08-25 run carried "Mixture"
+    ("Mixture", None), ("mixture", None), ("Unspecified", None), ("unspecified", None),
+    # legacy grouping: 5813 BOLD sequences, members belong under Chromista/Plantae
+    ("Protista", None), ("protista", None), ("Protoctista", None),
+    # domains are not kingdoms (already covered by is_domain, checked again here)
+    ("Eukaryota", None), ("Bacteria", None),
+    # ordinary placeholders still rejected
+    ("unidentified", None), ("NA", None), ("", None), (None, None),
+]
+
+LEGACY_CASES = [
+    ("Protista", True), ("protista", True), ("Protoctista", True),
+    ("Chromista", False), ("Protozoa", False), ("Fungi", False),
+    ("", False), (None, False),
+]
+
+
 def run():
     failures = []
     for value, expected in RANK_CASES:
@@ -83,8 +106,21 @@ def run():
         got = is_domain(value)
         if got != expected:
             failures.append(("is_domain", value, expected, got))
+    for value, expected in KINGDOM_CASES:
+        got = clean_kingdom(value)
+        if got != expected:
+            failures.append(("clean_kingdom", value, expected, got))
+    for value, expected in LEGACY_CASES:
+        got = is_legacy_kingdom(value)
+        if got != expected:
+            failures.append(("is_legacy_kingdom", value, expected, got))
+    # every kingdom clean_kingdom lets through must be one we keep
+    for k in ("Fungi", "Plantae", "Animalia", "Chromista", "Protozoa"):
+        if clean_kingdom(k) not in EUKARYOTE_KINGDOMS:
+            failures.append(("whitelist", k, "in EUKARYOTE_KINGDOMS", clean_kingdom(k)))
 
-    total = len(RANK_CASES) + len(SPECIES_CASES) + len(DOMAIN_CASES)
+    total = (len(RANK_CASES) + len(SPECIES_CASES) + len(DOMAIN_CASES)
+             + len(KINGDOM_CASES) + len(LEGACY_CASES) + 5)
     if failures:
         print(f"FAILED {len(failures)}/{total}")
         for fn, value, expected, got in failures:

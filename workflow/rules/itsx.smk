@@ -18,7 +18,12 @@ def get_itsx_barcodes(wildcards):
     """Dynamically retrieve the list of barcodes from results/ITSx/"""
     itsx_dir = Path("results/ITSx")
     if itsx_dir.exists():
-        barcodes = [d.name for d in itsx_dir.iterdir() if d.is_dir()]
+        # Skip dot-directories: ITSx creates .temp_<barcode>/ while it works, and a run
+        # killed mid-flight leaves one behind. Picked up as a barcode it produces a phantom
+        # wildcard whose input FASTA never existed, and the next DAG build dies on a
+        # MissingInputException before any job can start.
+        barcodes = [d.name for d in itsx_dir.iterdir()
+                    if d.is_dir() and not d.name.startswith(".")]
         return sorted(barcodes)
     return ITSX_BARCODES  # Fallback
 
@@ -31,6 +36,7 @@ rule deduplicate_sequences_pre_itsx:
         col_summary="results/processed/col_matching_report.json"
     params:
         db=get_db_path(),
+        allow_resume_shortcut=True,   # nothing else has marked duplicates yet
     output:
         report="results/processed/itsx_deduplicate_pre.json"
     log:
@@ -159,14 +165,39 @@ rule aggregate_itsx_results:
     script:
         "../scripts/itsx/aggregate_itsx_reports.py"
 
+rule reannotate_barcodes:
+    """Fix the ITS1/ITS2 label of sequences ITSx could not verify (sources already ITSx-trimmed have
+    no flanking regions left, so their declared region is taken on trust and is often wrong).
+
+    Runs BEFORE the post-ITSx deduplication on purpose: dedup keys on (sequence, barcode, tax_id), so
+    moving a sequence to another barcode after dedup would leave an undetected duplicate — and these
+    sequences match existing ITS2 entries at a median identity of 100%, so duplicates are certain.
+    """
+    input:
+        itsx_report="results/processed/itsx_process.json",
+    output:
+        report="results/processed/barcode_reannotation.json"
+    threads: config.get("msa", {}).get("reannotate_barcodes", {}).get("threads", 16)
+    log:
+        "logs/ITSX/reannotate_barcodes.log"
+    benchmark:
+        "benchmarks/itsx/reannotate_barcodes.benchmark.txt"
+    conda:
+        "../envs/itsx.yaml"
+    script:
+        "../scripts/itsx/reannotate_barcodes.py"
+
+
 rule deduplicate_sequences_post_itsx:
     """
     Deduplication of sequences after ITSx processing
     """
     input:
-        itsx_report="results/processed/itsx_process.json",
+        reannotation_report="results/processed/barcode_reannotation.json",
     params:
         db=get_db_path(),
+        allow_resume_shortcut=False,  # the pre pass always left Duplicate rows behind;
+                                      # taking the shortcut here skips the ITSx children
     output:
         report="results/processed/itsx_deduplicate_post.json"
     log:

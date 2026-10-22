@@ -27,6 +27,10 @@ import plotly.express as px
 from datetime import datetime
 import logging
 import sys
+import re
+
+# `ITS2__groups__r3__0042` is a replicate of the native `ITS2__groups__0042`
+_REPLICATE_TAXON_RE = re.compile(r"__r\d+__")
 from sqlalchemy.orm import sessionmaker
 
 # Database imports
@@ -1017,6 +1021,13 @@ class SativaPipeline:
                     if not msa_dir.is_dir():
                         continue
                     msa_name = msa_dir.name
+                    # Legacy file-walk fallback only (the Snakemake path reads the database,
+                    # which already holds the consensus). With sativa.replicates > 1 the tree
+                    # also carries the extra splits as `..__groups__r<N>__NNNN`; counting them
+                    # would report every sequence N times and show single-split flags instead
+                    # of the voted ones, so skip everything but the native split.
+                    if _REPLICATE_TAXON_RE.search(msa_name):
+                        continue
 
                     # Load taxonomies
                     tax_files = list(msa_dir.glob("*.tax"))

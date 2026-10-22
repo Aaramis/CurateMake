@@ -926,23 +926,24 @@ def main():
 
                 <p><strong>Tools Used:</strong></p>
                 <ul>
-                    <li><strong>MAFFT</strong>: Fast multiple sequence alignment algorithm</li>
-                    <li><strong>trimAl</strong>: Alignment trimming and column/sequence filtering</li>
-                    <li><strong>HMMER (hmmscan)</strong>: Profile HMM searching for sequence classification</li>
+                    <li><strong>mmseqs2</strong>: sequence clustering — selects the backbone, and recovers reads no profile claimed</li>
+                    <li><strong>MAFFT (mafft-linsi)</strong>: high-accuracy alignment, of the backbone only</li>
+                    <li><strong>HMMER (hmmbuild / nhmmer / hmmalign)</strong>: builds the profile ensemble, assigns each read to a profile, then projects it</li>
                 </ul>
 
-                <p><strong>Sequence-first clustered MSA construction:</strong></p>
+                <p><strong>Backbone + ensemble-HMM construction (UPP-style):</strong></p>
                 <ul>
-                    <li>Sequences are clustered by SEQUENCE across the whole barcode (mmseqs2), so a mislabelled read groups with its true relatives</li>
-                    <li>Clusters are merged into kingdom-interleaved groups up to a size cap, aligned with MAFFT, then trimmed with trimAl -gappyout (columns trimmed, every sequence kept)</li>
+                    <li>A backbone of ~1200 representative sequences is selected per barcode by clustering (mmseqs2, 90% identity) and aligned once with mafft-linsi — the only from-scratch alignment in the stage</li>
+                    <li>The backbone is decomposed into an ensemble of profile HMMs (subsets of 10, bucketed by kingdom, minimum 20 sequences per bucket)</li>
+                    <li>Every remaining read is assigned to its best-matching profile with nhmmer, then projected into the alignment with hmmalign; reads no profile claims are recovered by sequence identity (mmseqs2, ≥75% identity)</li>
+                    <li>Because every read lands in the <strong>same column frame</strong>, groups delivered to SATIVA are a free slice of the alignment — no per-group MAFFT. The frame is fixed per barcode: 940 columns for ITS, 461 for ITS1, 476 for ITS2.</li>
                 </ul>
 
-                <p><strong>HMM-Based Sequence Classification:</strong></p>
+                <p><strong>Why the reference frame spans kingdoms:</strong></p>
                 <ul>
-                    <li>HMM profiles are built from each taxonomic MSA</li>
-                    <li>Sequences removed during alignment trimming are searched against all HMM profiles</li>
-                    <li>Sequences matching better to a different taxonomic group are flagged as potentially misannotated</li>
-                    <li>This step is <strong>essential for optimal SATIVA performance</strong>, which relies on clean MSAs</li>
+                    <li>Groups are packed kingdom-interleaved up to a size cap, so every alignment contains a bit of everything</li>
+                    <li>That outgroup diversity is what lets SATIVA move a contaminant <strong>across</strong> kingdoms — a plant read mislabelled as a fungus in the source database can only be caught if plants and fungi share one column frame</li>
+                    <li>Alternatives preserving per-clade columns were benchmarked and rejected: they collapse cross-kingdom detection</li>
                 </ul>
             </div>
 

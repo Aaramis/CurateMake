@@ -6,6 +6,7 @@ Marks duplicate sequences based on (sequence, barcode, tax_id).
 
 import os
 import sys
+import threading
 import time
 import logging
 import json
@@ -25,8 +26,14 @@ logger = logging.getLogger(__name__)
 class SequenceDeduplicator:
     """Sequence deduplication manager."""
 
-    def __init__(self, db_manager, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, db_manager, config: Optional[Dict[str, Any]] = None,
+                 allow_resume_shortcut: bool = True):
         self.db_manager = db_manager
+        # Whether "duplicates already exist -> skip re-marking" may be taken. Safe for the
+        # pre-ITSx pass (nothing else has marked anything yet), WRONG for the post-ITSx pass:
+        # the pre pass always leaves Duplicate rows behind, so the post pass would conclude it
+        # had already run and silently skip the several million ITSx children it alone can see.
+        self.allow_resume_shortcut = allow_resume_shortcut
         config = config or {}
         dedup_config = config.get("deduplication", {})
         sequence_config = config.get("sequence_validation", {})
@@ -52,12 +59,18 @@ class SequenceDeduplicator:
         }
 
     def setup_database(self):
-        """Create indexes required for performant deduplication."""
-        logger.info("Verifying/creating indexes for deduplication...")
+        """Check the indexes deduplication relies on, and rebuild them only if missing.
 
-        # seq_tax lookups by seq_id/tax_id are already served by the composite PK
-        # (seq_id leading) and the ORM index idx_seq_tax_tax, so no extra seq_tax
-        # indexes are created here.
+        Both are declared on the Sequence model, so create_database builds them while the
+        tables are still empty. This method is therefore a no-op on any database the
+        current schema created; the build path below exists only for databases predating
+        that change, where the index has to be backfilled over rows that already exist.
+
+        seq_tax lookups by seq_id/tax_id are already served by the composite PK (seq_id
+        leading) and the ORM index idx_seq_tax_tax, so no seq_tax index is needed here.
+        """
+        logger.info("Verifying indexes for deduplication...")
+
         index_statements = [
             ("seq_barcode", f"CREATE INDEX IF NOT EXISTS idx_sequences_seq_barcode ON {self.db_manager.sequences_table}(sequence, barcode)"),
             ("dedup_composite", f"""
@@ -67,9 +80,18 @@ class SequenceDeduplicator:
         ]
 
         for name, sql in index_statements:
+            index_name = f"idx_sequences_{name}"
+            if self._index_exists(index_name):
+                logger.info("Index %s already present, skipping.", index_name)
+                continue
+
+            logger.warning("Index %s missing — this database predates its declaration on "
+                           "the schema; backfilling it over existing rows may be slow.",
+                           index_name)
+
             def create_index(stmt=sql):
                 with self.db_manager.get_session() as session:
-                    session.execute(text(stmt))
+                    self._execute_ddl_bounded(session, stmt)
                     session.commit()
 
             self.db_manager._execute_with_retry(
@@ -78,6 +100,65 @@ class SequenceDeduplicator:
             )
 
         logger.info("Indexes ready.")
+
+    def _index_exists(self, index_name: str) -> bool:
+        """Whether the index is already in the catalog, so a rebuild is not attempted.
+
+        Cheap, and it is what makes an index created out-of-band (see below) enough to keep
+        this step from ever blocking again.
+        """
+        if self.db_manager.db_type == "postgresql":
+            sql = "SELECT 1 FROM pg_class WHERE relname = :n"
+        else:
+            sql = "SELECT 1 FROM sqlite_master WHERE type='index' AND name = :n"
+
+        def check():
+            with self.db_manager.get_session() as session:
+                return session.execute(text(sql), {"n": index_name}).first() is not None
+
+        try:
+            return bool(self.db_manager._execute_with_retry(
+                f"dedup_sequences_index_exists_{index_name}", check))
+        except Exception:
+            return False
+
+    def _execute_ddl_bounded(self, session, stmt: str, budget_seconds: int = 1800):
+        """Run a DDL statement with a wall-clock budget, cancelling it if it overruns.
+
+        On YugabyteDB a CREATE INDEX is carried out by the master and is NOT bound by
+        statement_timeout, and during a cluster stall the socket stays healthy so TCP
+        keepalives never fire either. A blocked statement therefore hangs the client
+        forever (observed: 62 minutes at 0 s of CPU). Cancelling on the raw connection is
+        the only lever that works; raising afterwards lets _execute_with_retry try again.
+        """
+        if self.db_manager.db_type != "postgresql":
+            session.execute(text(stmt))
+            return
+
+        raw = session.connection().connection
+        box: Dict[str, Any] = {}
+
+        def work():
+            try:
+                session.execute(text(stmt))
+                box["ok"] = True
+            except Exception as exc:
+                box["err"] = exc
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(budget_seconds)
+
+        if worker.is_alive():
+            logger.warning("DDL exceeded %ss, cancelling: %s", budget_seconds, stmt.strip()[:80])
+            try:
+                raw.cancel()
+            except Exception:
+                pass
+            worker.join(120)
+            raise TimeoutError(f"DDL cancelled after {budget_seconds}s")
+        if "err" in box:
+            raise box["err"]
 
     def _fetch_barcodes(self) -> List[Optional[str]]:
         sequences_table = self.db_manager.sequences_table
@@ -582,23 +663,6 @@ class SequenceDeduplicator:
 
         return summary
 
-    def optimize_database(self):
-        """Optimize the database after deduplication."""
-        logger.info("Running database optimization (ANALYZE)...")
-
-        if self.db_manager.db_type == "sqlite":
-            def analyze_op():
-                with self.db_manager.get_session() as session:
-                    session.execute(text("ANALYZE"))
-                    session.commit()
-
-            self.db_manager._execute_with_retry("dedup_sequences_analyze", analyze_op)
-        elif self.db_manager.db_type == "postgresql":
-            with self.db_manager.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-                conn.execute(text("ANALYZE"))
-
-        logger.info("Database optimization completed.")
-
     def _duplicates_already_marked(self) -> bool:
         """True if a prior run already marked duplicates (a 'Duplicate' barcode_status exists)."""
         def check():
@@ -634,9 +698,12 @@ class SequenceDeduplicator:
             # Resumable restart: if a previous run already marked duplicates (persisted in the DB),
             # skip the expensive re-marking and go straight to summary/report. Lets a rule that died
             # in post-processing (e.g. the summary) be re-run cheaply without redoing the whole mark.
-            if self._duplicates_already_marked():
+            if self.allow_resume_shortcut and self._duplicates_already_marked():
                 logger.info("Duplicates already marked in the DB — skipping re-marking (resumable restart).")
             else:
+                if not self.allow_resume_shortcut:
+                    logger.info("Resume shortcut disabled for this pass — marking duplicates over "
+                                "every unmarked row, including the ones ITSx has just added.")
                 self.mark_duplicate_sequences()
             if self.skip_verify_integrity:
                 logger.info("Skipping integrity verification (deduplication.skip_verify_integrity=true)")
@@ -662,8 +729,6 @@ class SequenceDeduplicator:
             if not self.stats.get("duplicates_marked"):
                 # re-marking was skipped (resumable restart) -> derive the count for the report
                 self.stats["duplicates_marked"] = (self.stats.get("initial_sequence_count", 0) or 0) - unique_kept
-
-            self.optimize_database()
 
         except Exception as e:
             logger.error(f"Error during deduplication: {e}", exc_info=True)
@@ -710,6 +775,7 @@ def main():
             db_path = snakemake.params.db
             output_report = snakemake.output.report
             config = snakemake.config
+            allow_resume_shortcut = bool(getattr(snakemake.params, "allow_resume_shortcut", True))
             log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
             file_handler = logging.FileHandler(log_file, mode="w")
             file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
@@ -719,12 +785,14 @@ def main():
             db_path = "test_database.sqlite"
             output_report = "sequence_deduplication_report.json"
             config = {"database": {"path": db_path}}
+            allow_resume_shortcut = True
 
         sys.path.append(str(Path(__file__).parent / "utils"))
         from db_manager import get_database_manager
 
         db_manager = get_database_manager(config)
-        deduplicator = SequenceDeduplicator(db_manager, config=config)
+        deduplicator = SequenceDeduplicator(db_manager, config=config,
+                                            allow_resume_shortcut=allow_resume_shortcut)
         deduplicator.deduplicate_sequences()
 
         summary = deduplicator.get_deduplication_summary()

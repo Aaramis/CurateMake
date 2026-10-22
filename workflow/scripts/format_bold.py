@@ -41,7 +41,7 @@ for _u in (Path(__file__).resolve().parent / "utils",
         if str(_u) not in sys.path:
             sys.path.insert(0, str(_u))
         break
-from taxonomy_normalize import clean_rank, clean_species
+from taxonomy_normalize import clean_rank, clean_species, clean_kingdom
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +281,10 @@ class BOLDParser:
 
         for row_data, seq_len in chunk:
             try:
-                kingdom = clean_rank(row_data.get("kingdom"))
+                # clean_kingdom, not clean_rank: BOLD ships "Mixture"/"Unspecified"
+                # and the legacy "Protista" in this column (12306 sequences on the
+                # 2026-08-25 run). None lets the CoL harmonisation resolve it.
+                kingdom = clean_kingdom(row_data.get("kingdom"))
                 phylum = clean_rank(row_data.get("phylum"))
                 class_ = clean_rank(row_data.get("class"))
                 order_ = clean_rank(row_data.get("order"))

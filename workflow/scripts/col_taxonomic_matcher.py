@@ -294,6 +294,47 @@ class TaxonomyMatcher:
             logger.error(f"Error matching taxonomy {taxonomy.tax_id}: {e}")
             return MatchResult(original_tax_id=taxonomy.tax_id, success=False, error_message=str(e))
 
+def match_taxonomies_parallel(matcher: "TaxonomyMatcher",
+                              taxonomies: List[TaxonomyRecord],
+                              max_workers: int = 20) -> List[MatchResult]:
+    """Match TaxonomyRecords against CoL concurrently.
+
+    THE single implementation of the concurrent CoL query. Used by
+    CoLProcessor.process_batch (taxonomy harmonisation, early in the pipeline)
+    and by the SATIVA integration prefetch, so both stages talk to
+    ChecklistBank the same way. ChecklistBank serves concurrency well (~470
+    req/s); a serial stream is what collapses -- measured at one answer per
+    25-90s per process once ~90 clade jobs each waited on their own connection.
+
+    Results come back unordered; use MatchResult.original_tax_id to map them
+    back to their input.
+    """
+    if not taxonomies:
+        return []
+
+    results: List[MatchResult] = []
+    workers = max(1, min(int(max_workers), 32))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_taxonomy = {
+            executor.submit(matcher.match_taxonomy, taxonomy): taxonomy
+            for taxonomy in taxonomies
+        }
+
+        for future in as_completed(future_to_taxonomy):
+            taxonomy = future_to_taxonomy[future]
+            try:
+                results.append(future.result())
+            except Exception as e:
+                logger.error(f"Future failed for taxonomy {taxonomy.tax_id}: {e}")
+                results.append(MatchResult(
+                    original_tax_id=taxonomy.tax_id,
+                    success=False,
+                    error_message=str(e)
+                ))
+
+    return results
+
+
 class CoLProcessor:
     """High-level processor for CoL matching."""
 
@@ -383,30 +424,7 @@ class CoLProcessor:
 
     def process_batch(self, taxonomies: List[TaxonomyRecord]) -> List[MatchResult]:
         """Process a batch of taxonomies using a thread pool."""
-        if not taxonomies:
-            return []
-        
-        results = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_taxonomy = {
-                executor.submit(self.matcher.match_taxonomy, taxonomy): taxonomy
-                for taxonomy in taxonomies
-            }
-            
-            for future in as_completed(future_to_taxonomy):
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    taxonomy = future_to_taxonomy[future]
-                    logger.error(f"Future failed for taxonomy {taxonomy.tax_id}: {e}")
-                    results.append(MatchResult(
-                        original_tax_id=taxonomy.tax_id,
-                        success=False,
-                        error_message=str(e)
-                    ))
-        
-        return results
+        return match_taxonomies_parallel(self.matcher, taxonomies, self.max_workers)
 
     def update_database(self, results: List[MatchResult]):
         """Persist successful matches to the database."""

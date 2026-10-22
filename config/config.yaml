@@ -133,32 +133,115 @@ CoL_api:
 
 # Multiple Sequence Alignment (MSA) configuration
 msa:
-  # Sequence extraction (prepare_msa). The MSA construction itself is sequence-first clustered (below).
+  # Sequence extraction (prepare_msa). The MSA construction itself is backbone + ensemble-HMM (below).
   # Batch size for extraction (uses database_formatting.batch_size if not set):
   # batch_size: 10000
   create_indexes: false            # create DB indexes before extraction (can timeout on YugabyteDB)
+  reannotate_barcodes:
+    enabled: true            # fix ITS1/ITS2 labels ITSx could not verify (pre-trimmed sources):
+                             # 85.8% of BOLD-style '<id>.ITS1' entries are in fact ITS2
+    apply: true              # false = report what would change without writing
+    reference_per_region: 50000   # ITSx-certified ITS1/ITS2 used as the reference set
+    min_seq_id: 0.70
+    min_coverage: 0.70
+    threads: 16
+    mmseqs_env: "mmseqs"
+    itsx_dir: "results/ITSx"
   barcodes: ["ITS", "ITS1", "ITS2"]
   csv_path: "results/full.csv"
   output_report: "reports/html/msa_analysis_report.html"
-  # === Sequence-first clustered MSA construction (cf. clustered_msa.smk) ===
+  # === Group packing + manifest aggregation (cf. msa_groups.smk, ehmm_msa.smk) ===
   # Cluster the whole barcode by SEQUENCE (mmseqs2), merge clusters of similar taxonomy into
   # kingdom-interleaved groups up to a SIZE cap (SATIVA tolerates gappy MSAs, so size is the real
   # bound), align + trimAl -> SATIVA. A contaminant clusters with its true kin, so cross-clade /
   # cross-kingdom contamination is visible to SATIVA (validated at scale, cf. SIMULATION_REPORT.md).
-  clustered:
-    out_dir: "results/MSA/clustered"
-    summary: "results/MSA/clustered/clustered_summary.json"
-    sativa_manifest: "results/MSA/clustered/sativa_manifest.json"
-    residual_report: "results/MSA/clustered/residual_report.json"
-    contamination_report: "results/MSA/clustered/contamination_report.json"
+                           #   clustered: mmseqs cluster -> kingdom-interleaved bounded
+                           #     groups -> one MAFFT per group. Bounded by ALIGNMENT quality
+                           #     (collapses past ~20k, cf. clustered.max_group).
+                           #   ehmm: one backbone alignment gives every read the same column
+                           #     frame (per-clade HMMs project them in), so groups are a free
+                           #     slice and no per-group MAFFT is needed. Measured on the
+                           #     CoL-harmonised sim (arm-level, 20.eHMM_MSA_prototype):
+                           #     cross-kingdom 57.3% vs 47.6%, false positives 7.1% vs 20.1%,
+                           #     20k task in ~33 min vs 1-2 h. Not yet run in-pipeline.
+  ehmm:
+    work_dir: "results/MSA/ehmm"
+    backbone_target: 1200       # stratified (kingdom,phylum) sample aligned ONCE (~2 h with
+                                # mafft-linsi); this alignment defines the shared frame
+    backbone_min_per_stratum: 3
+    backbone_source: cluster    # cluster = representatives of the largest mmseqs clusters, so the
+                                # backbone covers SEQUENCE space (what a profile HMM models) rather
+                                # than the declared-label space. Measured on the real ITS2 (1.4M
+                                # seqs, 1300-row budget, subsets of 10): taxonomy-stratified assigns
+                                # 66.1% of reads, cluster representatives 81.1%. Largest-first also
+                                # beats spreading picks over the size-ranked list (81.1 vs 70.2).
+    backbone_cluster_id: 0.90   # mmseqs linclust identity for that representative selection
+    backbone_aligner: "mafft-linsi"   # mafft-linsi assigns 77.6% of reads vs 72.3% for plain
+                                      # mafft (35 s): worth the one-off cost
+    min_col_occ: 0.10           # keep backbone columns occupied by >=10% of rows. A raw ITS
+                                # backbone (7% occupancy over ~6700 cols) yields HMMs so
+                                # diluted they miss ~90% of reads; at 10% (~1000 cols) nhmmer
+                                # recognises ~77%.
+    bucket_mode: upp            # upp = many small profiles, the granularity UPP actually uses.
+                                # Measured on the real ITS1 (1.4M seqs, same backbone, same queries):
+                                # 4 clade-level HMMs assign 20.4% of reads, 108 UPP-style ones 72.8%.
+                                # One HMM cannot model 6781 fungal genera. `clade` keeps the old
+                                # one-HMM-per-rank behaviour (kept only for comparison).
+    subset_size: 10             # backbone rows per profile, cut inside (kingdom,phylum,order).
+                                # Profile COMPACTNESS is the lever, not profile count nor backbone
+                                # size. Measured on the real ITS2 (1.4M seqs, 10k queries): at a
+                                # fixed 1300-row backbone, 25 -> 60.1% assigned and 10 -> 66.1%.
+                                # A 9x bigger backbone (12000 rows, 1264 profiles) only reaches
+                                # 69.1%, and 5000:25 (290 profiles) does WORSE than 1300:10 (177),
+                                # so what matters is how tight each profile is. This is UPP's own
+                                # design: a small backbone split into many small profiles.
+    bucket_rank: kingdom        # clade mode only
+    min_bucket: 20              # clade mode only
+    recover_unassigned: true    # mmseqs rescue for the short reads nhmmer misses (+2184 of
+                                # 7060 on the sim point, median length 166 bp vs 457)
+    recover_min_id: 0.75
+    recover_min_qcov: 0.60
+    scaffold_every_group: true  # inject the backbone into EVERY group: a contaminant is only
+                                # detectable when its TRUE clade is in the same MSA, and plain
+                                # round-robin leaves the last groups with 2 kingdoms of 5
+    threads: 32
+    # 18 x 8 = 144 of the 150-core cgroup quota. Measured 2026-08-25: nhmmer delivers
+    # 107 reads/s/core at --cpu 8 but only 80.8 at --cpu 32, so width is bought at a loss.
+    nhmmer_jobs: 18
+    nhmmer_threads: 8
+    # hmmalign has no --cpu (HMMER 3.4), so one bucket = one core. Measured 2026-08-25:
+    # the ITS projection spent 17.0 h of its 33.2 h on a single core with 138 buckets to do.
+    # This is the only knob that puts more than one core on that phase.
+    hmmalign_jobs: 64            # profiles scanned CONCURRENTLY, each with `threads`.
+                              # Sequential, ITS needs ~14 min per profile (2.29M reads x
+                              # 624 bp against a 940-column model) = over a day for 138,
+                              # while one nhmmer at --cpu 32 leaves ~120 of the 150 cgroup
+                              # cores idle. 4 x 32 = 128 fills them; RSS is ~3.2 Go each.
+    # hmmer_bin: ""             # dir holding hmmbuild/nhmmer/hmmalign (empty = from PATH)
+  groups:
+    out_dir: "results/MSA/groups"
+    summary: "results/MSA/groups/groups_summary.json"
+    sativa_manifest: "results/MSA/groups/sativa_manifest.json"
+    residual_report: "results/MSA/groups/residual_report.json"
+    contamination_report: "results/MSA/groups/contamination_report.json"
     cluster_id: 0.97       # mmseqs2 identity (clean references cluster well at 0.97)
     cluster_cov: 0.80      # mmseqs2 coverage
+    cluster_kmer_per_seq: 300  # mmseqs easy-linclust --kmer-per-seq. linclust runs in time
+                           # LINEAR in the input where easy-cluster does not; this knob buys
+                           # back the sensitivity it trades away. Measured on 206k real ITS
+                           # sequences: 21 (mmseqs default) -> 95510 clusters in 5s, 300 ->
+                           # 73458 in 9s, against easy-cluster's 72486 in 125s. At 826k the
+                           # gap widens: 28s vs over 45 min.
     min_ref: 4             # clusters smaller than this are absorbed into the nearest cluster
-    max_group: 10000       # hard cap on sequences per SATIVA MSA (feasibility bound)
-    max_cluster_reps: 200  # cap the reps ONE cluster contributes to its MSA (0 = off). Bounds the MSA
-                           # when a giant near-identical cluster would otherwise blow past max_group;
-                           # all members are kept in group_members.tsv for verdict propagation.
-    sativa_min_seqs: 4     # size floor for a group to be sent to SATIVA
+    max_group: 20000       # DO NOT RAISE. Measured on the CoL-harmonised sim (s8/r15): at 20k the
+                           # group MSA keeps ~180 informative columns and SATIVA corrects 47.6% of
+                           # cross-kingdom mislabels in 1-2h/task; at ~35-40k the from-scratch MSA
+                           # collapses (down to 21 columns) and SATIVA TIMES OUT at 6h (twice, K=25
+                           # and K=5). Also the #tasks lever: ~total_reps/max_group SATIVA tasks.
+    max_cluster_reps: 200  # cap the reps ONE CLUSTER (~near-identical species) contributes (0 = off).
+                           # Applied PER cluster before consolidation, so a diverse clade keeps its
+                           # within-clade resolution; all members kept in group_members.tsv.
+    sativa_min_seqs: 4     # size floor for a unit/group to be sent to SATIVA (else absorbed / residual)
     mmseqs_env: "mmseqs"           # conda env providing mmseqs2
     tool_env: "its-pipeline-dev"   # conda env providing mafft + trimal + pandas
     threads: 32
@@ -174,12 +257,42 @@ sativa:
   sativa_mode: "ultrafast"
   confidence_threshold: 0.4
   taxonomy_code: "BOT"
-  threads: 1
+  threads: 8               # threads PER SATIVA task -> epa-ng -T. Concurrency is then
+                           # floor(--cores / threads), so raising this at constant --cores
+                           # LOWERS peak RAM (fewer concurrent epa-ng reference trees) for the
+                           # same CPU use -- the opposite of raising --cores. epa-ng's OpenMP
+                           # scaling flattens past ~8, so 8 is the useful ceiling.
+                           # With --cores 120: 15 tasks x 8 threads = 120 cores.
   rand_seed: 42
+
+  # --- Consensus vote over several independent splits -----------------------
+  # The group boundaries handed to SATIVA are an artefact of the traversal order, not of
+  # biology, and the neighbourhood drives the verdict hard. Measured on ITS2 (2026-08-26,
+  # three independent splits of the SAME 1 277 566 sequences): only 43% of the flags raised
+  # by any one split are reproduced by another, and a SATIVA confidence of exactly 1.000
+  # still leaves 29% unreproduced -- the confidence scores the placement WITHIN the given
+  # neighbourhood, so it cannot see the arbitrariness of that neighbourhood. Fitting the
+  # observed 0/1/2/3-vote counts identifies three populations: 41.8% never flagged, 47.3%
+  # flagged ~38% of the time (the artefact zone) and 11.0% flagged by every split.
+  #
+  # `replicates: 1` reproduces the historical behaviour exactly -- the native split only,
+  # no reslice, no vote rule, no extra column written. N > 1 re-cuts the SAME eHMM
+  # projection with N-1 extra seeds (cheap: the backbone/nhmmer/hmmalign half does not
+  # depend on the split), runs SATIVA on each, and integrates ONLY the consensus, so the
+  # database shrinks instead of growing N-fold.
+  replicates: 10
+  # Fraction of the replicates that must agree before a flag is integrated at all.
+  # Threshold = ceil(vote_threshold * replicates). At 10 replicates, 2/3 keeps 100% of the
+  # always-flagged population while cutting the artefact zone from 38% to 4%.
+  # WRITE IT AS A FRACTION. A decimal is taken literally: 0.667 x 3 = 2.001, so it would
+  # demand 3 votes out of 3 instead of 2. "2/3" is exact at every replicate count.
+  vote_threshold: "2/3"
   barcodes: ["ITS", "ITS1", "ITS2"]
   tax_levels: ["family", "genus", "order", "species"]
-  max_parallel_jobs: 100   # advisory only (not wired): SATIVA concurrency = --cores, since
-                           # each sativa_task is threads:1. Cap lower with --resources sativa_jobs=N.
+  max_parallel_jobs: 100   # advisory only (not wired). Real SATIVA concurrency is
+                           # floor(--cores / sativa.threads); --resources sativa_jobs=N only
+                           # binds if N is below that. Memory is NOT bounded by either: see
+                           # the note in rules/sativa.smk.
   cleanup_temp_files: true
   temp_retention_hours: 24
   visualization_report: "reports/html/sativa_visualization_report.html"
@@ -195,6 +308,13 @@ sativa_integration:
     dataset: "3LR"               # pinned CoL release (see CoL_api.dataset)
     max_requests_per_second: 150  # unthrottled (bottleneck = parallelism, not throughput)
     timeout_per_request: 30
+    # Parallel CoL resolution inside ONE clade job, mirroring the early pipeline's
+    # CoL_api.max_workers (32, single process). Here many clade jobs run at once,
+    # so the budget that matters is (concurrent clade jobs) x max_workers ~= 32.
+    # Measured: serial resolution crawled to one answer per 25-90s per job once
+    # ~90 jobs each waited on their own connection; 30 parallel requests come back
+    # in 0.13s. Raise --cores and this together, never one alone.
+    max_workers: 8
 
   # Cache configuration
   cache:
@@ -208,6 +328,23 @@ sativa_integration:
     bulk_insert_size: 5000
 
   # Reporting
+  reconcile_barcodes:
+    enabled: true   # propagate each SATIVA verdict to the sibling barcodes (ITS/ITS1/ITS2)
+                    # of the same read; arbitration is chosen by rank_by below
+    apply: true     # false = report what would change without writing
+    # How a conflict between sibling barcodes of the same read is settled.
+    #   votes      (default) number of independent splits that agreed, then lineage depth,
+    #              then SATIVA confidence. A sibling with no voted correction scores 0, so a
+    #              modification retained by the vote on ONE barcode is propagated to the
+    #              others -- deliberate: with 10 splits a surviving flag is ~15% artefact
+    #              instead of ~63% for a single split, which is the regime the old ordering
+    #              was calibrated on. An exact tie (same votes, same depth, same confidence
+    #              but different verdicts) is never guessed: both rows are left in place.
+    #   confidence the pre-vote ordering. Falls back to it automatically when no vote data
+    #              exists (sativa.replicates == 1), so nothing changes for a single-split run.
+    # To be re-measured on the first full voted run against the 2026-08-25 baseline:
+    # 734 555 conflicting anchors, 763 687 rows retyped, 189 538 ties left untouched.
+    rank_by: "votes"
   reporting:
     export_json: true
     output_dir: "results/processed"

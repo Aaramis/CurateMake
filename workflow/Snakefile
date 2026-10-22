@@ -92,8 +92,13 @@ include: "rules/format_databases.smk"
 include: "rules/harmonize_taxo.smk"
 include: "rules/itsx.smk"
 include: "rules/msa.smk"
-# MSA construction: sequence-first whole-barcode clustering (kingdom-interleaved bounded MSAs).
-include: "rules/clustered_msa.smk"
+# MSA construction: backbone alignment + per-clade HMMs project every read into that same column
+# frame, so the groups handed to SATIVA are a free slice of it (no per-group MAFFT). ehmm_msa.smk
+# writes <groups.out_dir>/{barcode}/sativa_manifest.json; msa_groups.smk merges those manifests.
+# A from-scratch per-group MAFFT variant ("clustered") was the alternative until 2026-08-25;
+# it lost on both accuracy and cost and was removed, together with the strategy switch.
+include: "rules/msa_groups.smk"
+include: "rules/ehmm_msa.smk"
 include: "rules/sativa.smk"
 include: "rules/benchmarking.smk"
 include: "rules/reports.smk"

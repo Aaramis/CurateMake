@@ -20,25 +20,27 @@ import json
 import logging
 import re
 import time
-import requests
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Set, Iterator
+from typing import Any, Dict, List, Optional, Tuple, Set, Iterator
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from requests.adapters import HTTPAdapter
 import pickle
 
 # Add utils + sibling scripts to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from db_manager import get_database_manager
+from db_manager import get_database_manager, pg_hint
 # Reuse the single corrected CoL client/matcher (EXACT-search strategy, synonym resolution,
 # thread-safe polite rate limiting, pinned DOI'd release + provenance). One source of truth
 # for CoL logic across the pipeline (see col_taxonomic_matcher.py).
-from col_taxonomic_matcher import CoLAPIClient, TaxonomyMatcher, TaxonomyRecord
+from sativa_tokens import (normalize_tax_token as _normalize_tax_token,
+                           MISSING_TAX_TOKENS as _MISSING_TAX_TOKENS,
+                           TAXCLUSTER_RE as _TAXCLUSTER_RE)
+from col_taxonomic_matcher import (CoLAPIClient, TaxonomyMatcher, TaxonomyRecord,
+                                   match_taxonomies_parallel)
 
 # Configure logging
 logging.basicConfig(
@@ -69,6 +71,42 @@ def _attach_snakemake_log(snakemake) -> None:
         logger.addHandler(handler)
     except Exception as exc:  # noqa: BLE001 - logging must never break the job
         logger.warning("could not attach file logging: %s", exc)
+
+
+import uuid as _uuid
+
+# IDENTITY columns of sativa_warnings. FROZEN — the primary key is a uuid5 over exactly
+# these, so appending one would give every existing row a different id and orphan the
+# 1.5 M rows already in the table. New descriptive columns go in _WARNING_EXTRA_COLUMNS
+# below, which the key deliberately ignores.
+_WARNING_ID_COLUMNS = (
+    'warning_id', 'seq_id', 'seq_original_id', 'original_tax_id',
+    'warning_type', 'sativa_modification_type', 'sativa_confidence',
+    'sativa_original_taxonomy', 'sativa_proposed_taxonomy',
+    'deleted_levels', 'col_validation_attempted', 'col_returned_taxonomy',
+    'col_match_quality', 'barcode', 'tax_level', 'mislabeled_level',
+    'per_rank_confidence',
+)
+
+# Descriptive only: how many independent splits agreed, out of how many. NULL when
+# sativa.replicates == 1 (no vote was taken). Because these sit outside the key, a row
+# re-integrated with a different replicate count keeps its original id and the
+# ON CONFLICT DO NOTHING below leaves the stored counts alone — clear the table if you
+# want a different `replicates` setting reflected in rows that already exist.
+_WARNING_EXTRA_COLUMNS = ('sativa_votes', 'sativa_replicates')
+
+# Columns of sativa_warnings, in the order used by the bulk insert.
+_WARNING_COLUMNS = _WARNING_ID_COLUMNS + _WARNING_EXTRA_COLUMNS
+
+# Fixed namespace -> the same row always yields the same warning_id, across
+# processes and across runs. Do not change it: it would orphan existing rows.
+_WARNING_ID_NAMESPACE = _uuid.UUID('b7f0c3a2-5d41-5e88-9c2b-1f6a4e0d7c35')
+
+
+def _warning_id(entry: Dict[str, Any]) -> str:
+    """Deterministic, content-addressed primary key for a sativa_warnings row."""
+    key = '|'.join(str(entry.get(c) or '') for c in _WARNING_ID_COLUMNS[1:])
+    return str(_uuid.uuid5(_WARNING_ID_NAMESPACE, key))
 
 
 DISPLAY_TAXONOMY_LEVELS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
@@ -109,6 +147,9 @@ class ModificationRecord:
     per_rank_confidence: str
     barcode: str
     tax_level: str
+    # Set only when the record comes from a consensus over several splits (sativa_vote).
+    votes: Optional[int] = None
+    n_replicates: Optional[int] = None
 
 
 @dataclass
@@ -156,24 +197,10 @@ class CoLValidator:
                                  timeout=timeout, dataset=dataset)
         self._matcher = TaxonomyMatcher(self._api)
         self.provenance = self._api.provenance
-        self.base_url = "https://api.checklistbank.org/dataset/3LR/match/nameusage"
-        self.session = requests.Session()
-
-        # Session configuration
-        adapter = HTTPAdapter(
-            pool_connections=20,
-            pool_maxsize=20,
-            max_retries=3,
-            pool_block=False
-        )
-        self.session.mount('http://', adapter)
-        self.session.mount('https://', adapter)
-        self.session.headers.update({'User-Agent': 'SATIVAIntegration/2.0'})
-
-        # Rate limiting
-        self.max_requests_per_second = max_requests_per_second
-        self.request_interval = 1.0 / max_requests_per_second if max_requests_per_second > 0 else 0
-        self.last_request_time = 0
+        # NB: every HTTP call goes through self._api (CoLAPIClient), which owns
+        # its own session, throttle and 429 handling. The validator used to keep
+        # a second requests.Session plus a _rate_limit() of its own; neither was
+        # ever used, so both are gone.
         self.timeout = timeout
 
         # Cache configuration
@@ -255,20 +282,6 @@ class CoLValidator:
             for key in list(self.memory_cache.keys())[:to_remove]:
                 del self.memory_cache[key]
 
-    def _rate_limit(self):
-        """Implement rate limiting for API calls"""
-        if self.request_interval <= 0:
-            return
-
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-
-        if time_since_last < self.request_interval:
-            time.sleep(self.request_interval - time_since_last)
-
-        self.last_request_time = time.time()
-
-
     @staticmethod
     def _taxonomies_match(tax1: Dict[str, str], tax2: Dict[str, str]) -> bool:
         """Check if two taxonomies are identical"""
@@ -300,53 +313,79 @@ class CoLValidator:
             return cached
 
         # Query CoL via the shared corrected matcher (EXACT search + synonym resolution)
-        rec = TaxonomyRecord(
-            tax_id=0,
+        match = self._matcher.match_taxonomy(self._record_from_taxonomy(taxonomy))
+        self._refresh_stats()
+        result = self._result_from_match(taxonomy, match)
+        self._add_to_cache(cache_key, result)
+        return result
+
+    @staticmethod
+    def _record_from_taxonomy(taxonomy: Dict[str, str], tax_id: int = 0) -> TaxonomyRecord:
+        """Build the TaxonomyRecord the shared CoL matcher expects."""
+        return TaxonomyRecord(
+            tax_id=tax_id,
             kingdom=taxonomy.get('kingdom'), phylum=taxonomy.get('phylum'),
             class_=taxonomy.get('class_'), order_=taxonomy.get('order_'),
             family=taxonomy.get('family'), genus=taxonomy.get('genus'),
             species=taxonomy.get('species'))
-        match = self._matcher.match_taxonomy(rec)
+
+    def _refresh_stats(self) -> None:
         self.stats['api_calls'] = self._api.api_calls
         self.stats['failed_calls'] = self._api.failed_calls
 
+    def _result_from_match(self, taxonomy: Dict[str, str], match) -> CoLValidationResult:
+        """Turn a MatchResult into a CoLValidationResult.
+
+        Shared by the serial path (validate_taxonomy) and the parallel one
+        (prefetch), so both classify a CoL answer identically.
+        """
         if not match.success or not match.col_taxonomy:
-            # No match found
-            result = CoLValidationResult(
+            return CoLValidationResult(
                 success=False,
                 match_quality=CoLMatchQuality.NO_MATCH,
                 col_taxonomy=None
             )
-        else:
-            col_taxonomy = match.col_taxonomy
+        quality = (CoLMatchQuality.EXACT
+                   if self._taxonomies_match(taxonomy, match.col_taxonomy)
+                   else CoLMatchQuality.MODIFIED)
+        return CoLValidationResult(
+            success=True,
+            match_quality=quality,
+            col_taxonomy=match.col_taxonomy,
+            col_id=match.col_id
+        )
 
-            # Compare with input taxonomy
-            if self._taxonomies_match(taxonomy, col_taxonomy):
-                # Exact match
-                result = CoLValidationResult(
-                    success=True,
-                    match_quality=CoLMatchQuality.EXACT,
-                    col_taxonomy=col_taxonomy,
-                    col_id=match.col_id
-                )
-            else:
-                # Modified match
-                result = CoLValidationResult(
-                    success=True,
-                    match_quality=CoLMatchQuality.MODIFIED,
-                    col_taxonomy=col_taxonomy,
-                    col_id=match.col_id
-                )
+    def prefetch(self, taxonomies: List[Dict[str, str]], max_workers: int = 4) -> int:
+        """Resolve every distinct lineage against CoL up front, in parallel.
 
-        # Add to cache
-        self._add_to_cache(cache_key, result)
+        Delegates to match_taxonomies_parallel -- the same concurrent CoL query
+        the early pipeline uses via CoLProcessor.process_batch -- and drops the
+        answers into the cache, so the per-modification loop below becomes a
+        cache lookup instead of a serial request per lineage.
+        """
+        pending: Dict[str, Dict[str, str]] = {}
+        for tax in taxonomies:
+            if not tax:
+                continue
+            key = self._taxonomy_to_cache_key(tax)
+            if key in pending or self._get_from_cache(key) is not None:
+                continue
+            pending[key] = tax
+        if not pending:
+            return 0
 
-        return result
+        ordered = list(pending.items())
+        records = [self._record_from_taxonomy(tax, tax_id=i)
+                   for i, (_key, tax) in enumerate(ordered)]
+        for match in match_taxonomies_parallel(self._matcher, records, max_workers):
+            key, tax = ordered[match.original_tax_id]
+            self._add_to_cache(key, self._result_from_match(tax, match))
+        self._refresh_stats()
+        return len(pending)
 
     def close(self):
         """Close sessions and save cache"""
         self.save_cache()
-        self.session.close()
         self._api.close()
 
 
@@ -357,28 +396,11 @@ class CoLValidator:
 class SativaMisParser:
     """Parse SATIVA .mis and .tax files"""
 
-    MISSING_TAX_TOKENS = {"", "na", "n/a", "none", "null", "unknown", "unidentified"}
+    MISSING_TAX_TOKENS = _MISSING_TAX_TOKENS
 
-    # SATIVA merges taxa whose sequences it cannot tell apart into one pseudo-taxon named
-    # `__TAXCLUSTER<n>__<name>` (epa_trainer.check_identical_ranks), where <name> is just
-    # the first member of the merged set. Downstream normalisation turns the underscores
-    # into spaces, hence both forms. It is an internal marker, not a taxonomic name: the
-    # only thing it asserts is that the rank could NOT be resolved, so it is treated as
-    # unclassified. The raw proposal is still recorded in sativa_warnings.
-    _TAXCLUSTER_RE = re.compile(r"^_*TAXCLUSTER\d*_*\s*", re.IGNORECASE)
+    _TAXCLUSTER_RE = _TAXCLUSTER_RE
 
-    @staticmethod
-    def _normalize_tax_token(value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        if not cleaned:
-            return None
-        if SativaMisParser._TAXCLUSTER_RE.match(cleaned):
-            return None
-        if cleaned.lower() in SativaMisParser.MISSING_TAX_TOKENS:
-            return None
-        return cleaned
+    _normalize_tax_token = staticmethod(_normalize_tax_token)
 
     @staticmethod
     def parse_taxonomy_path_to_dict(tax_path: str) -> Dict[str, str]:
@@ -411,14 +433,23 @@ class SativaMisParser:
         }
 
     @staticmethod
-    def parse_mis_file(mis_path: Path, barcode: str, tax_level: str) -> List[ModificationRecord]:
+    def parse_mis_file(mis_path: Path, barcode: str, tax_level: str,
+                       only_native_taxon: Optional[str] = None) -> List[ModificationRecord]:
         """
         Parse a .mis file into ModificationRecords.
+
+        The same parser reads a raw SATIVA .mis and the consensus written by
+        `vote_sativa.py`: the consensus uses the identical 8-column layout and merely
+        appends Votes / Replicates / NativeTaxon. Columns 0..7 are read the same way in
+        both cases, so there is exactly one path from a SATIVA verdict to the database.
 
         Args:
             mis_path: Path to .mis file
             barcode: Barcode name (ITS, ITS1, ITS2)
             tax_level: Taxonomic level (family, genus, etc.)
+            only_native_taxon: consensus only — keep the sequences this clade owns.
+                The consensus spans a whole barcode while integration is scattered per
+                clade, and column 10 says which native clade each sequence belongs to.
 
         Returns:
             List of ModificationRecord objects
@@ -437,6 +468,15 @@ class SativaMisParser:
                         logger.warning(f"Invalid line in {mis_path.name}: {line[:50]}")
                         continue
 
+                    if only_native_taxon is not None:
+                        if len(parts) < 11 or parts[10] != only_native_taxon:
+                            continue
+
+                    def _int_col(idx):
+                        if len(parts) > idx and parts[idx].strip().isdigit():
+                            return int(parts[idx])
+                        return None
+
                     try:
                         record = ModificationRecord(
                             seq_id=parts[0],
@@ -449,7 +489,9 @@ class SativaMisParser:
                             proposed_taxonomy=parts[6],
                             per_rank_confidence=parts[7],
                             barcode=barcode,
-                            tax_level=tax_level
+                            tax_level=tax_level,
+                            votes=_int_col(8),
+                            n_replicates=_int_col(9)
                         )
                         records.append(record)
                     except (ValueError, IndexError) as e:
@@ -524,7 +566,25 @@ class ModificationClassifier:
     @staticmethod
     def classify_modification(original_path: str, proposed_path: str) -> ModificationType:
         """
-        Classify a SATIVA modification.
+        Classify a SATIVA modification, comparing the two lineages RANK BY RANK.
+
+        The ranks must be compared in place, never after compacting away the empty ones.
+        This taxonomy is full of mid-lineage holes -- `class` is absent from most of it --
+        and squeezing them out shifts every deeper rank one slot left, so a proposal that
+        merely FILLS a hole looks like it renamed everything below it. Measured on the real
+        shapes: `Fungi;Ascomycota;NA;Diaporthales;Valsaceae;NA;NA` ->
+        `Fungi;Ascomycota;Sordariomycetes;Diaporthales;Valsaceae;Valsa;NA` was reported as a
+        SUBSTITUTION when it adds two ranks and contradicts none, and the reverse case
+        (dropping `class` alone) was reported as SUBSTITUTION instead of DELETION_SIMPLE.
+        `count_deleted_levels` below was already positional, so the two disagreed.
+
+        Rules:
+          * any rank filled on BOTH sides with different names -> SUBSTITUTION
+          * ranks only gained                                  -> COMPLETION
+          * ranks only lost                                    -> DELETION_SIMPLE/MULTIPLE
+          * some gained AND some lost, nothing contradicted    -> SUBSTITUTION, on purpose:
+            the shape moved in both directions, so it takes the cautious path (CoL
+            validation) rather than being filed as a clean addition or removal.
 
         Args:
             original_path: Original taxonomy path (semicolon-separated)
@@ -533,46 +593,47 @@ class ModificationClassifier:
         Returns:
             ModificationType enum
         """
-        # Parse into lists, treating NA/empty as missing
-        original_levels = [
-            token
-            for token in (SativaMisParser._normalize_tax_token(x) for x in original_path.split(';'))
-            if token
-        ]
-        proposed_levels = [
-            token
-            for token in (SativaMisParser._normalize_tax_token(x) for x in proposed_path.split(';'))
-            if token
-        ]
+        def slots(path: str):
+            """(7 rank slots, depth) where depth = 1 + index of the deepest populated rank.
 
-        # Find common length and check if common levels are identical
-        min_length = min(len(original_levels), len(proposed_levels))
-        common_original = original_levels[:min_length]
-        common_proposed = proposed_levels[:min_length]
+            A blank BELOW the depth asserts "this lineage has no such rank" -- common here,
+            most lineages have no `class`. A blank at or beyond the depth is an abstention:
+            the lineage simply stopped. The two must not be conflated.
+            """
+            vals = [SativaMisParser._normalize_tax_token(x) or ""
+                    for x in (path or "").split(';')]
+            n = len(DISPLAY_TAXONOMY_LEVELS)
+            vals = (vals + [""] * n)[:n]
+            depth = max((i for i, v in enumerate(vals) if v), default=-1) + 1
+            return vals, depth
 
-        if common_original != common_proposed:
-            # At least one common level changed -> SUBSTITUTION
-            # This includes cases like: Fungi -> Plantae;Tracheophyta;...
+        orig, o_depth = slots(original_path)
+        prop, p_depth = slots(proposed_path)
+
+        contradicted = added = removed = 0
+        for i, (o, p) in enumerate(zip(orig, prop)):
+            o_said, p_said = i < o_depth, i < p_depth
+            if o_said and p_said:
+                if o != p:
+                    # name vs different name, or name vs asserted absence: a real conflict
+                    contradicted += 1
+            elif p_said and p:
+                added += 1          # the proposal reaches a rank the original never claimed
+            elif o_said and o:
+                removed += 1        # the proposal stops short of a rank the original claimed
+
+        if contradicted:
             return ModificationType.SUBSTITUTION
-
-        # Common levels are identical, check length difference
-        if len(proposed_levels) > len(original_levels):
-            # More levels � COMPLETION
+        if added and removed:
+            return ModificationType.SUBSTITUTION
+        if added:
             return ModificationType.COMPLETION
+        if removed:
+            return (ModificationType.DELETION_SIMPLE if removed == 1
+                    else ModificationType.DELETION_MULTIPLE)
 
-        elif len(proposed_levels) < len(original_levels):
-            # Fewer levels and common levels identical -> Pure DELETION
-            deletion_count = len(original_levels) - len(proposed_levels)
-            if deletion_count == 1:
-                return ModificationType.DELETION_SIMPLE
-            else:
-                return ModificationType.DELETION_MULTIPLE
-
-        else:
-            # Same length and common levels identical (already checked above)
-            # This shouldn't happen in .mis file
-            logger.warning(f"Identical taxonomies found in .mis: {original_path}")
-            return ModificationType.VALIDATED
+        logger.warning(f"Identical taxonomies found in .mis: {original_path}")
+        return ModificationType.VALIDATED
 
     @staticmethod
     def count_deleted_levels(original_path: str, proposed_path: str) -> List[str]:
@@ -614,6 +675,7 @@ class DatabaseIntegrator:
         # average, so caching removes ~80% of those scans. Safe: a tax_id never changes
         # once known, and a lineage created here is cached under the id just created.
         self._tax_id_cache: Dict[tuple, str] = {}
+        self._tax_cache_preloaded = False
 
     def _get_table(self, table_name: str) -> str:
         """Get schema-qualified table name"""
@@ -708,6 +770,40 @@ class DatabaseIntegrator:
 
         self.db_manager._execute_with_retry("sativa_stamp_col_provenance", op)
 
+    def preload_taxonomy_cache(self) -> int:
+        """Load every known lineage into the in-memory cache in one read.
+
+        check_taxonomy_exists wraps each rank in COALESCE, which defeats
+        uq_taxonomy_lineage and turns every lookup into a full scan of taxonomy
+        (measured on this cluster: 0.29 s idle, 0.72 s under load, i.e. ~20 min
+        of scans for the ~1700 distinct lineages of one clade). Reading the whole
+        table costs 2.3 s for 468k rows, so one read replaces the lot.
+
+        The key mirrors the COALESCE semantics exactly -- NULL and '' collapse --
+        because both spellings exist in the table (add_taxonomy stores '' while
+        older rows hold NULL). Duplicates resolve to the smallest tax_id so the
+        choice is stable across jobs, where the old LIMIT 1 without ORDER BY was
+        arbitrary.
+        """
+        from sqlalchemy import text
+
+        taxonomy_table = self._get_table('taxonomy')
+        ranks = ", ".join(self._LINEAGE_RANKS)
+
+        def fetch():
+            with self.db_manager.get_session() as session:
+                return list(session.execute(
+                    text(f"SELECT tax_id, {ranks} FROM {taxonomy_table}")))
+
+        rows = self.db_manager._execute_with_retry("sativa_preload_taxonomy", fetch)
+        for row in rows:
+            key = tuple((v or '') for v in row[1:])
+            current = self._tax_id_cache.get(key)
+            if current is None or str(row[0]) < current:
+                self._tax_id_cache[key] = str(row[0])
+        self._tax_cache_preloaded = True
+        return len(rows)
+
     def get_or_create_taxonomy(self, taxonomy: Dict[str, str], parent_tax_id: Optional[str],
                               col_id: Optional[str] = None, col_dataset_key: Optional[str] = None) -> str:
         """Get existing taxonomy or create new one (stamping CoL provenance when given)."""
@@ -715,7 +811,14 @@ class DatabaseIntegrator:
 
         existing_tax_id = self._tax_id_cache.get(cache_key)
         if existing_tax_id is None:
-            existing_tax_id = self.check_taxonomy_exists(taxonomy)
+            # With the cache preloaded from the whole table, a miss means the lineage
+            # was absent when the snapshot was taken, so the non-sargable
+            # check_taxonomy_exists would only repeat that answer at the price of a
+            # full scan. Go straight to create_taxonomy: add_taxonomy does its own
+            # existence check with an indexable filter_by and settles the race with
+            # another writer through IntegrityError.
+            existing_tax_id = (None if self._tax_cache_preloaded
+                               else self.check_taxonomy_exists(taxonomy))
 
             if existing_tax_id is None:
                 new_tax_id = self.create_taxonomy(taxonomy, parent_tax_id, col_id, col_dataset_key)
@@ -785,10 +888,8 @@ class DatabaseIntegrator:
         """seq_id -> (col_tax_id, taxonomy_dict) for sequences with a 'CoL' backbone."""
         st = self._get_table('seq_tax')
         tt = self._get_table('taxonomy')
-        # pg_hint_plan: force the pkey (seq_id HASH) batched lookup. Without it YugabyteDB
-        # mis-estimates backbone='CoL' selectivity (~161k vs the real ~12.5M rows) and scans all
-        # CoL rows PER chunk instead of using seq_id — see prepare_msa for the same issue.
-        sql = (f"/*+ IndexScan(st seq_tax_pkey) */ "
+        # Force the pkey (seq_id HASH) batched lookup; see pg_hint() for the measurements.
+        sql = (f"{pg_hint([('st', 'seq_tax_pkey')])}"
                f"SELECT st.seq_id, st.tax_id, t.kingdom, t.phylum, t.class_, t.order_, "
                f"t.family, t.genus, t.species FROM {st} st JOIN {tt} t ON st.tax_id = t.tax_id "
                f"WHERE {{clause}} AND st.backbone = 'CoL'")
@@ -803,8 +904,9 @@ class DatabaseIntegrator:
     def bulk_get_existing_seq_tax(self, seq_ids, backbone: str) -> Set[Tuple[str, str]]:
         """Set of (seq_id, tax_id) already linked under the given backbone."""
         st = self._get_table('seq_tax')
-        # pg_hint_plan: force the pkey (seq_id HASH) batched lookup (see prepare_msa / bulk_get_col_taxonomy).
-        sql = f"/*+ IndexScan(st seq_tax_pkey) */ SELECT st.seq_id, st.tax_id FROM {st} st WHERE {{clause}} AND st.backbone = :bb"
+        # Force the pkey (seq_id HASH) batched lookup; see pg_hint() for the measurements.
+        sql = (f"{pg_hint([('st', 'seq_tax_pkey')])}"
+               f"SELECT st.seq_id, st.tax_id FROM {st} st WHERE {{clause}} AND st.backbone = :bb")
         return {(r[0], r[1]) for r in self._chunked_rows(
             seq_ids, sql, "st.seq_id", "sativa_bulk_existing", extra_params={"bb": backbone})}
 
@@ -968,7 +1070,10 @@ class DatabaseIntegrator:
             'tax_level': modification.tax_level,
             'mislabeled_level': modification.mislabeled_level,
             'per_rank_confidence': modification.per_rank_confidence,
-            'col_validation_attempted': col_result is not None
+            'col_validation_attempted': col_result is not None,
+            # NULL unless the row came from a consensus over several splits
+            'sativa_votes': modification.votes,
+            'sativa_replicates': modification.n_replicates
         }
 
         # Add deleted levels for deletions
@@ -1044,6 +1149,38 @@ class DatabaseIntegrator:
 
             self.db_manager._execute_with_retry(f"sativa_bulk_insert_seq_tax_batch_{i}", insert_batch)
 
+    _vote_columns_checked = False
+
+    def _ensure_vote_columns(self, warnings_table: str) -> None:
+        """Idempotently add sativa_votes / sativa_replicates to an existing table.
+
+        Once per process, not per batch. Both backends tolerate being told twice:
+        PostgreSQL/YugabyteDB via IF NOT EXISTS, SQLite by raising on a duplicate column,
+        which is caught here.
+        """
+        if DatabaseIntegrator._vote_columns_checked:
+            return
+        from sqlalchemy import text
+        for col in _WARNING_EXTRA_COLUMNS:
+            def add_col(column=col):
+                with self.db_manager.get_session() as session:
+                    if self.db_manager.db_type == 'postgresql':
+                        session.execute(text(
+                            f"ALTER TABLE {warnings_table} "
+                            f"ADD COLUMN IF NOT EXISTS {column} INTEGER"))
+                    else:
+                        try:
+                            session.execute(text(
+                                f"ALTER TABLE {warnings_table} ADD COLUMN {column} INTEGER"))
+                        except Exception as exc:          # already there
+                            if 'duplicate column' not in str(exc).lower():
+                                raise
+            try:
+                self.db_manager._execute_with_retry(f"sativa_add_column_{col}", add_col)
+            except Exception as exc:
+                logger.warning("could not add %s to %s: %s", col, warnings_table, exc)
+        DatabaseIntegrator._vote_columns_checked = True
+
     def bulk_insert_warnings(self, entries: List[Dict], batch_size: int = 1000):
         """Bulk insert sativa_warnings entries in batches.
 
@@ -1055,40 +1192,59 @@ class DatabaseIntegrator:
             return
 
         from sqlalchemy import text
-        import uuid
 
         warnings_table = self._get_table('sativa_warnings')
 
-        # Add warning_id to all entries upfront
+        # Write the historical column set unless a vote actually took place. With
+        # sativa.replicates == 1 the statement is byte-for-byte the one this pipeline has
+        # always issued, so an existing database needs no migration at all. When a vote IS
+        # present, make sure the two columns exist first — CREATE TABLE IF NOT EXISTS never
+        # adds a column to a table that is already there.
+        has_votes = any(e.get('sativa_votes') is not None for e in entries)
+        if has_votes:
+            self._ensure_vote_columns(warnings_table)
+        cols = _WARNING_COLUMNS if has_votes else _WARNING_ID_COLUMNS
+
+        # Content-addressed primary key. The previous random uuid4 made every
+        # replay collide on sativa_warnings_pkey: an ambiguous commit (the batch
+        # lands server-side but the client sees an error) replayed the SAME ids,
+        # and that violation is permanent, so the retry loop slept 48 minutes
+        # before failing the whole clade. Deriving the id from the row content
+        # makes both an internal retry and a full task re-run converge instead.
         for entry in entries:
             if 'warning_id' not in entry:
-                entry['warning_id'] = str(uuid.uuid4())
+                entry['warning_id'] = _warning_id(entry)
 
-        # Process in batches
         for i in range(0, len(entries), batch_size):
             batch = entries[i:i + batch_size]
 
             def insert_batch(batch_entries=batch):
                 with self.db_manager.get_session() as session:
-                    stmt = text(f"""
-                        INSERT INTO {warnings_table} (
-                            warning_id, seq_id, seq_original_id, original_tax_id,
-                            warning_type, sativa_modification_type, sativa_confidence,
-                            sativa_original_taxonomy, sativa_proposed_taxonomy,
-                            deleted_levels, col_validation_attempted, col_returned_taxonomy,
-                            col_match_quality, barcode, tax_level, mislabeled_level,
-                            per_rank_confidence
-                        ) VALUES (
-                            :warning_id, :seq_id, :seq_original_id, :original_tax_id,
-                            :warning_type, :sativa_modification_type, :sativa_confidence,
-                            :sativa_original_taxonomy, :sativa_proposed_taxonomy,
-                            :deleted_levels, :col_validation_attempted, :col_returned_taxonomy,
-                            :col_match_quality, :barcode, :tax_level, :mislabeled_level,
-                            :per_rank_confidence
+                    if self.db_manager.db_type == 'postgresql':
+                        # One statement per page instead of one round-trip per
+                        # row (measured on this cluster: 3.9k -> 54k rows/s).
+                        from psycopg2.extras import execute_values
+                        raw = session.connection().connection
+                        dbapi = getattr(raw, 'dbapi_connection', raw)
+                        values = [tuple(e.get(c) for c in cols) for e in batch_entries]
+                        with dbapi.cursor() as cur:
+                            execute_values(
+                                cur,
+                                f"INSERT INTO {warnings_table} ({', '.join(cols)}) VALUES %s "
+                                f"ON CONFLICT (warning_id) DO NOTHING",
+                                values,
+                                page_size=500,
+                            )
+                    else:
+                        stmt = text(
+                            f"INSERT OR IGNORE INTO {warnings_table} ({', '.join(cols)}) "
+                            f"VALUES ({', '.join(':' + c for c in cols)})"
                         )
-                    """)
-                    for entry in batch_entries:
-                        session.execute(stmt, entry)
+                        # Bind every declared column explicitly: a named parameter raises
+                        # if the key is simply absent from the dict, which happens as soon
+                        # as a batch mixes voted and unvoted rows.
+                        for entry in batch_entries:
+                            session.execute(stmt, {c: entry.get(c) for c in cols})
 
             self.db_manager._execute_with_retry(f"sativa_bulk_insert_warnings_batch_{i}", insert_batch)
 
@@ -1123,7 +1279,7 @@ def create_sativa_warnings_table(db_manager):
                         'COL_MATCHED', 'COL_MODIFIED_SATIVA', 'COL_NO_MATCH'
                     )),
                     sativa_modification_type TEXT CHECK (sativa_modification_type IN (
-                        'DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION'
+                        'VALIDATED', 'DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION'
                     )),
                         sativa_confidence FLOAT,
                         sativa_original_taxonomy TEXT,
@@ -1136,6 +1292,8 @@ def create_sativa_warnings_table(db_manager):
                         tax_level TEXT NOT NULL,
                         mislabeled_level TEXT,
                         per_rank_confidence TEXT,
+                        sativa_votes INTEGER,
+                        sativa_replicates INTEGER,
                         created_at TIMESTAMP DEFAULT NOW()
                     )
                 """))
@@ -1151,7 +1309,7 @@ def create_sativa_warnings_table(db_manager):
                         'COL_MATCHED', 'COL_MODIFIED_SATIVA', 'COL_NO_MATCH'
                     )),
                     sativa_modification_type TEXT CHECK (sativa_modification_type IN (
-                        'DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION'
+                        'VALIDATED', 'DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION'
                     )),
                         sativa_confidence REAL,
                         sativa_original_taxonomy TEXT,
@@ -1164,6 +1322,8 @@ def create_sativa_warnings_table(db_manager):
                         tax_level TEXT NOT NULL,
                         mislabeled_level TEXT,
                         per_rank_confidence TEXT,
+                        sativa_votes INTEGER,
+                        sativa_replicates INTEGER,
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
                     )
                 """))
@@ -1193,17 +1353,23 @@ def create_sativa_warnings_table(db_manager):
 
 def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
                             col_validator: CoLValidator, db_manager,
-                            config: Dict) -> Dict:
+                            config: Dict,
+                            records: Optional[List[ModificationRecord]] = None) -> Dict:
     """
     Process a single .mis file.
 
     Args:
-        mis_file: Path to .mis file
+        mis_file: Path to .mis file. Still used to locate the sibling .tax even when
+            `records` is supplied, since that is what marks the VALIDATED sequences.
         barcode: Barcode name
         tax_level: Taxonomic level
         col_validator: CoL validator instance
         db_manager: Database manager
         config: Configuration dict
+        records: pre-parsed modifications. Supplied by the consensus path (sativa_vote):
+            the flags that survived the vote for this clade. Everything downstream —
+            CoL prefetch, classification, seq_tax, warnings — is the code below,
+            unchanged, so the vote adds no second route into the database.
 
     Returns:
         Statistics dict
@@ -1212,9 +1378,34 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
     parser = SativaMisParser()
     integrator = DatabaseIntegrator(db_manager, col_validator)
 
-    # Parse .mis file
-    modifications = parser.parse_mis_file(mis_file, barcode, tax_level)
+    # One read of taxonomy instead of a full scan per distinct lineage.
+    n_tax = integrator.preload_taxonomy_cache()
+    logger.info("[%s] taxonomy cache preloaded: %d rows, %d distinct lineages",
+                mis_file.name, n_tax, len(integrator._tax_id_cache))
+
+    # Parse .mis file (or take the consensus records the vote already selected)
+    modifications = (parser.parse_mis_file(mis_file, barcode, tax_level)
+                     if records is None else records)
     stats['total_modifications'] = len(modifications)
+    if records is not None:
+        stats['from_consensus'] = 1
+        voted = [m.votes for m in modifications if m.votes is not None]
+        if voted:
+            stats['consensus_min_votes'] = min(voted)
+            stats['consensus_replicates'] = modifications[0].n_replicates or 0
+
+    # Resolve every distinct proposed lineage against CoL up front and in
+    # parallel, the same way the early pipeline does it. Without this the
+    # per-modification loop issues one serial request per lineage.
+    # NB: this function receives config['sativa_integration'], not the root config.
+    col_workers = int(config.get('col_api', {}).get('max_workers', 8))
+    prefetched = col_validator.prefetch(
+        [SativaMisParser.parse_taxonomy_path_to_dict(m.proposed_taxonomy)
+         for m in modifications if m.proposed_taxonomy],
+        max_workers=col_workers)
+    if prefetched:
+        logger.info("[%s] CoL prefetch: %d distinct lineages resolved with %d workers",
+                    mis_file.name, prefetched, min(col_workers, 32))
 
     tax_dir = mis_file.parent
     candidate_by_stem = tax_dir / f"{mis_file.stem}.tax"
@@ -1499,14 +1690,36 @@ def integrate_one_clade(snakemake):
         'start_time': datetime.now().isoformat()
     }
 
+    # With sativa.replicates > 1 the clade integrates the barcode-wide consensus restricted
+    # to the sequences it owns, not its own raw .mis: a single-split flag is ~63% artefact
+    # (2026-08-26 measurement on three independent ITS2 splits). Sequences that did not
+    # reach the threshold are absent from the consensus, so the .tax below marks them
+    # VALIDATED — no reproducible objection to their current label.
+    consensus_in = getattr(snakemake.input, "consensus", None)
+    if isinstance(consensus_in, (list, tuple)):
+        consensus_in = consensus_in[0] if consensus_in else None
+
     # Only clades with a .mis file are integrated (same rule as the previous full-scan
     # behaviour: scan_sativa_output_directory required a .mis).
-    mis_candidates = sorted(clade_dir.glob("*.mis"))
+    mis_candidates = [p for p in sorted(clade_dir.glob("*.mis")) if p.name != "consensus.mis"]
+
+    records = None
+    if consensus_in:
+        records = SativaMisParser.parse_mis_file(
+            Path(consensus_in), barcode, tax_level, only_native_taxon=taxon)
+        stats['metadata']['consensus'] = str(consensus_in)
+        logger.info("[%s] consensus mode: %d flag(s) survived the vote for this clade",
+                    taxon, len(records))
+        if not mis_candidates:
+            # SATIVA always writes a .mis, but keep a usable path for the .tax lookup.
+            mis_candidates = [clade_dir / f"{barcode}_{tax_level}_{taxon}.mis"]
+
     if mis_candidates:
         try:
             file_stats = process_single_mis_file(
                 mis_candidates[0], barcode, tax_level,
-                col_validator, db_manager, config['sativa_integration'])
+                col_validator, db_manager, config['sativa_integration'],
+                records=records)
             merge_stats(stats, file_stats)
         except Exception as e:
             # Do NOT swallow this: writing out_report below would mark the clade as

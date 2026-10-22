@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Aggregate the per-barcode clustered-MSA manifests (build_msas_clustered.py) into the artifacts the
+Aggregate the per-barcode MSA manifests (ehmm_msa.smk) into the artifacts the
 rest of the workflow expects — so the sequence-first strategy is a drop-in for the bottom-up one:
 
   - SATIVA manifest      (BU_SATIVA_MANIFEST): the merged {tasks:[...]} sativa.smk consumes.
@@ -8,7 +8,7 @@ rest of the workflow expects — so the sequence-first strategy is a drop-in for
                            read (per_barcode ref_seqs/residual/reinserted, n_msa_total, ...). The
                            bottom-up-only tiers (residual re-insertion, cross-family climb, contam
                            re-homing) do not exist here, so their fields are 0 / empty by design.
-  - residual_report.json  + contamination_report.json: compatible STUBS (the clustered path has no
+  - residual_report.json  + contamination_report.json: compatible STUBS (this path has no
                            residual-classification or coarse-contamination tier — every sequence is
                            placed at clustering, and a contaminant clusters with its true kin).
 
@@ -154,7 +154,7 @@ def main() -> None:
     }
 
     summary = {
-        "strategy": "clustered",
+        "strategy": "ehmm",
         "n_families": n_clusters,          # sequence clusters (the decomposition unit here)
         "total_sequences": total_seqs,
         "n_msa_total": n_msa_total,
@@ -166,22 +166,22 @@ def main() -> None:
         "representation": representation,
     }
 
-    # The clustered strategy has no residual-reclassification and no coarse-contamination
+    # This strategy has no residual-reclassification and no coarse-contamination
     # tier. These files stay (they are declared rule inputs) but say so explicitly instead
     # of reporting zeros that read as "checked, nothing found".
     not_applicable = {
         "applicable": False,
-        "reason": "not part of the sequence-first clustered strategy; "
+        "reason": "not part of the backbone + ensemble-HMM strategy; "
                   "every sequence is placed at clustering time",
     }
     residual_stub = dict(not_applicable, n_residual=n_residual)
     contamination_stub = dict(not_applicable, n_msa=n_msa_total)
     sativa_manifest = {
         "generated_at": datetime.now().isoformat(),
-        "source": "clustered",
+        "source": "ehmm",
         "total_tasks": n_msa_total,
         "barcodes": barcodes,
-        "tax_levels": sorted({t.get("tax_level", "clustered") for t in tasks}),
+        "tax_levels": sorted({t.get("tax_level", "groups") for t in tasks}),
         "tasks": tasks,
     }
 
@@ -191,7 +191,7 @@ def main() -> None:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(obj, fh, indent=2)
 
-    msg = (f"[collect_clustered] {len(barcodes)} barcode(s), {n_msa_total} MSAs, "
+    msg = (f"[collect_groups] {len(barcodes)} barcode(s), {n_msa_total} MSAs, "
            f"{total_seqs} seqs, residual={n_residual}")
     print(msg)
     if args.log_file:

@@ -50,6 +50,29 @@ def main(snakemake):
             "total_modifications": data.get("total_modifications", 0),
         })
 
+    # Cross-barcode reconciliation. Every clade was integrated independently, so ITS / ITS1 / ITS2 of
+    # the SAME read can now hold contradictory SATIVA verdicts. This is the first point where the whole
+    # database is visible, so it is where the most confident verdict is propagated to its siblings.
+    cfg = getattr(snakemake, "config", {}) or {}
+    recon_cfg = cfg.get("sativa_integration", {}).get("reconcile_barcodes", {})
+    if recon_cfg.get("enabled", True):
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))                        # reconcile_barcodes
+            sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))       # same as integrate_sativa
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            from reconcile_barcodes import reconcile
+            from db_manager import get_database_manager
+
+            db_manager = get_database_manager(cfg)
+            global_stats["barcode_reconciliation"] = reconcile(
+                db_manager, apply=recon_cfg.get("apply", True),
+                rank_by=recon_cfg.get("rank_by", "votes"))
+        except Exception as exc:  # noqa: BLE001 - reconciliation must not lose the aggregated report
+            logger.error("Barcode reconciliation failed (integration report still written): %s", exc)
+            global_stats["barcode_reconciliation"] = {"error": str(exc)}
+    else:
+        logger.info("Barcode reconciliation disabled by config.")
+
     global_stats["metadata"] = {
         "end_time": datetime.now().isoformat(),
         "total_clades": len(reports),

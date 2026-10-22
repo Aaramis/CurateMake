@@ -32,13 +32,15 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Callable
 from contextlib import contextmanager
 import functools
+import re
 import logging
 import uuid
 import time
 
 from sqlalchemy import create_engine, text, insert, or_, and_
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from sqlalchemy.exc import (SQLAlchemyError, IntegrityError,
+                            OperationalError, InterfaceError, InternalError)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -52,6 +54,47 @@ from db_profiler import DBProfiler, profile_db_operation
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# pg_hint_plan: one constructor for every hinted query in the pipeline
+# ---------------------------------------------------------------------------
+# WHY the hints exist at all. This cluster has NEVER collected statistics -- measured on
+# every run: last_analyze and last_autoanalyze are None on all five tables, n_live_tup = 0,
+# reltuples = -1. The planner therefore mis-estimates selectivity badly: it reads
+# `backbone = 'CoL'` as ~161k rows where there are 12.5M, and falls back to scanning the
+# whole table once per chunk. Measured consequences:
+#   * a filtered read of seq_tax takes 19 s unhinted against 0.7 s for the hinted join;
+#   * a VALUES-joined DELETE/UPDATE blows past temp_file_limit (1 GB) and dies -- the DELETE
+#     from 25 rows, the UPDATE at every size tested, once taking the backend down with it.
+#
+# WHY it is a function rather than five string literals. pg_hint_plan does NOT report an
+# unusable hint: an alias it cannot resolve is silently ignored. Rename `st` to `t` in a
+# query and leave the comment alone and nothing breaks visibly -- the query just gets 27x
+# slower, or dies on temp_file_limit under load. Passing the aliases as arguments puts them
+# where a rename can see them, and keeps the reasoning above in one place instead of five
+# comments cross-referencing each other.
+def pg_hint(index_scans=(), batched=None, leading=None) -> str:
+    """Build a pg_hint_plan block, trailing space included so it can prefix a query.
+
+    index_scans: pairs (alias, index_name) -> IndexScan(alias index_name)
+    batched:     (outer, inner) aliases     -> YbBatchedNL(outer inner)
+    leading:     (outer, inner) aliases     -> Leading((outer inner)), pins the join order
+
+    >>> pg_hint([("st", "seq_tax_pkey")])
+    '/*+ IndexScan(st seq_tax_pkey) */ '
+    >>> pg_hint([("u", "seq_tax_pkey")], batched=("u", "v"))
+    '/*+ IndexScan(u seq_tax_pkey) YbBatchedNL(u v) */ '
+    """
+    parts = []
+    if leading:
+        parts.append(f"Leading(({' '.join(leading)}))")
+    parts.extend(f"IndexScan({alias} {index})" for alias, index in index_scans)
+    if batched:
+        parts.append(f"YbBatchedNL({' '.join(batched)})")
+    if not parts:
+        return ""
+    return "/*+ " + " ".join(parts) + " */ "
 
 
 def _retry_db(method):
@@ -193,8 +236,98 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def _execute_with_retry(self, operation_name: str, func: Callable[[], Any]):
-        """Execute a DB operation with retry logic for SQLAlchemy errors."""
+    # Error classes a retry can plausibly fix. Everything else -- constraint
+    # violations above all -- fails identically on every attempt, so retrying
+    # burns the whole backoff budget (100 x 30s = 48 min) before failing anyway.
+    # This is what made SATIVA integration tasks run for days: an ambiguous
+    # commit replayed the same warning_id and hit sativa_warnings_pkey, which is
+    # permanent. Yugabyte's own guidance: retry 40001 / 40P01 / connection
+    # failures, never an integrity violation, never an unfamiliar error.
+    _RETRYABLE_PGCODES = ("40001", "40P01")
+
+    # XX000 = internal_error. YugabyteDB uses it as the catch-all for conditions raised
+    # below SQL, in the tserver / consensus layer, and those ARE transient. Two hit the
+    # 2026-08-26 run within an hour, both on bulk_insert_taxonomies while five source
+    # formatters wrote to `taxonomy` at once:
+    #   * "Already present (yb/consensus/retryable_requests.cc:393): Duplicate request N
+    #      from client X (min running N)" -- a statement that stalled ~18 s was resent and
+    #      the server rejected the resend as a duplicate of the one still in flight;
+    #   * "Rpc timeout, passed: 15.097s, timeout: 15.000s".
+    # Both killed their rule outright, PLANITS losing 75 905 of its 310 722 sequences AND
+    # its report, because XX000 fell through to the final `return pgcode in (...)`.
+    #
+    # It gets its OWN small budget rather than the 100 attempts a serialization conflict
+    # deserves: XX000 is also what a genuinely broken statement reports, and at the capped
+    # 30 s backoff, 100 attempts would burn 50 minutes to reach the identical failure --
+    # exactly the 48-minute incidents the 2026-08-25 hardening was written to stop.
+    # 8 attempts is ~2.5 min, comfortably longer than any transient tablet hiccup observed.
+    _INTERNAL_PGCODE = "XX000"
+    _INTERNAL_MAX_ATTEMPTS = 8
+
+    # XX000 covers two conditions with OPPOSITE retry policies, and conflating them cost a
+    # run: on 2026-08-28 process_barcode_itsx spent 18 h on ITS2 without finishing.
+    #   * "Rpc timeout, passed: 15.097s, timeout: 15.000s" -- the server could not answer a
+    #     query within its deadline. Re-issuing the SAME query is not a fix; the callers
+    #     that meet it (process_single_barcode_itsx._get_parent_metadata, prepare_msa) are
+    #     built to catch it and RESPLIT into smaller chunks, a strategy that only works if
+    #     the failure comes back fast. Retrying it 9 times at 15 s plus 150 s of backoff
+    #     made every failed chunk cost 4 min 48 instead of 15 s -- 19x -- inside a recursion
+    #     that doubles the number of chunks at each level.
+    #   * "Already present ... Duplicate request N from client X" and leader changes are
+    #     genuinely transient consensus-layer conditions: retrying IS the fix (PLANITS,
+    #     2026-08-26, lost 75 905 of its 310 722 sequences and its report to one of these).
+    # CORRECTION 2026-08-28. The rule used to be "a deadline is never retried", justified here
+    # by a precedent that does not exist: every version up to 2026-08-26 retried EVERY
+    # SQLAlchemyError unconditionally (`should_retry = self.writer_retry_enabled`), and the
+    # 25/08 reference run logs contain zero "Rpc timeout" -- it never met the case, so it
+    # established nothing. Making the deadline fatal killed process_barcode_itsx on ITS at
+    # 15:15 on a 1 000-row INSERT that had already succeeded millions of times in the same run
+    # ("passed: 15.018s, timeout: 15.000s" is a load overrun, not a property of the statement).
+    # The real distinction is not in the message but in what the CALLER can do about it: only a
+    # caller that resplits or falls back gains anything from a fast failure. So the deadline is
+    # retryable by default (historical behaviour, capped by the XX000 budget), and the three
+    # adaptive call sites opt out with retry_deadline=False.
+    _DEADLINE_RE = re.compile(r"rpc timeout|timed out waiting|deadline exceeded", re.I)
+
+    @classmethod
+    def _is_deadline_exceeded(cls, exc: BaseException) -> bool:
+        """A server-side deadline: the same query will hit it again. Let the caller adapt."""
+        return bool(cls._DEADLINE_RE.search(str(getattr(exc, "orig", exc))))
+
+    @classmethod
+    def _is_internal_transient(cls, exc: BaseException, retry_deadline: bool = True) -> bool:
+        """XX000 a retry can fix. With retry_deadline=False a deadline is excluded."""
+        pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+        if not (pgcode == cls._INTERNAL_PGCODE or isinstance(exc, InternalError)):
+            return False
+        return retry_deadline or not cls._is_deadline_exceeded(exc)
+
+    @classmethod
+    def _is_retryable(cls, exc: BaseException, retry_deadline: bool = True) -> bool:
+        if isinstance(exc, IntegrityError):
+            return False
+        pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+        # 53xxx insufficient_resources / 54xxx program_limit_exceeded are deterministic:
+        # the statement will hit the same limit on every attempt. psycopg2 files them
+        # under OperationalError, so without this they would be retried 100 times with a
+        # 30s backoff -- 48 minutes to reach the identical failure. Observed for real:
+        # reconcile's VALUES-joined DELETE blowing temp_file_limit.
+        if pgcode and pgcode[:2] in ("53", "54"):
+            return False
+        if isinstance(exc, (OperationalError, InterfaceError)):
+            return True
+        if cls._is_internal_transient(exc, retry_deadline):
+            return True
+        return pgcode in cls._RETRYABLE_PGCODES
+
+    def _execute_with_retry(self, operation_name: str, func: Callable[[], Any],
+                            retry_deadline: bool = True):
+        """Execute a DB operation, retrying only errors a retry can fix.
+
+        retry_deadline=False: give up immediately on a server-side deadline. Only for
+        callers that react by resplitting or falling back -- for anyone else it turns a
+        transient overload into a dead rule (see the note above _DEADLINE_RE).
+        """
         attempts = 0
 
         while True:
@@ -202,9 +335,13 @@ class DatabaseManager:
                 return func()
             except SQLAlchemyError as exc:
                 attempts += 1
-                should_retry = self.writer_retry_enabled
+                should_retry = self.writer_retry_enabled and self._is_retryable(exc, retry_deadline)
+                # a tserver-level internal error gets a short leash (see _INTERNAL_PGCODE)
+                budget = self.writer_retry_attempts
+                if self._is_internal_transient(exc, retry_deadline):
+                    budget = min(budget, self._INTERNAL_MAX_ATTEMPTS)
 
-                if not should_retry or attempts > self.writer_retry_attempts:
+                if not should_retry or attempts > budget:
                     logger.error(
                         "DB operation %s failed after %s attempt(s): %s",
                         operation_name,
@@ -221,7 +358,7 @@ class DatabaseManager:
                     "DB operation %s: retry %s/%s in %ss...",
                     operation_name,
                     attempts,
-                    self.writer_retry_attempts,
+                    budget,
                     backoff
                 )
                 time.sleep(backoff)

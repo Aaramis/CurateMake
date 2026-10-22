@@ -108,6 +108,13 @@ class Sequence(Base):
         Index('idx_sequences_barcode', 'barcode'),
         Index('idx_sequences_status', 'barcode_status'),
         Index('idx_sequences_original_id', 'original_id'),  # For bulk_insert_sequences fetch queries
+        # Deduplication groups identical (sequence, barcode) pairs and skips rows already
+        # marked Duplicate. These belong here, with the schema, so create_database builds
+        # them on empty tables: created afterwards they need a full backfill over millions
+        # of rows, and on YugabyteDB that backfill goes through the master, ignores
+        # statement_timeout and hangs the client indefinitely if the cluster stalls.
+        Index('idx_sequences_seq_barcode', 'sequence', 'barcode'),
+        Index('idx_sequences_dedup_composite', 'sequence', 'barcode', 'barcode_status'),
     )
 
     def __repr__(self):
@@ -232,6 +239,14 @@ class SativaWarning(Base):
     tax_level = Column(String, nullable=False)
     mislabeled_level = Column(String)
     per_rank_confidence = Column(Text)
+
+    # Consensus vote over independent splits (config sativa.replicates). NULL when a single
+    # split was run, so historical rows stay valid and `replicates: 1` writes nothing new.
+    # Deliberately OUTSIDE the uuid5 identity of the row (see _WARNING_ID_COLUMNS in
+    # integrate_sativa.py): a warning is the same warning whatever the vote count.
+    sativa_votes = Column(Integer)
+    sativa_replicates = Column(Integer)
+
     created_at = Column(DateTime, default=datetime.utcnow, server_default=func.now())
 
     # Relationships
@@ -245,7 +260,7 @@ class SativaWarning(Base):
             name='check_warning_type_values'
         ),
         CheckConstraint(
-            "sativa_modification_type IS NULL OR sativa_modification_type IN ('DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION')",
+            "sativa_modification_type IS NULL OR sativa_modification_type IN ('VALIDATED', 'DELETION_SIMPLE', 'DELETION_MULTIPLE', 'SUBSTITUTION', 'COMPLETION')",
             name='check_sativa_modification_type_values'
         ),
         # Performance indices

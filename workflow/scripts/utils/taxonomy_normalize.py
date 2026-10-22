@@ -30,6 +30,10 @@ _PLACEHOLDER_EXACT = frozenset({
     "unidentifiable", "unresolved", "incertae sedis", "environmental sample",
     "environmental", "uncultured", "uncultured organism", "metagenome",
     "unclassified organism", "root", "cellular organisms",
+    # BOLD writes these in the taxonomy columns for pooled/unresolved material.
+    # "Mixture" is not a taxon at all: on the 2026-08-25 full run it accounted for
+    # 6493 sequences pointing at the single lineage "Mixture;Unspecified;NA;...".
+    "mixture", "unspecified", "mixed", "not applicable",
 })
 
 # Substrings that make the whole value a placeholder wherever they appear.
@@ -54,6 +58,30 @@ _SP_EPITHET = frozenset({
 _DOMAIN_TOKENS = frozenset({
     "eukaryota", "eukarya", "bacteria", "archaea", "prokaryota", "prokaryotae",
     "cellular organisms",
+})
+
+# Kingdoms this pipeline keeps. Anything else in a kingdom field is either a
+# placeholder, a domain, or a name the references file under one of these.
+EUKARYOTE_KINGDOMS = frozenset({
+    "Animalia", "Chromista", "Fungi", "Plantae", "Protozoa",
+})
+
+# Legacy kingdom names: real organisms, but filed elsewhere by the references.
+#
+# "Protista" is the case that bites. CoL resolves Protista itself to Protozoa, and
+# files its members under other kingdoms: Oomycota and Ochrophyta -> Chromista,
+# Rhodophyta -> Plantae (checked against the CoL API). This database already held
+# about half of those records that way -- Oomycota: 390 rows under Chromista
+# against 358 under Protista. Keeping both spellings costs twice:
+#   - one lineage becomes two tax_id, so seq_tax splits for no reason;
+#   - SATIVA reads a cross-kingdom move where there is only a difference of
+#     vocabulary, which pollutes the reassignment reports.
+# Mapping them by hand would need a phylum table that drifts; returning None is
+# better, because the CoL harmonisation then resolves the kingdom from genus and
+# species -- far more specific than the phylum. Same treatment as domains.
+# Measured on the 2026-08-25 full run: 5813 BOLD sequences.
+_LEGACY_KINGDOM_TOKENS = frozenset({
+    "protista", "protoctista",
 })
 
 # Infraspecific qualifiers: everything from here on is dropped from the binomial.
@@ -90,11 +118,33 @@ def is_domain(value):
     return bool(v) and v.lower() in _DOMAIN_TOKENS
 
 
+def is_legacy_kingdom(value):
+    """True if the value is a kingdom name the references have superseded."""
+    v = _basic_clean(value)
+    return bool(v) and v.lower() in _LEGACY_KINGDOM_TOKENS
+
+
 def clean_rank(value):
     """Clean a non-species rank. Returns the cleaned string or None."""
     if is_placeholder(value):
         return None
     return _basic_clean(value)
+
+
+def clean_kingdom(value):
+    """Clean the kingdom field. Returns the cleaned kingdom or None.
+
+    None means "kingdom unknown", which is a useful answer here: the CoL
+    harmonisation downstream fills the real kingdom from genus/species. Rejects
+    placeholders (including BOLD's "Mixture"/"Unspecified"), domains, and legacy
+    kingdom names -- see _LEGACY_KINGDOM_TOKENS for why the last group matters.
+
+    Every source that reads a kingdom from its input should call this rather than
+    clean_rank, so the rule lives in one place.
+    """
+    if is_domain(value) or is_legacy_kingdom(value):
+        return None
+    return clean_rank(value)
 
 
 def _strip_token(tok):

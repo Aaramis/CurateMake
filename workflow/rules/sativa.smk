@@ -12,6 +12,15 @@ SATIVA_MANIFEST = "results/processed/sativa_task_manifest.json"
 SATIVA_REPORT = "results/processed/sativa_analysis_report.json"
 SATIVA_OUTPUT_DIR = config["sativa"]["output_dir"]
 
+# --- consensus vote over independent splits --------------------------------------------
+# See config/config.yaml (sativa.replicates) for the measurements. `replicates: 1` leaves
+# the DAG exactly as it was: no reslice job, no vote job, and the merge below is a copy.
+SATIVA_REPLICATES = int(config["sativa"].get("replicates", 1))
+# kept as text: vote_sativa.py reads it as an exact Fraction ("2/3"), because a decimal
+# would ask for 3 votes out of 3 where 2/3 means 2 (0.667 x 3 = 2.001).
+SATIVA_VOTE_THRESHOLD = str(config["sativa"].get("vote_threshold", "2/3"))
+SATIVA_BARCODES = config["sativa"]["barcodes"]
+
 
 def _load_sativa_manifest():
     manifest_path = checkpoints.sativa_task_manifest.get().output.manifest
@@ -22,6 +31,16 @@ def _load_sativa_manifest():
 def _sativa_tasks():
     manifest = _load_sativa_manifest()
     return manifest.get("tasks", [])
+
+
+def _native_tasks():
+    """Replicate 0 only — the split the database and the reports are built on.
+
+    Replicates exist to be voted on, not to be integrated N times: integrating each one
+    would take sativa_warnings from 1.5 M rows to 15 M and repeat the integration work N
+    times, while every single-split flag is ~63% artefact anyway (2026-08-26 measurement).
+    """
+    return [t for t in _sativa_tasks() if int(t.get("replicate", 0)) == 0]
 
 
 def _sativa_summary_path(task):
@@ -35,7 +54,26 @@ def _sativa_summary_path(task):
 
 
 def sativa_summary_inputs(_wildcards):
-    return [_sativa_summary_path(task) for task in _sativa_tasks()]
+    # Report on the native split so the figures stay comparable across runs; the replicate
+    # jobs are pulled in by sativa_vote instead.
+    return [_sativa_summary_path(task) for task in _native_tasks()]
+
+
+def sativa_vote_inputs(wildcards):
+    """Every replicate of one barcode — this is what forces the replicate SATIVA jobs."""
+    return [_sativa_summary_path(t) for t in _sativa_tasks()
+            if t["barcode"] == wildcards.barcode and t["tax_level"] == wildcards.level]
+
+
+def _consensus_path(barcode, level):
+    return os.path.join(SATIVA_OUTPUT_DIR, barcode, f"alignments_{level}", "consensus.mis")
+
+
+def sativa_consensus_input(wildcards):
+    """The clade integrates the consensus when there is one, its own .mis otherwise."""
+    if SATIVA_REPLICATES <= 1:
+        return []
+    return [_consensus_path(wildcards.barcode, wildcards.level)]
 
 
 def _sativa_integration_path(task):
@@ -49,7 +87,7 @@ def _sativa_integration_path(task):
 
 
 def sativa_integration_inputs(_wildcards):
-    return [_sativa_integration_path(task) for task in _sativa_tasks()]
+    return [_sativa_integration_path(task) for task in _native_tasks()]
 
 
 # NOTE on SATIVA memory (2026-08-14/15): a sativa_task peaks around ~20 GB RSS. The cost is
@@ -72,17 +110,35 @@ def sativa_task_msa_path(wildcards):
 # ---------------------------------------------------------------------------
 # Manifest generation (checkpoint)
 # ---------------------------------------------------------------------------
-# SATIVA consumes the manifest produced by clustered_collect (already in the right
+# SATIVA consumes the manifest produced by collect_groups (already in the right
 # format, {taxon}=msa_id filesystem-safe).
+def _replicate_manifests(_wildcards):
+    if SATIVA_REPLICATES <= 1:
+        return []
+    return expand(
+        os.path.join(EH_REPL_ROOT, "{barcode}", "seed{seed}", "sativa_manifest.json"),
+        barcode=SATIVA_BARCODES, seed=range(1, SATIVA_REPLICATES),
+    )
+
+
 checkpoint sativa_task_manifest:
     input:
-        manifest=CL_SATIVA_MANIFEST
+        manifest=CL_SATIVA_MANIFEST,
+        replicates=_replicate_manifests
     output:
         manifest=SATIVA_MANIFEST
+    params:
+        replicate_args=lambda w, input: (
+            "--replicate-manifest " + " ".join(input.replicates) if input.replicates else ""
+        )
     log:
         "logs/sativa/manifest.log"
     shell:
-        "cp {input.manifest} {output.manifest}"
+        """
+        python workflow/scripts/Sativa/merge_replicate_manifests.py \
+            --native {input.manifest} {params.replicate_args} \
+            --output {output.manifest} --log-file {log}
+        """
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +247,55 @@ rule sativa_visualization:
 
 
 # ---------------------------------------------------------------------------
+# Consensus vote across the independent splits
+#
+# One job per barcode: reads every replicate's .mis, votes rank by rank, and writes ONE
+# consensus in the SATIVA .mis layout. integrate_sativa.py then consumes it through the
+# very same SativaMisParser as a raw SATIVA output — there is no second path into the
+# database. A sequence below the threshold is simply absent from the consensus, so the
+# clade's .tax marks it VALIDATED, which is exactly the intended meaning: no reproducible
+# objection to its current label.
+#
+# Not defined at all when replicates == 1, so the historical DAG is untouched.
+# ---------------------------------------------------------------------------
+if SATIVA_REPLICATES > 1:
+
+    rule sativa_vote:
+        input:
+            manifest=SATIVA_MANIFEST,
+            summaries=sativa_vote_inputs,
+            # members of the NATIVE split: one clade per sequence, scaffold copies excluded
+            members=os.path.join(EH_OUT, "{barcode}", "group_members.tsv")
+        output:
+            consensus=os.path.join(SATIVA_OUTPUT_DIR, "{barcode}", "alignments_{level}",
+                                   "consensus.mis"),
+            report=os.path.join(SATIVA_OUTPUT_DIR, "{barcode}", "alignments_{level}",
+                                "vote_report.json")
+        params:
+            sativa_dir=SATIVA_OUTPUT_DIR,
+            replicates=SATIVA_REPLICATES,
+            threshold=SATIVA_VOTE_THRESHOLD
+        log:
+            "logs/sativa/vote/{barcode}.{level}.log"
+        benchmark:
+            "benchmarks/sativa/vote/{barcode}.{level}.benchmark.txt"
+        conda:
+            "../envs/sativa.yaml"
+        shell:
+            """
+            python workflow/scripts/Sativa/vote_sativa.py \
+                --manifest {input.manifest} \
+                --sativa-dir {params.sativa_dir} \
+                --barcode {wildcards.barcode} --level {wildcards.level} \
+                --replicates {params.replicates} \
+                --native-members {input.members} \
+                --vote-threshold {params.threshold} \
+                --output {output.consensus} --report {output.report} \
+                --log-file {log}
+            """
+
+
+# ---------------------------------------------------------------------------
 # SATIVA integration into the database — scattered per clade
 #
 # Each clade is integrated as soon as its SATIVA job finishes, so the DB/CoL I/O
@@ -206,6 +311,7 @@ rule sativa_integrate_task:
         summary=os.path.join(
             SATIVA_OUTPUT_DIR, "{barcode}", "alignments_{level}", "{taxon}", "sativa.summary.json"
         ),
+        consensus=sativa_consensus_input,
         db=get_db_path()
     output:
         report=os.path.join(

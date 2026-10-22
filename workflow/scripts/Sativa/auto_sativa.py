@@ -122,14 +122,19 @@ def is_output_complete(output_dir: Path, taxon: str) -> bool:
         if status in ['skipped', 'error']:
             return True
 
-        # If success, ensure the .mis file exists
+        # If success, ensure the .mis file exists.
+        # SATIVA names it after the -n label, i.e. `{barcode}_{tax_level}_{taxon}.mis`
+        # (see the run_sativa call), NOT `{taxon}.mis`. Looking for the latter never
+        # matched, so this returned False for every successful task and the caller then
+        # ran clean_incomplete_output() -> shutil.rmtree(output_dir), DELETING a finished
+        # result before redoing it. Glob instead: the label is sanitised, and a clade
+        # directory holds exactly one .mis.
         if status == 'success':
-            mis_file = output_dir / f"{taxon}.mis"
-            if mis_file.exists():
+            mis_files = [f for f in output_dir.glob("*.mis") if f.name != "consensus.mis"]
+            if mis_files:
                 return True
-            else:
-                logger.warning(f"Summary indicates success but .mis file missing: {mis_file}")
-                return False
+            logger.warning(f"Summary indicates success but no .mis file in {output_dir}")
+            return False
 
         return False
 

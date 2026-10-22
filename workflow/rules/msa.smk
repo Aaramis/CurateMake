@@ -2,7 +2,7 @@
 """
 Sequence extraction for the MSA stage + the MSA analysis report.
 
-The MSA construction itself lives in rules/clustered_msa.smk (sequence-first strategy).
+The MSA construction itself lives in rules/msa_groups.smk (sequence-first strategy).
 This file keeps only:
   - prepare_msa: extract the sequences (+ CoL) into config["msa"]["csv_path"],
     which is the input of the bottom-up split.
@@ -34,14 +34,14 @@ rule prepare_msa:
 
 # MSA analysis report (bottom-up): consumes the bottom-up summary + the per-family
 # manifests + the residual and contamination reports.
-_MSA_CL = config["msa"].get("clustered", {})
+_MSA_CL = config["msa"].get("groups", {})
 rule analyze_msa_report:
     input:
-        summary=_MSA_CL.get("summary", "results/MSA/clustered/clustered_summary.json"),
-        residual=_MSA_CL.get("residual_report", "results/MSA/clustered/residual_report.json"),
-        contamination=_MSA_CL.get("contamination_report", "results/MSA/clustered/contamination_report.json")
+        summary=_MSA_CL.get("summary", "results/MSA/groups/groups_summary.json"),
+        residual=_MSA_CL.get("residual_report", "results/MSA/groups/residual_report.json"),
+        contamination=_MSA_CL.get("contamination_report", "results/MSA/groups/contamination_report.json")
     params:
-        out_dir=_MSA_CL.get("out_dir", "results/MSA/clustered")
+        out_dir=_MSA_CL.get("out_dir", "results/MSA/groups")
     output:
         report=config["msa"]["output_report"]
     log:

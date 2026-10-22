@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-HTML report for the sequence-first clustered MSA construction.
+HTML report for the backbone + ensemble-HMM MSA construction.
 
-Consumes clustered_summary.json (written by collect_clustered.py, which measures every
+Consumes groups_summary.json (written by collect_groups.py, which measures every
 alignment on disk) and reports:
   1. the construction funnel: sequences -> clusters -> MSAs, per barcode,
   2. alignment quality: width x occupancy of every MSA, with an alert list,
@@ -38,7 +38,7 @@ def load_json(path, default=None):
         return default if default is not None else {}
 
 
-# Alert thresholds, mirrored from collect_clustered so the report can still draw them
+# Alert thresholds, mirrored from collect_groups so the report can still draw them
 # when reading a summary produced by an older version.
 NARROW_COLUMNS = 100
 LOW_OCCUPANCY_PCT = 20.0
@@ -47,7 +47,7 @@ LOW_OCCUPANCY_PCT = 20.0
 def collect_msa_metrics(summary, out_dir=None):
     """Per-MSA metrics as a DataFrame.
 
-    The clustered strategy measures every alignment in collect_clustered.py and stores
+    The pipeline measures every alignment in collect_groups.py and stores
     the result in the summary; the per-family manifest layout is the fallback for
     bottom-up runs.
     """
@@ -189,7 +189,7 @@ def build_html(summary, msas, residual, contamination):
         <style>{REPORT_CSS}</style>
     </head>
     <body>
-        {page_header("MSA Analysis Report", "Sequence-first clustered construction &mdash; generated on " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}
+        {page_header("MSA Analysis Report", "Backbone + ensemble-HMM construction &mdash; generated on " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}
         <div class="container">
 
             <div class="section">
@@ -263,7 +263,7 @@ def build_html(summary, msas, residual, contamination):
 
 
 def main():
-    p = argparse.ArgumentParser(description="HTML report for clustered MSA construction.")
+    p = argparse.ArgumentParser(description="HTML report for MSA construction.")
     p.add_argument("--summary", required=True)
     p.add_argument("--out-dir", required=True, help="Per-family outputs directory (out/).")
     p.add_argument("--residual-report", default=None)

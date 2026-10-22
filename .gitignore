@@ -135,3 +135,5 @@ resources/**
 !resources/**/
 !resources/**/mini_*
 !resources/PERSONAL/personal_test.fasta
+.attic/
+.git-worktrees/

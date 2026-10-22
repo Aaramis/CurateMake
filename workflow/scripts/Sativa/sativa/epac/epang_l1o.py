@@ -672,6 +672,60 @@ def _run_screened(refbip, leaves, aln_by_leaf, reftree_path, model, workdir, thr
     return out
 
 
+def _cgroup_memory_limit():
+    """Bytes this process may use, or None. The host's total RAM is NOT the answer in a container:
+    here `free` reports 502 GB while the cgroup allows 469 GB, and it is the cgroup that kills."""
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            with open(path) as handle:
+                raw = handle.read().strip()
+            if raw == "max":
+                continue
+            value = int(raw)
+            if 0 < value < (1 << 62):
+                return value
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _memory_fold_cap(aln, n_leaves, log=None):
+    """How many concurrent EPA-ng this machine can hold, from taxa x alignment sites.
+
+    Calibrated on the 2026-09-07 failure: 32 421 reference taxa over ~31 000 sites peaked at 330 GB,
+    i.e. ~330 bytes per taxon-site, which is the right order for a double-precision conditional
+    likelihood vector over 4 states and 4 rate categories plus overhead. It matches the other end
+    too: a CurateMake group, ~20 000 taxa over ~2 000 sites, was measured at 8-21 GB against 13 GB
+    predicted. It is an order-of-magnitude figure, not a model, so it is used only to refuse a
+    parallelism that certainly does not fit, never to promise one that does.
+    """
+    say = log if callable(log) else (lambda m: None)   # _log is nested in the caller, not global
+    limit = _cgroup_memory_limit()
+    if not limit or not aln:
+        return 4
+    try:
+        sites = max(len(v) for v in aln.values())
+    except (TypeError, ValueError):
+        return 4
+    per_job = 330.0 * max(1, n_leaves) * max(1, sites)
+    if per_job <= 0:
+        return 4
+    # Half the limit when deciding how many folds to run together, so a second consumer still fits;
+    # but the "cannot fit at all" verdict has to be judged against the WHOLE limit, or a fold that
+    # does fit alone gets declared impossible.
+    cap = int((limit * 0.5) // per_job)
+    say("epang: %d taxa x %d sites -> about %.0f GB a fold, cgroup limit %.0f GB"
+        % (n_leaves, sites, per_job / 2**30, limit / 2**30))
+    if per_job > limit:
+        say("epang: a SINGLE fold does not fit. No parallelism setting changes that. Expect the "
+            "kernel to kill EPA-ng and every fold to fail with an empty error; that outcome is a "
+            "measured memory limit on this alignment, not a bug to work around.")
+    elif cap < 1:
+        say("epang: one fold fits but leaves no room for anything else; running folds one at a "
+            "time and nothing else should run beside it.")
+    return max(1, cap)
+
+
 def run_epang_l1o(refjson_tree_str, refaln_path, reftree_path, raxml_outdir,
                   workdir, folds=5, threads=1, log=None):
     t_start = time.time()
@@ -778,9 +832,23 @@ def run_epang_l1o(refjson_tree_str, refaln_path, reftree_path, raxml_outdir,
     # four at once is 0.76x, slower than one. The cap of four is separate, and is about
     # memory: each concurrent EPA-ng holds its own copy of the reference, some 3 GB at 5402
     # taxa. Raise it on a large node, set it to 1 for one fold at a time.
+    #
+    # The cap of four assumes a reference costing a few GB, and on a DEGENERATE alignment that is
+    # off by two orders of magnitude. On 2026-09-07 a 304-family naive global MSA -- 32 421
+    # sequences over ~31 000 columns at 0.6 % occupancy -- made a SINGLE EPA-ng reach 330 GB of
+    # resident memory. Note the rule above had already chosen one fold at a time there (1296
+    # sequences a fold, well past the 512 threshold): the four-way cap was not involved. What
+    # exhausted the container's 469 GB cgroup was three such leave-one-out runs launched side by
+    # side. The kernel killed 83 EPA-ng processes, every fold failed with an EMPTY stderr, and
+    # SATIVA still exited 0 reporting "0 mislabels" -- a silent wrong answer, worse than a crash.
+    #
+    # So the count is bounded by what the machine can hold, and more importantly the estimate is
+    # logged: when one single fold cannot fit, no parallelism setting saves the run and the honest
+    # outcome is that this alignment is too degenerate to place on this machine.
     per_fold = len(ordered) // max(1, K)
-    fold_jobs = max(1, int(os.environ.get("SATIVA_EPANG_FOLD_JOBS",
-                                          str(min(K, threads, 4) if per_fold < 512 else 1))))
+    fold_jobs = min(K, threads, 4) if per_fold < 512 else 1
+    fold_jobs = min(fold_jobs, _memory_fold_cap(aln, len(leaves), _log))
+    fold_jobs = max(1, int(os.environ.get("SATIVA_EPANG_FOLD_JOBS", str(fold_jobs))))
     # The two levels of parallelism share one budget: EPA-ng takes -T and honours it over
     # OMP_NUM_THREADS, so fold_jobs * fold_threads is what actually runs. More jobs than
     # threads would hand each one a thread it does not have, so the count is clamped; a

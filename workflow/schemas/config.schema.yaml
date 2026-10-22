@@ -36,7 +36,7 @@ properties:
   msa:
     type: object
     additionalProperties: true
-    required: [csv_path, barcodes, output_report, clustered]
+    required: [csv_path, barcodes, output_report, groups]
     properties:
       csv_path:
         type: string
@@ -49,7 +49,7 @@ properties:
         minItems: 1
         items:
           type: string
-      clustered:
+      groups:
         type: object
         additionalProperties: true
         properties:

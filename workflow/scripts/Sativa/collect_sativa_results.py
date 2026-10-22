@@ -146,6 +146,21 @@ def main():
             json.dump(report_data, handle, indent=2)
         logger.info("SATIVA analysis report written to %s", output_path)
 
+        # A per-MSA SATIVA failure is non-fatal (one bad group must not kill a 5M-sequence run), but it
+        # MUST NOT be silent: a crashed group contributes ZERO corrections while the run still reports
+        # success. Historically the biggest groups were exactly the ones that died (RAxML GTRGAMMA
+        # numerical crash above ~10k taxa), so the failures were concentrated where the data matters.
+        n_err = report_data["summary"]["error"] + report_data["summary"]["timeout"]
+        if n_err:
+            failed = [r.get("taxon", "?") for st in ("error", "timeout")
+                      for r in report_data["results"].get(st, [])]
+            logger.warning("=" * 78)
+            logger.warning("%d of %d SATIVA task(s) FAILED -> they produced NO corrections.",
+                           n_err, report_data["total_msa_processed"])
+            logger.warning("Affected MSAs: %s", ", ".join(failed[:20]) + (" ..." if len(failed) > 20 else ""))
+            logger.warning("Check logs/sativa/tasks/<barcode>/<level>/<taxon>.log for the cause.")
+            logger.warning("=" * 78)
+
         cleanup_old_temp_files(sativa_script_path, retention_hours, cleanup_enabled)
 
     except Exception as exc:
