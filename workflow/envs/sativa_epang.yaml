@@ -1,0 +1,15 @@
+name: sativa_epang
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # The phylogenetic validation tool, as a package rather than a copy vendored in this
+  # repository. It brings its own epa-ng and RAxML binaries, so neither is declared here.
+  #
+  # It gets an environment of its own on purpose. It is a command-line tool: nothing in
+  # it is imported by our code, so it does not need to share a Python with the rest of
+  # the pipeline -- and it could not, since bioconda builds it against Python 3.14 while
+  # envs/sativa.yaml pins 3.10 for our own scripts. auto_sativa.py, the only thing this
+  # environment runs besides the tool, uses nothing but the standard library.
+  - sativa-epang=0.10.2

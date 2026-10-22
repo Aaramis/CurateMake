@@ -275,7 +275,8 @@ msa:
 # SATIVA configuration
 sativa:
   output_dir: "results/SATIVA"
-  sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"
+  # The sativa-epang executable, provided by envs/sativa_epang.yaml. A path works too.
+  sativa_binary: "sativa-epang"
   # 6h (21600) was too tight: on 02/09/2026, 48 tasks of ~20k seqs blew past it and were
   # written as status=timeout, i.e. permanent holes Snakemake never retries. Same tasks
   # finish in ~0.4h when the node is healthy; the overruns all land in the nightly stall

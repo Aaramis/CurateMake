@@ -17,23 +17,28 @@ logging.basicConfig(
 logger = logging.getLogger("collect_sativa_results")
 
 
-def cleanup_old_temp_files(sativa_script_path: Path, retention_hours: int, cleanup_enabled: bool) -> None:
-    """Remove stale SATIVA tmp directories (copy of previous batch implementation)."""
+def cleanup_old_temp_files(sativa_output_dir: Path, retention_hours: int, cleanup_enabled: bool) -> None:
+    """Remove stale per-task SATIVA scratch directories.
+
+    Each task now writes its scratch to <its output dir>/sativa_tmp and removes it on
+    success, so what is left here is the scratch of tasks that failed or timed out, kept
+    deliberately for inspection. This sweep is the retention policy for those.
+    """
     if not cleanup_enabled:
         logger.info("Temporary file cleanup disabled")
         return
 
-    tmp_dir = sativa_script_path.parent / "sativa" / "tmp"
-    if not tmp_dir.exists():
-        logger.info("Temporary directory not found: %s", tmp_dir)
+    if not sativa_output_dir.exists():
+        logger.info("SATIVA output directory not found: %s", sativa_output_dir)
         return
 
-    logger.info("Cleaning temporary files in %s (retention: %dh)", tmp_dir, retention_hours)
+    logger.info("Cleaning leftover task scratch under %s (retention: %dh)",
+                sativa_output_dir, retention_hours)
     now = time.time()
     cleaned = 0
     total_size = 0
 
-    for folder in tmp_dir.iterdir():
+    for folder in sativa_output_dir.rglob("sativa_tmp"):
         if not folder.is_dir():
             continue
         age_hours = (now - folder.stat().st_mtime) / 3600
@@ -128,7 +133,7 @@ def main():
 
             cleanup_enabled = snakemake.params.cleanup_temp_files
             retention_hours = snakemake.params.temp_retention_hours
-            sativa_script_path = Path(snakemake.params.sativa_script_path)
+            sativa_output_dir = Path(snakemake.params.sativa_output_dir)
 
             log_file = snakemake.log[0] if isinstance(snakemake.log, list) else snakemake.log
             file_handler = logging.FileHandler(log_file, mode="w")
@@ -161,7 +166,7 @@ def main():
             logger.warning("Check logs/sativa/tasks/<barcode>/<level>/<taxon>.log for the cause.")
             logger.warning("=" * 78)
 
-        cleanup_old_temp_files(sativa_script_path, retention_hours, cleanup_enabled)
+        cleanup_old_temp_files(sativa_output_dir, retention_hours, cleanup_enabled)
 
     except Exception as exc:
         logger.exception("Failed to aggregate SATIVA results: %s", exc)

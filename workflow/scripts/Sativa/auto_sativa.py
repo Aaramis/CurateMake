@@ -36,28 +36,23 @@ def _sanitize_label(value: str) -> str:
     return _SANITIZE_PATTERN.sub("_", value)
 
 
-def _clean_sativa_tmp(sativa_script: Path, output_name: Optional[str]) -> None:
-    """Remove the scratch directory SATIVA leaves behind when it does not exit cleanly.
+def _tool_version(sativa_binary: str) -> str:
+    """Ask the tool what it is, instead of recording a constant.
 
-    sativa.py creates <sativa_home>/tmp/<name>_<timestamp>/ and deletes it itself when
-    the analysis finishes or aborts on a user error, but not when it hits a fatal error,
-    raises, or is killed (timeout, OOM). Those runs are the ones that fill the disk: a
-    single leftover jplace reaches 900 MB.
-
-    Matching is scoped to this task's own directory: the name it passed to sativa.py
-    followed by sativa's millisecond timestamp. Anchoring on those digits matters, since
-    a bare "<name>_*" prefix would also catch a sibling whose taxon merely extends this
-    one ("Abies" would match "Abies alba") and delete the scratch of a task still running.
+    The vendored copy reported "SATIVA" here and its own internal string still claimed
+    v0.9.1 long after the package had moved on, so a run's provenance could not be
+    recovered from its own output. `-version` prints the real thing, e.g.
+    "sativa-epang 0.10.2 (SATIVA v0.9.3 with EPA-ng placement)".
     """
-    if not output_name:
-        return
-    tmp_root = sativa_script.resolve().parent / "tmp"
-    if not tmp_root.is_dir():
-        return
-    own = re.compile(rf"^{re.escape(_sanitize_label(output_name))}_\d+$")
-    for leftover in tmp_root.glob(f"{_sanitize_label(output_name)}_*"):
-        if leftover.is_dir() and own.match(leftover.name):
-            shutil.rmtree(leftover, ignore_errors=True)
+    try:
+        r = subprocess.run([sativa_binary, "-version"], capture_output=True, text=True,
+                           timeout=60)
+        out = (r.stdout or r.stderr or "").strip().splitlines()
+        if out:
+            return out[0].strip()
+    except Exception as exc:
+        logger.warning("could not read the tool version: %s", exc)
+    return "sativa-epang (version unknown)"
 
 
 def _normalize_tax_value(value: str) -> str:
@@ -83,7 +78,7 @@ class SativaResult:
     status: str  # 'success', 'skipped', 'error'
     reason: Optional[str] = None
     runtime_sec: Optional[float] = None
-    tool_version: str = "SATIVA"
+    tool_version: str = "sativa-epang (version unknown)"
     command: Optional[str] = None
     timestamp: str = ""
 
@@ -265,7 +260,7 @@ def run_sativa(
     fasta_path: Path,
     tax_path: Path,
     output_dir: Path,
-    sativa_script: Path,
+    sativa_binary: str,
     mode: str = "ultrafast",
     confidence: float = 0.6,
     taxonomy_code: str = "BOT",
@@ -281,7 +276,7 @@ def run_sativa(
         fasta_path: FASTA sequences.
         tax_path: Taxonomy file.
         output_dir: Working/output directory for SATIVA.
-        sativa_script: Path to sativa.py.
+        sativa_binary: Name or path of the sativa-epang executable.
         mode: SATIVA execution mode.
         confidence: Confidence threshold.
         taxonomy_code: Taxonomy code passed to SATIVA.
@@ -295,16 +290,24 @@ def run_sativa(
     Raises:
         subprocess.TimeoutExpired: When the timeout is reached.
     """
+    # Private scratch for this task. The tool defaults to a tmp/ directory inside its own
+    # installation, which is shared by every concurrent task and is never cleaned: a single
+    # leftover jplace reaches 900 MB. -tmpdir exists for exactly this (its help says "so
+    # that a workflow manager can schedule each with its own"), so each task gets one under
+    # its own output directory and it is removed on success below.
+    tmp_dir = output_dir / "sativa_tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
     command = [
-        "python3",
-        str(sativa_script.resolve()),
+        sativa_binary,
         "-s", fasta_path.name,
         "-t", tax_path.name,
         "-m", mode,
         "-C", str(confidence),
         "-x", taxonomy_code,
         "-T", str(threads),
-        "-S",  # Silent mode
+        "-S",  # RAxML memory saving (NOT silent mode, as this used to claim)
+        "-tmpdir", str(tmp_dir.resolve()),
     ]
     if output_name:
         command.extend(["-n", _sanitize_label(output_name)])
@@ -327,6 +330,10 @@ def run_sativa(
         )
 
         logger.info("SATIVA completed successfully")
+        # Our scratch, so we remove it -- but only on success. A failed or timed-out task
+        # keeps its scratch for inspection; the retention sweep in
+        # collect_sativa_results.py is what eventually clears those.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return True
 
     except subprocess.TimeoutExpired as e:
@@ -352,11 +359,6 @@ def run_sativa(
         logger.error(f"Unexpected error running SATIVA: {e}")
         raise
 
-    finally:
-        # Covers every exit sativa.py does not clean up after itself: fatal error,
-        # uncaught exception, and the timeout above (where the child is killed and
-        # never reaches its own clean_tempdir).
-        _clean_sativa_tmp(sativa_script, output_name)
 
 
 def main():
@@ -377,7 +379,7 @@ def main():
             max_len = snakemake.params.max_len
             threads = snakemake.threads
 
-            sativa_script = Path(snakemake.params.sativa_script)
+            sativa_binary = snakemake.params.sativa_binary
             sativa_mode = snakemake.params.sativa_mode
             confidence = snakemake.params.confidence
             taxonomy_code = snakemake.params.taxonomy_code
@@ -404,7 +406,8 @@ def main():
             parser.add_argument("--max-seqs", type=int, default=20000, help="Max sequences")
             parser.add_argument("--max-len", type=int, default=5000, help="Max alignment length")
             parser.add_argument("--threads", type=int, default=4, help="Number of threads")
-            parser.add_argument("--sativa-script", type=str, required=True, help="Path to sativa.py")
+            parser.add_argument("--sativa-binary", type=str, default="sativa-epang",
+                                help="Name or path of the sativa-epang executable")
             parser.add_argument("--sativa-mode", type=str, default="ultrafast", help="SATIVA mode")
             parser.add_argument("--confidence", type=float, default=0.6, help="Confidence threshold")
             parser.add_argument("--taxonomy-code", type=str, default="BOT", help="Taxonomy code")
@@ -422,7 +425,7 @@ def main():
             max_seqs = args.max_seqs
             max_len = args.max_len
             threads = args.threads
-            sativa_script = Path(args.sativa_script)
+            sativa_binary = args.sativa_binary
             sativa_mode = args.sativa_mode
             confidence = args.confidence
             taxonomy_code = args.taxonomy_code
@@ -512,7 +515,7 @@ def main():
             fasta_path=fasta_path,
             tax_path=tax_path,
             output_dir=output_dir,
-            sativa_script=sativa_script,
+            sativa_binary=sativa_binary,
             mode=sativa_mode,
             confidence=confidence,
             taxonomy_code=taxonomy_code,
@@ -525,7 +528,9 @@ def main():
         sativa_runtime = time.time() - sativa_start
 
         # Step 5: Create success summary
-        command_str = f"sativa.py -s {fasta_path.name} -t {tax_path.name} -m {sativa_mode} -C {confidence} -x {taxonomy_code} -T {threads}"
+        command_str = (f"{sativa_binary} -s {fasta_path.name} -t {tax_path.name} "
+                       f"-m {sativa_mode} -C {confidence} -x {taxonomy_code} -T {threads} "
+                       f"-S -tmpdir <task scratch>")
         if rand_seed is not None:
             command_str += f" -p {rand_seed}"
 
@@ -537,7 +542,8 @@ def main():
             aln_len=aln_len,
             status="success",
             runtime_sec=sativa_runtime,
-            command=command_str
+            command=command_str,
+            tool_version=_tool_version(sativa_binary)
         )
 
         summary_path = output_dir / "sativa.summary.json"

@@ -163,7 +163,7 @@ rule sativa_task:
         tax_level=lambda wildcards: wildcards.level,
         max_seqs=config["sativa"]["max_seq_count"],
         max_len=config["sativa"]["max_alignment_length"],
-        sativa_script=config["sativa"]["sativa_script_path"],
+        sativa_binary=config["sativa"].get("sativa_binary", "sativa-epang"),
         sativa_mode=config["sativa"]["sativa_mode"],
         confidence=config["sativa"]["confidence_threshold"],
         taxonomy_code=config["sativa"]["taxonomy_code"],
@@ -178,7 +178,9 @@ rule sativa_task:
     benchmark:
         "benchmarks/sativa/tasks/{barcode}.{level}.{taxon}.benchmark.txt"
     conda:
-        "../envs/sativa.yaml"
+        # The packaged tool, not the copy that used to live in this repository. Its own
+        # environment: see envs/sativa_epang.yaml for why it cannot share ours.
+        "../envs/sativa_epang.yaml"
     # Run the real script file (shell) rather than Snakemake's `script:` temp-copy
     # mechanism, which races on the parallel FS under high job concurrency
     # (.snakemake/scripts/tmp*.auto_sativa.py missing / 0-byte).
@@ -194,7 +196,7 @@ rule sativa_task:
             --max-seqs {params.max_seqs} \
             --max-len {params.max_len} \
             --threads {threads} \
-            --sativa-script {params.sativa_script} \
+            --sativa-binary {params.sativa_binary} \
             --sativa-mode {params.sativa_mode} \
             --confidence {params.confidence} \
             --taxonomy-code {params.taxonomy_code} \
@@ -214,7 +216,7 @@ rule sativa_analysis_report:
     params:
         cleanup_temp_files=config["sativa"].get("cleanup_temp_files", True),
         temp_retention_hours=config["sativa"].get("temp_retention_hours", 24),
-        sativa_script_path=config["sativa"]["sativa_script_path"]
+        sativa_output_dir=SATIVA_OUTPUT_DIR
     log:
         "logs/sativa/collect_report.log"
     benchmark:
