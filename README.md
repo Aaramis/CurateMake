@@ -62,9 +62,10 @@ rule pins its own Conda environment under `workflow/envs/` for reproducibility.
 - PostgreSQL client libraries **only** if you use the PostgreSQL backend
 - Optional: a Snakemake cluster profile (SLURM, SGE, …) for HPC execution
 
-All bioinformatics tools (ITSx, MAFFT, trimAl, HMMER, RAxML/SATIVA) are pulled in
-automatically by the per-rule Conda environments — you do **not** install them by
-hand.
+All bioinformatics tools (ITSx, MAFFT, trimAl, HMMER, mmseqs2, and `sativa-epang`
+with its own EPA-ng and RAxML) are pulled in automatically by the per-rule Conda
+environments — you do **not** install them by hand, and none of them is vendored in
+this repository.
 
 ---
 
@@ -299,5 +300,7 @@ redistribution must stay under CC BY-SA 4.0 and credit the original sources
 
 Copyright © 2026 Auguste Gardette (IRD, UMMISCO).
 
-External tools bundled or invoked by the pipeline — ITSx, MAFFT, trimAl, HMMER,
-RAxML, SATIVA — retain their own licenses; respect their redistribution terms.
+External tools invoked by the pipeline — ITSx, MAFFT, trimAl, HMMER, mmseqs2,
+`sativa-epang` and the EPA-ng and RAxML it carries — retain their own licenses. None is
+redistributed here: they are resolved from Conda at run time, so this repository ships no
+third-party binary.

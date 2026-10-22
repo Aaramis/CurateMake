@@ -43,7 +43,12 @@ Every Snakemake rule specifies its own Conda environment under `workflow/envs/`.
 
 ## SATIVA
 
-- Env: `workflow/envs/sativa.yaml`
+- Tool: the `sativa-epang` package from bioconda, pinned in
+  `workflow/envs/sativa_epang.yaml`, which the `sativa_task` rule uses. It is not vendored
+  in this repository; it brings its own EPA-ng and RAxML. Its environment is separate
+  because bioconda builds it against Python 3.14 while our scripts pin 3.10.
+- Env for our own SATIVA-side scripts (integration, vote, reports):
+  `workflow/envs/sativa.yaml`
 - Scripts:
   - `workflow/scripts/Sativa/auto_sativa.py`
   - `workflow/scripts/Sativa/collect_sativa_results.py`
