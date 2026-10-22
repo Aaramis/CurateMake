@@ -1,6 +1,8 @@
 # Alignment strategy for a hypervariable marker
 
-**Status: proposal under evaluation. Nothing here is implemented.** The current eHMM path
+**Status: REJECTED at Gate 1 on 2026-10-22. Nothing here was implemented, and on
+this evidence nothing should be.** The result is kept because it answers the obvious
+reviewer question, "why not align per clade?", with a measurement rather than an opinion. The current eHMM path
 remains the only one. This document exists so the reasoning, the measurements and the
 conditions for abandoning the idea are written down before any code is touched, because
 the alignment step is the most consequential one in the pipeline.
@@ -127,6 +129,49 @@ what interleaving detects today.
 **Gate 3 — does it hold end to end?** Implemented as an alternative strategy, run on the
 mini dataset, then on one palier of the simulation grid, with arm scores compared against
 the current ones. A full-database run only after that.
+
+## Gate 1 result: the proposal fails
+
+Three families were aligned on their own and placed with SATIVA, then their verdicts
+compared with the global frame's verdicts for exactly the same sequences.
+
+| family | kingdom | sequences | columns alone | flags per-clade | flags global frame | shared | same rank |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Enchytraeidae | Animalia | 1 359 | 3 331 | 23 | 65 | 16 | 0 % |
+| Meruliaceae | Fungi | 3 685 | 7 340 | 549 | 784 | 139 | 58 % |
+| Caryophyllaceae | Plantae | 2 303 | 1 805 | 425 | 70 | 39 | 49 % |
+
+**Per-clade alignment is not denser.** ITS sequences of roughly 600 nt spread over 3 331
+columns inside a single family of annelids and 7 340 inside a single family of fungi,
+against 472 for the global frame. The hypervariability is not a between-kingdom effect
+that clade grouping removes; it is present between genera of one family. Caryophyllaceae
+at 1 805 columns shows the width is strongly clade-dependent, which makes the cost
+unpredictable.
+
+**It costs more, not less.** At roughly 330 bytes per taxon-by-column cell, a global-frame
+task of 20 000 sequences over 472 columns needs about 3.1 GB per fold, while one family of
+3 685 sequences over 7 340 columns needs about 8.9 GB -- three times the memory for five
+times fewer sequences. The narrowness of the global frame is doing real work: it is what
+bounds the placement cost. Observed during the test: four concurrent epa-ng processes at
+6.5 GB each for one family.
+
+**It cannot validate the rank it groups on.** In Enchytraeidae 22 of 23 flags land at
+Family rank, in a tree that contains only one family. SATIVA has no reference for "not
+Enchytraeidae" there, so those flags are artefacts of the missing alternative rather than
+findings. The global frame flagged the same sequences at Species and Genus. This is the
+mirror of the singleton-taxon trap: a clade-restricted reference cannot detect an error at
+or above the rank that defines the clade -- which is precisely what the kingdom
+interleaving exists to buy.
+
+**A confound to state.** The global-frame verdicts are post-vote, ten replicates with a
+two-thirds consensus; the per-clade run is a single pass. A single pass is known to carry
+about 38 % artefacts in its unstable population against 4 % after the vote, so a large part
+of the per-clade-only flags are likely artefacts rather than discoveries. "Different" must
+not be read as "better". Removing the confound would mean rerunning the per-clade arm with
+the vote, which is worth doing only if the first two findings are ever overturned.
+
+**Scope.** Three families, one per kingdom, no Chromista family in the usable size band.
+This is enough to stop the proposal, not enough to characterise the behaviour.
 
 ## What should not change
 
