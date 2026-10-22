@@ -330,6 +330,21 @@ sativa:
 
 # SATIVA integration configuration
 sativa_integration:
+  # Minimum SATIVA confidence a flag must carry to be integrated. 0 keeps everything.
+  #
+  # 0.511 is not arbitrary. Measured on the August 2026 full run, 905 403 flags: the
+  # confidence histogram carries a discrete spike of 9 181 flags at EXACTLY 0.510,
+  # against 285 at 0.508, 627 at 0.509 and 66 at 0.511. That spike is the stem-placement
+  # signature: the whole placement weight sits on a branch BETWEEN two ranks, so the
+  # placement cannot choose between them, and the confidence is an artefact of the tie
+  # rather than a measure of support. Those flags are 3 650 completions, 3 113 simple
+  # deletions, 2 012 substitutions and 472 multiple deletions, mostly at species (3 937)
+  # and genus (3 553).
+  #
+  # Cutting just above it removes 10 739 flags, 1.19 % of the total: the spike plus the
+  # 0.418-0.509 tail. Applied at integration, not through SATIVA's own -C, so it costs
+  # nothing to change: no SATIVA re-run, only a re-integration.
+  min_confidence: 0.511
   # CoL API configuration
   col_api:
     # Post-SATIVA CoL re-validation. Uses the SAME client as harmonize_taxo

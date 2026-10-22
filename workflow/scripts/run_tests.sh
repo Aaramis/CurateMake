@@ -17,6 +17,7 @@ TESTS=(
   workflow/scripts/test_sativa_taxonomy_report.py
   workflow/scripts/utils/test_retry_policy.py
   workflow/scripts/utils/test_taxonomy_normalize.py
+  workflow/scripts/Sativa/test_mis_confidence_filter.py
   workflow/scripts/Sativa/test_auto_sativa.py
   workflow/scripts/Sativa/test_classify_modification.py
   workflow/scripts/Sativa/test_vote_sativa.py

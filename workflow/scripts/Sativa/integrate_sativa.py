@@ -434,7 +434,8 @@ class SativaMisParser:
 
     @staticmethod
     def parse_mis_file(mis_path: Path, barcode: str, tax_level: str,
-                       only_native_taxon: Optional[str] = None) -> List[ModificationRecord]:
+                       only_native_taxon: Optional[str] = None,
+                       min_confidence: float = 0.0) -> List[ModificationRecord]:
         """
         Parse a .mis file into ModificationRecords.
 
@@ -448,6 +449,9 @@ class SativaMisParser:
             barcode: Barcode name (ITS, ITS1, ITS2)
             tax_level: Taxonomic level (family, genus, etc.)
             only_native_taxon: consensus only — keep the sequences this clade owns.
+            min_confidence: drop flags below this confidence. 0.0 keeps everything, which
+                is the historical behaviour. See config sativa_integration.min_confidence
+                for why 0.511 is the interesting value.
                 The consensus spans a whole barcode while integration is scattered per
                 clade, and column 10 says which native clade each sequence belongs to.
 
@@ -455,6 +459,7 @@ class SativaMisParser:
             List of ModificationRecord objects
         """
         records = []
+        below_cutoff = 0
 
         try:
             with open(mis_path, 'r') as f:
@@ -477,6 +482,14 @@ class SativaMisParser:
                             return int(parts[idx])
                         return None
 
+                    if min_confidence > 0.0:
+                        try:
+                            if float(parts[4]) < min_confidence:
+                                below_cutoff += 1
+                                continue
+                        except ValueError:
+                            pass        # malformed: let the parse below report it
+
                     try:
                         record = ModificationRecord(
                             seq_id=parts[0],
@@ -497,6 +510,10 @@ class SativaMisParser:
                     except (ValueError, IndexError) as e:
                         logger.warning(f"Failed to parse line in {mis_path.name}: {e}")
                         continue
+
+            if below_cutoff:
+                logger.info("%s: %d flag(s) dropped below confidence %.3f, %d kept",
+                            mis_path.name, below_cutoff, min_confidence, len(records))
 
             logger.debug(f"Parsed {len(records)} modifications from {mis_path.name}")
 
@@ -1384,7 +1401,8 @@ def process_single_mis_file(mis_file: Path, barcode: str, tax_level: str,
                 mis_file.name, n_tax, len(integrator._tax_id_cache))
 
     # Parse .mis file (or take the consensus records the vote already selected)
-    modifications = (parser.parse_mis_file(mis_file, barcode, tax_level)
+    modifications = (parser.parse_mis_file(mis_file, barcode, tax_level,
+                                           min_confidence=float(config.get('min_confidence', 0.0)))
                      if records is None else records)
     stats['total_modifications'] = len(modifications)
     if records is not None:
@@ -1706,7 +1724,8 @@ def integrate_one_clade(snakemake):
     records = None
     if consensus_in:
         records = SativaMisParser.parse_mis_file(
-            Path(consensus_in), barcode, tax_level, only_native_taxon=taxon)
+            Path(consensus_in), barcode, tax_level, only_native_taxon=taxon,
+            min_confidence=float(config['sativa_integration'].get('min_confidence', 0.0)))
         stats['metadata']['consensus'] = str(consensus_in)
         logger.info("[%s] consensus mode: %d flag(s) survived the vote for this clade",
                     taxon, len(records))
