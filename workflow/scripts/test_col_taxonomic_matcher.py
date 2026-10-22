@@ -145,5 +145,47 @@ check("insensible a la casse, tolerante aux valeurs nulles",
       and col._edit_distance(None, "Russula", cap=2) > 2
       and col._edit_distance(None, None) == 0)
 
+print("\nFaute dans le genre lui-meme")
+
+RUSACEAE = lineage(("kingdom", "Fungi"), ("family", "Russulaceae"))
+WITH_GENUS = RUSACEAE + lineage(("genus", "Russula"))
+SRC = dict(kingdom="Fungi", family="Russulaceae", genus="Rusula", species="Rusula azurea")
+
+# the genus is misspelled AND CoL knows the species under the corrected genus
+m = col.TaxonomyMatcher(FakeClient(fuzzy={
+    "Rusula": [hit("Russula", "genus", RUSACEAE)],
+    "Rusula azurea": [hit("Russula azurea", "species", WITH_GENUS)]}))
+out = m.match_taxonomy(record(**SRC))
+check("un genre mal orthographie est corrige", out.col_taxonomy.get("genus") == "Russula")
+check("le binome entier est recupere", out.col_taxonomy.get("species") == "Russula azurea")
+
+# the genus is misspelled and CoL does not know the species: the stale epithet is dropped
+m = col.TaxonomyMatcher(FakeClient(fuzzy={"Rusula": [hit("Russula", "genus", RUSACEAE)]}))
+out = m.match_taxonomy(record(**SRC))
+check("le genre est corrige meme sans l espece", out.col_taxonomy.get("genus") == "Russula")
+check("l epithete perime n est pas recopie sous le nouveau genre",
+      "species" not in out.col_taxonomy)
+
+# a near genus in ANOTHER family must not be accepted
+m = col.TaxonomyMatcher(FakeClient(fuzzy={
+    "Rusula": [hit("Russula", "genus", lineage(("kingdom", "Fungi"), ("family", "Amanitaceae")))]}))
+out = m.match_taxonomy(record(**SRC))
+check("un genre proche d une autre famille est refuse", not out.success)
+
+# the ordinary case must not regress
+m = col.TaxonomyMatcher(FakeClient(exact={"Russula": [hit("Russula", "genus", RUSACEAE)]}))
+out = m.match_taxonomy(record(kingdom="Fungi", family="Russulaceae",
+                              genus="Russula", species="Russula azurea"))
+check("un binome coherent reste herite", out.col_taxonomy.get("species") == "Russula azurea")
+
+check("la garde accepte un binome coherent",
+      col.TaxonomyMatcher._binomial_agrees("Russula azurea", "Russula"))
+check("la garde refuse un binome contredit",
+      not col.TaxonomyMatcher._binomial_agrees("Carangoides ferdau", "Ferdauia"))
+check("la garde laisse passer ce qu elle ne peut pas comparer",
+      col.TaxonomyMatcher._binomial_agrees("Russula azurea", None)
+      and col.TaxonomyMatcher._binomial_agrees(None, "Russula"))
+
+
 print(f"\n{'PASSED' if failed == 0 else 'FAILED'} {passed}/{passed + failed}")
 sys.exit(0 if failed == 0 else 1)

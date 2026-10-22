@@ -238,7 +238,8 @@ class TaxonomyMatcher:
 
     def _pick(self, results: List[Dict], expected_kingdom: Optional[str],
               require_genus: Optional[str] = None, expected_rank: Optional[str] = None,
-              query: Optional[str] = None, max_edits: Optional[int] = None) -> Optional[Dict]:
+              query: Optional[str] = None, max_edits: Optional[int] = None,
+              require_family: Optional[str] = None) -> Optional[Dict]:
         """Filter exact/fuzzy results and return the best remaining candidate.
 
         Guards, applied in order: kingdom (homonyms), genus (typo noise), the rank of the
@@ -256,6 +257,10 @@ class TaxonomyMatcher:
             cand = [r for r in cand if any(
                 c.get("rank") == "genus" and (c.get("name", "").lower() == require_genus.lower())
                 for c in r.get("classification", []))]
+        if require_family:
+            cand = [r for r in cand if any(
+                c.get("rank") == "family" and (c.get("name", "").lower() == require_family.lower())
+                for c in r.get("classification", []))]
         if expected_rank:
             # Reject only a KNOWN mismatch. A rank we do not map (subspecies, variety) is
             # kept: its classification still gives usable higher ranks. This is the guard
@@ -269,6 +274,20 @@ class TaxonomyMatcher:
             return None
         accepted = [r for r in cand if r.get("usage", {}).get("status") == "accepted"]
         return accepted[0] if accepted else cand[0]
+
+    @staticmethod
+    def _binomial_agrees(species: Optional[str], genus: Optional[str]) -> bool:
+        """False when the species' own genus token contradicts the genus CoL resolved.
+
+        Stops the source's binomial being written under a different genus: "Rusula azurea"
+        must not land under genus "Russula" when only the genus was corrected, and
+        "Carangoides ferdau" must not land under genus "Ferdauia" when CoL moved the
+        species. A species or genus we cannot compare is accepted.
+        """
+        if not species or not genus:
+            return True
+        parts = species.strip().split()
+        return bool(parts) and parts[0].lower() == genus.strip().lower()
 
     @staticmethod
     def _matched_name(result: Dict) -> str:
@@ -341,13 +360,33 @@ class TaxonomyMatcher:
                     continue
                 hit = self._pick(self.api_client.search(q, "EXACT"), exp_kingdom,
                                  expected_rank=lvl)
-                if hit is None and lvl in ("species", "genus"):
-                    # typo fallback: fuzzy, constrained to the same genus to avoid noise,
-                    # to the queried rank, and to a near miss rather than any suggestion.
+                if hit is None and lvl == "species":
+                    # Typo in the epithet: the genus is trusted here, so it is the
+                    # tightest constraint available.
                     hit = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
                                      require_genus=cleaned.get("genus"),
                                      expected_rank=lvl, query=q,
                                      max_edits=self.MAX_FUZZY_EDITS)
+                elif hit is None and lvl == "genus":
+                    # Typo in the GENUS. It cannot be its own constraint: requiring the raw
+                    # genus is exactly what made this case unreachable, so a misspelled
+                    # genus was never corrected (reported by Edi Prifti). Key the fallback
+                    # on the family instead and let the edit distance filter.
+                    hit = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
+                                     require_family=cleaned.get("family"),
+                                     expected_rank=lvl, query=q,
+                                     max_edits=self.MAX_FUZZY_EDITS)
+                    fixed = self._resolve(hit).get("genus") if hit is not None else None
+                    if fixed and cleaned.get("species") and fixed.lower() != q.lower():
+                        # A corrected genus makes the source's binomial stale. Retry the
+                        # species against the corrected genus: that recovers the whole
+                        # binomial instead of leaving the epithet behind.
+                        deeper = self._pick(
+                            self.api_client.search(cleaned["species"], "FUZZY"), exp_kingdom,
+                            require_genus=fixed, expected_rank="species",
+                            query=cleaned["species"], max_edits=self.MAX_FUZZY_EDITS)
+                        if deeper is not None:
+                            hit, lvl = deeper, "species"
                 if hit is not None:
                     tax = self._resolve(hit)
                     # Keep the original ranks MORE SPECIFIC than the one that matched, and
@@ -359,8 +398,11 @@ class TaxonomyMatcher:
                     # video, 40 of 102 shared species affected). A rank CoL leaves
                     # unresolved must stay empty.
                     for r in self.LEVELS[:self.LEVELS.index(lvl)]:
-                        if cleaned.get(r) and r not in tax:
-                            tax[r] = cleaned[r]
+                        if not cleaned.get(r) or r in tax:
+                            continue
+                        if r == "species" and not self._binomial_agrees(cleaned[r], tax.get("genus")):
+                            continue
+                        tax[r] = cleaned[r]
                     return MatchResult(original_tax_id=taxonomy.tax_id, col_taxonomy=tax,
                                        col_id=self._accepted_id(hit.get("usage", {})),
                                        success=bool(tax))
