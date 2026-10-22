@@ -72,8 +72,13 @@ databases:
   # Expected FASTA header format (taxonomy embedded; missing ranks allowed):
   #   >ID;barcode=ITS;kingdom=Fungi;phylum=Basidiomycota;class=Agaricomycetes;order=Russulales;family=Russulaceae;genus=Russula;species=Russula_abietina
   # Use "path" for a single file, or "files" for several. See docs/personal-database.md.
-  personal:
-    path: "resources/PERSONAL/personal_test.fasta"
+  # DISABLED 2026-08-16: personal_test.fasta holds 1,971 SIMULATED reads (headers carry
+  # "read identity=..%") over only 21 species, mostly Carex. ITSx expanded them to 10,929
+  # rows in the full run -- test data inside a production database. It was also the source
+  # with the LOWEST SATIVA modification rate (8.04% vs 24.45% for CALeDNA_FITS), so it
+  # flattered the global statistics. Re-enable only with a real personal dataset.
+  personal: {}
+  #  path: "resources/PERSONAL/personal_test.fasta"
 
 
 # Logging
@@ -183,10 +188,10 @@ msa:
                                 # diluted they miss ~90% of reads; at 10% (~1000 cols) nhmmer
                                 # recognises ~77%.
     bucket_mode: upp            # upp = many small profiles, the granularity UPP actually uses.
-                                # Measured on the real ITS1 (1.4M seqs, same backbone, same queries):
-                                # 4 clade-level HMMs assign 20.4% of reads, 108 UPP-style ones 72.8%.
-                                # One HMM cannot model 6781 fungal genera. `clade` keeps the old
-                                # one-HMM-per-rank behaviour (kept only for comparison).
+                                # Measured on the real ITS1 (1.4M seqs, same backbone, same 10k
+                                # queries): 4 clade-level HMMs assign 20.4% of reads, 108
+                                # UPP-style ones assign 72.8%. One profile cannot model 6781
+                                # fungal genera. `clade` keeps the old behaviour, for comparison.
     subset_size: 10             # backbone rows per profile, cut inside (kingdom,phylum,order).
                                 # Profile COMPACTNESS is the lever, not profile count nor backbone
                                 # size. Measured on the real ITS2 (1.4M seqs, 10k queries): at a
@@ -195,8 +200,8 @@ msa:
                                 # 69.1%, and 5000:25 (290 profiles) does WORSE than 1300:10 (177),
                                 # so what matters is how tight each profile is. This is UPP's own
                                 # design: a small backbone split into many small profiles.
-    bucket_rank: kingdom        # clade mode only
-    min_bucket: 20              # clade mode only
+    bucket_rank: kingdom        # one HMM per clade + a GLOBAL fallback
+    min_bucket: 20
     recover_unassigned: true    # mmseqs rescue for the short reads nhmmer misses (+2184 of
                                 # 7060 on the sim point, median length 166 bp vs 457)
     recover_min_id: 0.75
@@ -251,7 +256,11 @@ msa:
 sativa:
   output_dir: "results/SATIVA"
   sativa_script_path: "workflow/scripts/Sativa/sativa/sativa.py"
-  timeout_seconds: 21600
+  # 6h (21600) was too tight: on 02/09/2026, 48 tasks of ~20k seqs blew past it and were
+  # written as status=timeout, i.e. permanent holes Snakemake never retries. Same tasks
+  # finish in ~0.4h when the node is healthy; the overruns all land in the nightly stall
+  # window (~19h-12h). 12h absorbs that stall instead of turning it into missing data.
+  timeout_seconds: 43200
   max_seq_count: 20000
   max_alignment_length: 5000
   sativa_mode: "ultrafast"
