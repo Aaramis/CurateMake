@@ -14,6 +14,7 @@ cd "$(cd "$(dirname "$0")/../.." && pwd)"
 
 TESTS=(
   workflow/scripts/test_col_taxonomic_matcher.py
+  workflow/scripts/test_sativa_taxonomy_report.py
   workflow/scripts/utils/test_retry_policy.py
   workflow/scripts/utils/test_taxonomy_normalize.py
   workflow/scripts/Sativa/test_auto_sativa.py

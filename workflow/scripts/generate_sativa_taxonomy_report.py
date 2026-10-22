@@ -319,7 +319,7 @@ def _sequence_map(stream, source_map, barcodes):
     return seq_map
 
 
-def _read_seq_tax(stream, backbone: str, on_rows):
+def _read_seq_tax(stream, backbone: str, on_rows, engine=None):
     """Walk seq_tax for one backbone over the table's own hash space.
 
     The right number of slices is not knowable up front: it depends on table size,
@@ -327,7 +327,25 @@ def _read_seq_tax(stream, backbone: str, on_rows):
     full run. So size the first pass from an actual row count, then let failures
     subdivide -- a slice the backend refuses is halved and retried, so only the
     parts that actually fail get split. On a healthy cluster this is one query.
+
+    On SQLite there is neither yb_hash_code nor the per-RPC deadline that makes the
+    slicing necessary, so it reads in one pass. deduplicate_sequences, prepare_msa,
+    reconcile_barcodes and reannotate_barcodes all already split this way; this function
+    was the only one that did not, which is why the report rule was the last step of every
+    SQLite run and failed there with "no such function: yb_hash_code".
+
+    `engine` defaults to None, in which case the sliced path is taken exactly as before:
+    the PostgreSQL/YugabyteDB behaviour is unchanged in every respect.
     """
+    if engine is not None and engine.dialect.name != "postgresql":
+        rows = stream(select(SeqTax.seq_id, SeqTax.tax_id)
+                      .where(SeqTax.backbone == backbone),
+                      f"seq_tax/{backbone}/all")
+        on_rows(rows)
+        logger.info("seq_tax/%s: %s rows in one pass (%s backend, no hash slicing)",
+                    backbone, len(rows), engine.dialect.name)
+        return
+
     total = stream(select(func.count()).select_from(SeqTax)
                    .where(SeqTax.backbone == backbone), f"count/{backbone}")[0][0]
     slices = max(1, -(-total // TARGET_ROWS_PER_SLICE))
@@ -400,7 +418,7 @@ def query_and_prepare_data(engine, backbone_filter: str, parent_seq_id_null: boo
                 continue
             counts[(source_name, barcode) + ranks] += 1
 
-    _read_seq_tax(stream, backbone_filter, fold)
+    _read_seq_tax(stream, backbone_filter, fold, engine)
 
     if not counts:
         logger.warning(f"No sequences found for backbone={backbone_filter}")
