@@ -10,14 +10,12 @@ dependencies:
   - sqlalchemy=2.0
   - psycopg2=2.9
   - numpy
-  - ete3
-  # EPA-ng: leave-one-out placement engine (replaces the default RAxML -f O,
-  # see workflow/scripts/Sativa/sativa/README_MODIFICATIONS.md).
-  - epa-ng=0.3.8
-  # NOTE: RAxML is NOT installed here. SATIVA invokes the RAxML 8.2.3 binaries
-  # shipped in its own bundle (workflow/scripts/Sativa/sativa/raxml/, via
-  # run_raxml.sh), for the reference-tree build (mfresolv) and the final EPA
-  # confirmation step; no environment RAxML is needed.
+  # Neither ete3 nor epa-ng is declared any more. Both existed for the SATIVA copy that
+  # used to live in this repository; the packaged tool brings its own placement engine and
+  # RAxML in envs/sativa_epang.yaml, and nothing in our own scripts imports ete3. Dropping
+  # it also drops Qt, which it pulled in at 141 MB and which a pipeline with no GUI never
+  # needed -- and which is what broke the first run after the migration, through a
+  # corrupted qt-main entry in the package cache.
   # integrate_sativa.py imports col_taxonomic_matcher, which imports requests at
   # module level. It only ever resolved because `script:` rules inherit the
   # PYTHONPATH of the environment Snakemake itself runs in -- a pure-Python package
