@@ -17,11 +17,18 @@ jobs:
         with:
           python-version: '3.11'
 
-      # The only third-party modules the test files reach, through the matcher and
-      # db_manager. Deliberately not the full conda environments: those take minutes to
-      # solve and nothing here needs ITSx, MAFFT, HMMER or mmseqs2.
+      # The third-party modules the test files reach, directly or through the modules they
+      # import: requests and sqlalchemy for the matcher and db_manager, and pandas, numpy,
+      # plotly, pyyaml and python-dotenv for the taxonomy report. Deliberately not the full
+      # conda environments: those take minutes to solve and nothing here needs ITSx, MAFFT,
+      # HMMER or mmseqs2.
+      #
+      # Keep this in step with the imports. A test that cannot import its module prints no
+      # result line and the run fails, which is how the missing pyyaml was caught.
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip requests sqlalchemy
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests sqlalchemy pandas numpy plotly pyyaml python-dotenv
 
       - name: Run the test suite
         run: bash workflow/scripts/run_tests.sh python
