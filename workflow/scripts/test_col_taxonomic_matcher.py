@@ -187,5 +187,66 @@ check("la garde laisse passer ce qu elle ne peut pas comparer",
       and col.TaxonomyMatcher._binomial_agrees(None, "Russula"))
 
 
+print("\nMarqueurs d absence: le piege de la sous-chaine")
+
+# Historical bug (fixed in the August rewrite, locked in here): the placeholder test was
+# a SUBSTRING test against 'na', so every name containing those two letters was nulled.
+# For ITS, Cortinarius alone is a large share of the data.
+for name in ("Cortinarius", "Pinaceae", "Gentianaceae", "Solanaceae", "Ranunculaceae",
+             "Anaptychia", "Nannizzia", "Hypomyces chrysospermus"):
+    check(f"{name!r} n est pas pris pour une valeur absente",
+          col.TaxonomyMatcher._clean(name) == name)
+
+for blank in ("", "   ", "NA", "na", "N/A", "null", "None", "unknown", "UNCLASSIFIED",
+              "unidentified"):
+    check(f"{blank!r} est bien traite comme absent",
+          col.TaxonomyMatcher._clean(blank) is None)
+
+check("une citation d auteur est retiree",
+      col.TaxonomyMatcher._clean("Russula (Schaeff.) Pers.") == "Russula")
+check("les tirets bas redeviennent des espaces",
+      col.TaxonomyMatcher._clean("Russula_azurea") == "Russula azurea")
+
+
+print("\nNoms provisoires")
+
+for prov in ("Russula sp.", "Russula sp", "Russula cf. azurea", "Russula aff. azurea",
+             "uncultured fungus", "unidentified Basidiomycota", "Russula F123",
+             "environmental sample"):
+    check(f"{prov!r} est refuse comme nom exploitable",
+          col.TaxonomyMatcher._is_provisional(prov))
+
+for real in ("Russula azurea", "Cortinarius", "Thalassoma hardwicke"):
+    check(f"{real!r} reste exploitable", not col.TaxonomyMatcher._is_provisional(real))
+
+
+print("\nSynonymes resolus vers le nom accepte")
+
+# CoL's EXACT search returns a synonym's accepted usage in the same response. The
+# January matcher recorded the synonym instead, which is the opposite of harmonising.
+m = col.TaxonomyMatcher(FakeClient(exact={"Russula olivascens": [
+    hit("Russula olivascens", "species", RUS, status="synonym",
+        accepted_name="Russula alutacea")]}))
+out = m.match_taxonomy(record(kingdom="Fungi", genus="Russula", species="Russula olivascens"))
+check("un synonyme est remplace par le nom accepte",
+      out.col_taxonomy.get("species") == "Russula alutacea")
+check("l identifiant conserve est celui de l usage accepte", out.col_id == "u2")
+
+
+print("\nHomonymes entre regnes")
+
+# Morus is a plant (mulberry) and a bird (gannet). The 2026-07-27 probe showed a bare
+# search returning either one; the kingdom of the source has to decide.
+MORUS = [hit("Morus", "genus", lineage(("kingdom", "Animalia"), ("family", "Sulidae"))),
+         hit("Morus", "genus", lineage(("kingdom", "Plantae"), ("family", "Moraceae")))]
+m = col.TaxonomyMatcher(FakeClient(exact={"Morus": MORUS}))
+plant = m.match_taxonomy(record(kingdom="Plantae", genus="Morus"))
+bird = m.match_taxonomy(record(kingdom="Animalia", genus="Morus"))
+check("le Morus vegetal est choisi pour une source Plantae",
+      plant.col_taxonomy.get("family") == "Moraceae")
+check("le Morus oiseau est choisi pour une source Animalia",
+      bird.col_taxonomy.get("family") == "Sulidae")
+
+
 print(f"\n{'PASSED' if failed == 0 else 'FAILED'} {passed}/{passed + failed}")
 sys.exit(0 if failed == 0 else 1)

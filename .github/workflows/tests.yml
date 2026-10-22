@@ -1,0 +1,27 @@
+# Unit tests. They are offline by design, so this needs no secrets, no database and no
+# network: every CoL response in the taxonomic tests comes from a fake client.
+name: tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The only third-party modules the test files reach, through the matcher and
+      # db_manager. Deliberately not the full conda environments: those take minutes to
+      # solve and nothing here needs ITSx, MAFFT, HMMER or mmseqs2.
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip requests sqlalchemy
+
+      - name: Run the test suite
+        run: bash workflow/scripts/run_tests.sh python
