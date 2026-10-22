@@ -166,6 +166,28 @@ _RANK_KEY = {"domain": "kingdom", "kingdom": "kingdom", "phylum": "phylum",
              "genus": "genus", "species": "species"}
 
 
+def _edit_distance(a: Optional[str], b: Optional[str], cap: int = 3) -> int:
+    """Levenshtein distance between two names, short-circuited past `cap`.
+
+    Dependency-free on purpose: this is the only place in the pipeline that needs a
+    string metric, and the per-rule conda environments are already large.
+    """
+    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > cap:
+            return cap + 1
+        prev = cur
+    return prev[-1]
+
+
 class TaxonomyMatcher:
     """Taxonomy matching against CoL using the EXACT-search strategy.
 
@@ -177,6 +199,8 @@ class TaxonomyMatcher:
     """
 
     LEVELS = ["species", "genus", "family", "order_", "class_", "phylum", "kingdom"]
+    # Maximum edit distance tolerated between a FUZZY query and the name CoL matched.
+    MAX_FUZZY_EDITS = 2
 
     def __init__(self, api_client: CoLAPIClient):
         self.api_client = api_client
@@ -213,9 +237,15 @@ class TaxonomyMatcher:
         return None
 
     def _pick(self, results: List[Dict], expected_kingdom: Optional[str],
-              require_genus: Optional[str] = None) -> Optional[Dict]:
-        """Filter exact/fuzzy results by kingdom (homonyms) and optional genus (typo guard),
-        preferring an accepted usage."""
+              require_genus: Optional[str] = None, expected_rank: Optional[str] = None,
+              query: Optional[str] = None, max_edits: Optional[int] = None) -> Optional[Dict]:
+        """Filter exact/fuzzy results and return the best remaining candidate.
+
+        Guards, applied in order: kingdom (homonyms), genus (typo noise), the rank of the
+        result against the rank that was queried, and, for a FUZZY query only, the edit
+        distance between what was asked and what CoL matched. An accepted usage wins over
+        a synonym among the survivors.
+        """
         cand = results
         if expected_kingdom:
             kf = [r for r in cand
@@ -226,10 +256,46 @@ class TaxonomyMatcher:
             cand = [r for r in cand if any(
                 c.get("rank") == "genus" and (c.get("name", "").lower() == require_genus.lower())
                 for c in r.get("classification", []))]
+        if expected_rank:
+            # Reject only a KNOWN mismatch. A rank we do not map (subspecies, variety) is
+            # kept: its classification still gives usable higher ranks. This is the guard
+            # against a misspelling resolving to its kingdom and being accepted as a match.
+            cand = [r for r in cand
+                    if self._result_rank_key(r) in (None, expected_rank)]
+        if max_edits is not None and query:
+            cand = [r for r in cand
+                    if _edit_distance(query, self._matched_name(r), max_edits) <= max_edits]
         if not cand:
             return None
         accepted = [r for r in cand if r.get("usage", {}).get("status") == "accepted"]
         return accepted[0] if accepted else cand[0]
+
+    @staticmethod
+    def _matched_name(result: Dict) -> str:
+        """The name CoL actually matched: for a synonym its own name, not the accepted one.
+
+        This is what a FUZZY query is scored against, since the misspelling was written
+        against the name as published, not against its accepted replacement.
+        """
+        name = (result.get("usage", {}) or {}).get("name")
+        return (name or {}).get("scientificName", "") if isinstance(name, dict) else ""
+
+    @staticmethod
+    def _result_rank_key(result: Dict) -> Optional[str]:
+        """The rank key _resolve will file this result's deepest name under.
+
+        None when CoL reports a rank outside our seven (subspecies, variety, ...): such a
+        result is NOT rejected, because its classification still carries usable higher
+        ranks.
+        """
+        usage = result.get("usage", {}) or {}
+        if usage.get("status") == "synonym":
+            name = (usage.get("accepted") or {}).get("name")
+        else:
+            name = usage.get("name")
+        if not isinstance(name, dict):
+            return None
+        return _RANK_KEY.get((name.get("rank") or "").lower())
 
     @staticmethod
     def _accepted_id(usage: Dict) -> Optional[str]:
@@ -273,15 +339,26 @@ class TaxonomyMatcher:
                 q = cleaned.get(lvl)
                 if not q or self._is_provisional(q):
                     continue
-                hit = self._pick(self.api_client.search(q, "EXACT"), exp_kingdom)
+                hit = self._pick(self.api_client.search(q, "EXACT"), exp_kingdom,
+                                 expected_rank=lvl)
                 if hit is None and lvl in ("species", "genus"):
-                    # typo fallback: fuzzy, but constrained to the same genus to avoid noise
+                    # typo fallback: fuzzy, constrained to the same genus to avoid noise,
+                    # to the queried rank, and to a near miss rather than any suggestion.
                     hit = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
-                                     require_genus=cleaned.get("genus"))
+                                     require_genus=cleaned.get("genus"),
+                                     expected_rank=lvl, query=q,
+                                     max_edits=self.MAX_FUZZY_EDITS)
                 if hit is not None:
                     tax = self._resolve(hit)
-                    # keep original, more-specific ranks CoL did not return
-                    for r in self.LEVELS:
+                    # Keep the original ranks MORE SPECIFIC than the one that matched, and
+                    # only those. Filling a rank ABOVE the match from the source is what
+                    # makes the harmonised layer disagree with itself: for an incertae
+                    # sedis family CoL returns no order, and the source's order used to be
+                    # reinstated, so the same taxon came out as Perciformes from one source
+                    # and Labriformes from another (reported by Edi Prifti on fish eDNA vs
+                    # video, 40 of 102 shared species affected). A rank CoL leaves
+                    # unresolved must stay empty.
+                    for r in self.LEVELS[:self.LEVELS.index(lvl)]:
                         if cleaned.get(r) and r not in tax:
                             tax[r] = cleaned[r]
                     return MatchResult(original_tax_id=taxonomy.tax_id, col_taxonomy=tax,
