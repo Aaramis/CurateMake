@@ -51,6 +51,10 @@ class MatchResult:
     col_id: Optional[str] = None  # accepted CoL name-usage id (for reproducibility)
     success: bool = False
     error_message: Optional[str] = None
+    # Short reason when the match is defensible but not certain. It becomes
+    # seq_tax.status = 'Check' instead of 'Correct', so an ambiguous harmonisation is
+    # visible in the database rather than indistinguishable from a clean one.
+    review: Optional[str] = None
 
 class CoLAPIClient:
     """ChecklistBank (Catalogue of Life) client using the `nameusage/search` endpoint.
@@ -236,10 +240,27 @@ class TaxonomyMatcher:
                 return c.get("name")
         return None
 
+    @staticmethod
+    def _has_rank(result: Dict, rank: str, value: str) -> bool:
+        return any(c.get("rank") == rank and (c.get("name", "") or "").lower() == value.lower()
+                   for c in result.get("classification", []))
+
+    def _narrow(self, cand: List[Dict], rank: str, value: Optional[str]) -> List[Dict]:
+        """Soft preference: keep the candidates matching `value` at `rank`, unless none do.
+
+        Soft on purpose. A hard filter on a rank the source may have wrong would turn a
+        usable match into no match at all; a preference only breaks ties.
+        """
+        if not value:
+            return cand
+        kept = [r for r in cand if self._has_rank(r, rank, value)]
+        return kept or cand
+
     def _pick(self, results: List[Dict], expected_kingdom: Optional[str],
               require_genus: Optional[str] = None, expected_rank: Optional[str] = None,
               query: Optional[str] = None, max_edits: Optional[int] = None,
-              require_family: Optional[str] = None) -> Optional[Dict]:
+              require_family: Optional[str] = None, prefer_family: Optional[str] = None,
+              prefer_order: Optional[str] = None) -> Tuple[Optional[Dict], Optional[str]]:
         """Filter exact/fuzzy results and return the best remaining candidate.
 
         Guards, applied in order: kingdom (homonyms), genus (typo noise), the rank of the
@@ -253,6 +274,13 @@ class TaxonomyMatcher:
                   if (self._kingdom_of(r.get("classification")) or "").lower() == expected_kingdom.lower()]
             if kf:
                 cand = kf
+        # Within one kingdom the kingdom cannot break a tie, so fall back on the family and
+        # then the order the source declares. Reported by Edi Prifti: a Chromis given with
+        # family Cichlidae was still attached to Pomacentridae, because the Pomacentridae
+        # usage is "accepted" while the cichlid one is only provisionally accepted, and
+        # nothing else was consulted.
+        cand = self._narrow(cand, "family", prefer_family)
+        cand = self._narrow(cand, "order", prefer_order)
         if require_genus:
             cand = [r for r in cand if any(
                 c.get("rank") == "genus" and (c.get("name", "").lower() == require_genus.lower())
@@ -271,9 +299,43 @@ class TaxonomyMatcher:
             cand = [r for r in cand
                     if _edit_distance(query, self._matched_name(r), max_edits) <= max_edits]
         if not cand:
-            return None
+            return None, None
         accepted = [r for r in cand if r.get("usage", {}).get("status") == "accepted"]
-        return accepted[0] if accepted else cand[0]
+        chosen = accepted[0] if accepted else cand[0]
+
+        note = None
+        # Several survivors that disagree on the name they resolve to OR on where they sit:
+        # the pick is then a guess, so say so rather than letting it look settled. The
+        # lineage half matters for homonyms inside one kingdom, where every candidate
+        # carries the SAME name and only the family tells them apart (Chromis is a
+        # damselfish and a cichlid).
+        def _fam(r):
+            for c in r.get("classification", []):
+                if c.get("rank") == "family":
+                    return c.get("name")
+            return None
+
+        signatures = {(self._resolved_name(r), _fam(r)) for r in cand}
+        if len(signatures) > 1:
+            shown = sorted(f"{n or '?'} ({f or 'famille inconnue'})" for n, f in signatures)
+            note = f"ambiguous: {len(cand)} candidates -> {shown[:4]}"
+        else:
+            usage = chosen.get("usage", {}) or {}
+            # Robust to both shapes CoL uses for a synonym it cannot resolve: no `accepted`
+            # block at all, or one whose name carries no scientificName.
+            if usage.get("status") == "synonym" and not self._resolved_name(chosen):
+                # A synonym CoL does not resolve. Falling back on the synonym's own name is
+                # the only option, but it is exactly what harmonisation is supposed to fix.
+                note = "unresolved synonym: CoL gives no accepted name"
+        return chosen, note
+
+    @staticmethod
+    def _resolved_name(result: Dict) -> Optional[str]:
+        """The name this result would contribute, synonyms resolved."""
+        usage = result.get("usage", {}) or {}
+        name = ((usage.get("accepted") or {}).get("name") if usage.get("status") == "synonym"
+                else usage.get("name"))
+        return (name or {}).get("scientificName") if isinstance(name, dict) else None
 
     @staticmethod
     def _binomial_agrees(species: Optional[str], genus: Optional[str]) -> bool:
@@ -358,35 +420,41 @@ class TaxonomyMatcher:
                 q = cleaned.get(lvl)
                 if not q or self._is_provisional(q):
                     continue
-                hit = self._pick(self.api_client.search(q, "EXACT"), exp_kingdom,
-                                 expected_rank=lvl)
+                hit, note = self._pick(self.api_client.search(q, "EXACT"), exp_kingdom,
+                                        expected_rank=lvl,
+                                        prefer_family=cleaned.get("family"),
+                                        prefer_order=cleaned.get("order_"))
                 if hit is None and lvl == "species":
                     # Typo in the epithet: the genus is trusted here, so it is the
                     # tightest constraint available.
-                    hit = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
-                                     require_genus=cleaned.get("genus"),
-                                     expected_rank=lvl, query=q,
-                                     max_edits=self.MAX_FUZZY_EDITS)
+                    hit, note = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
+                                           require_genus=cleaned.get("genus"),
+                                           expected_rank=lvl, query=q,
+                                           max_edits=self.MAX_FUZZY_EDITS,
+                                           prefer_family=cleaned.get("family"),
+                                           prefer_order=cleaned.get("order_"))
                 elif hit is None and lvl == "genus":
                     # Typo in the GENUS. It cannot be its own constraint: requiring the raw
                     # genus is exactly what made this case unreachable, so a misspelled
                     # genus was never corrected (reported by Edi Prifti). Key the fallback
                     # on the family instead and let the edit distance filter.
-                    hit = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
-                                     require_family=cleaned.get("family"),
-                                     expected_rank=lvl, query=q,
-                                     max_edits=self.MAX_FUZZY_EDITS)
+                    hit, note = self._pick(self.api_client.search(q, "FUZZY"), exp_kingdom,
+                                           require_family=cleaned.get("family"),
+                                           expected_rank=lvl, query=q,
+                                           max_edits=self.MAX_FUZZY_EDITS,
+                                           prefer_order=cleaned.get("order_"))
                     fixed = self._resolve(hit).get("genus") if hit is not None else None
                     if fixed and cleaned.get("species") and fixed.lower() != q.lower():
                         # A corrected genus makes the source's binomial stale. Retry the
                         # species against the corrected genus: that recovers the whole
                         # binomial instead of leaving the epithet behind.
-                        deeper = self._pick(
+                        deeper, deeper_note = self._pick(
                             self.api_client.search(cleaned["species"], "FUZZY"), exp_kingdom,
                             require_genus=fixed, expected_rank="species",
-                            query=cleaned["species"], max_edits=self.MAX_FUZZY_EDITS)
+                            query=cleaned["species"], max_edits=self.MAX_FUZZY_EDITS,
+                            prefer_family=cleaned.get("family"))
                         if deeper is not None:
-                            hit, lvl = deeper, "species"
+                            hit, lvl, note = deeper, "species", deeper_note
                 if hit is not None:
                     tax = self._resolve(hit)
                     # Keep the original ranks MORE SPECIFIC than the one that matched, and
@@ -403,9 +471,12 @@ class TaxonomyMatcher:
                         if r == "species" and not self._binomial_agrees(cleaned[r], tax.get("genus")):
                             continue
                         tax[r] = cleaned[r]
+                    if note:
+                        logger.warning("tax_id %s: %s (interroge: %r au rang %s)",
+                                       taxonomy.tax_id, note, q, lvl)
                     return MatchResult(original_tax_id=taxonomy.tax_id, col_taxonomy=tax,
                                        col_id=self._accepted_id(hit.get("usage", {})),
-                                       success=bool(tax))
+                                       success=bool(tax), review=note)
 
             return MatchResult(original_tax_id=taxonomy.tax_id, success=False)
 
@@ -556,6 +627,10 @@ class CoLProcessor:
             # Build taxonomy payload once to avoid per-row get_or_create calls
             taxonomy_data = []
             taxonomy_tuple_by_original = {}
+            # Ambiguity travels by original tax_id: the loop that writes seq_tax iterates a
+            # SQLAlchemy result set, not these MatchResults, so it cannot read .review off
+            # the row it is inserting.
+            review_by_original = {r.original_tax_id: r.review for r in successful_matches}
             for result in successful_matches:
                 col_taxonomy = result.col_taxonomy or {}
                 tax_values = {
@@ -614,7 +689,10 @@ class CoLProcessor:
                             'seq_id': seq_id,
                             'tax_id': new_tax_id,
                             'backbone': 'CoL',
-                            'status': 'Correct'
+                            # 'Check' when the harmonisation is defensible but not certain,
+                            # so an ambiguous row is distinguishable from a clean one.
+                            'status': ('Check' if review_by_original.get(original_tax_id)
+                                       else 'Correct')
                         })
 
                 # Bulk insert seq_tax relations

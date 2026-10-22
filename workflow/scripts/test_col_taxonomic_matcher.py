@@ -48,8 +48,11 @@ def lineage(*pairs):
 def hit(name, rank, classification, status="accepted", accepted_name=None):
     usage = {"status": status, "name": {"scientificName": name, "rank": rank}, "id": "u1"}
     if status == "synonym":
-        usage["accepted"] = {"id": "u2",
-                             "name": {"scientificName": accepted_name, "rank": rank}}
+        # An unresolved synonym is modelled as an `accepted` block without a usable name,
+        # which is one of the two shapes CoL returns for one.
+        usage["accepted"] = ({"id": "u2", "name": {"scientificName": accepted_name,
+                                                   "rank": rank}}
+                             if accepted_name else {"id": "u2"})
     return {"usage": usage, "classification": classification}
 
 
@@ -246,6 +249,53 @@ check("le Morus vegetal est choisi pour une source Plantae",
       plant.col_taxonomy.get("family") == "Moraceae")
 check("le Morus oiseau est choisi pour une source Animalia",
       bird.col_taxonomy.get("family") == "Sulidae")
+
+
+print("\nHomonymes a l interieur d un meme regne")
+
+# Chromis is a damselfish (Pomacentridae, accepted) and a cichlid (Cichlidae, only
+# provisionally accepted). The kingdom cannot separate them, so the family the source
+# declares has to. Reported by Edi Prifti on fish data.
+CHROMIS = [
+    hit("Chromis", "genus", lineage(("kingdom", "Animalia"), ("order", "Perciformes"),
+                                    ("family", "Pomacentridae"))),
+    hit("Chromis", "genus", lineage(("kingdom", "Animalia"), ("order", "Cichliformes"),
+                                    ("family", "Cichlidae")), status="provisionally accepted"),
+]
+m = col.TaxonomyMatcher(FakeClient(exact={"Chromis": CHROMIS}))
+out = m.match_taxonomy(record(kingdom="Animalia", family="Cichlidae", genus="Chromis"))
+check("la famille brute depart age l homonyme", out.col_taxonomy.get("family") == "Cichlidae")
+out = m.match_taxonomy(record(kingdom="Animalia", family="Pomacentridae", genus="Chromis"))
+check("et dans l autre sens aussi", out.col_taxonomy.get("family") == "Pomacentridae")
+
+out = m.match_taxonomy(record(kingdom="Animalia", genus="Chromis"))
+check("sans famille, l ambiguite est signalee", bool(out.review))
+check("le signalement nomme les deux lignees",
+      out.review and "Pomacentridae" in out.review and "Cichlidae" in out.review)
+
+# the order alone must be enough when the family is missing
+out = m.match_taxonomy(record(kingdom="Animalia", order_="Cichliformes", genus="Chromis"))
+check("l ordre brut depart age aussi", out.col_taxonomy.get("family") == "Cichlidae")
+
+# a preference must never turn a usable match into no match
+out = m.match_taxonomy(record(kingdom="Animalia", family="Famille_inexistante", genus="Chromis"))
+check("une famille absente de CoL ne fait pas perdre le match", out.success)
+
+
+print("\nSynonymes ambigus")
+
+# A synonym CoL does not resolve: the name has to be kept, but the record must say so.
+UNRES = [hit("Moolgarda", "genus", lineage(("kingdom", "Animalia"), ("family", "Mugilidae")),
+             status="synonym", accepted_name=None)]
+m = col.TaxonomyMatcher(FakeClient(exact={"Moolgarda": UNRES}))
+out = m.match_taxonomy(record(kingdom="Animalia", family="Mugilidae", genus="Moolgarda"))
+check("un synonyme non resolu est signale", bool(out.review))
+check("le motif dit pourquoi", out.review and "synonym" in out.review)
+
+# a clean, resolved match carries no flag at all
+m = col.TaxonomyMatcher(FakeClient(exact={"Russula": [hit("Russula", "genus", RUSACEAE)]}))
+out = m.match_taxonomy(record(kingdom="Fungi", family="Russulaceae", genus="Russula"))
+check("un match propre n est pas signale", out.review is None)
 
 
 print(f"\n{'PASSED' if failed == 0 else 'FAILED'} {passed}/{passed + failed}")
