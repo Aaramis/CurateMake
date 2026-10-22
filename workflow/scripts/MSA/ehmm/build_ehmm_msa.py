@@ -615,15 +615,24 @@ def main():
     # Optional convenience: if these named environments exist, put them on PATH once, so
     # a per-call `conda run` does not cost 1-2 s. Absent ones are skipped and logged, not
     # fatal: under --use-conda the rule's own environment already provides the binaries.
-    for env in {a.tool_env, a.mmseqs_env}:
-        if not env:
-            continue
-        p = subprocess.run(["conda", "run", "-n", env, "printenv", "CONDA_PREFIX"],
-                           capture_output=True, text=True)
-        if p.stdout.strip():
-            os.environ["PATH"] = f"{p.stdout.strip()}/bin{os.pathsep}" + os.environ.get("PATH", "")
-        else:
-            log.info("environnement nomme '%s' absent, on s en passe", env)
+    if shutil.which("conda"):
+        for env in {a.tool_env, a.mmseqs_env}:
+            if not env:
+                continue
+            try:
+                p = subprocess.run(["conda", "run", "-n", env, "printenv", "CONDA_PREFIX"],
+                                   capture_output=True, text=True)
+            except OSError as exc:
+                log.info("conda indisponible (%s), les outils sont pris sur le PATH", exc)
+                break
+            if p.stdout.strip():
+                os.environ["PATH"] = f"{p.stdout.strip()}/bin{os.pathsep}" + os.environ.get("PATH", "")
+            else:
+                log.info("environnement nomme '%s' absent, on s en passe", env)
+    else:
+        # Normal under Snakemake --use-conda, where only the rule environment's bin is on
+        # PATH and the conda launcher itself is not. The tools are already there.
+        log.info("conda n est pas sur le PATH, les outils sont pris tels quels")
 
     seqs, tax = {}, {}
     for sid, s, t in load_barcode(a.full_csv, a.barcode):
