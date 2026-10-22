@@ -10,6 +10,7 @@ dependencies:
   - hmmer=3.4
   - trimal=1.5.1
   - vsearch=2.28.1   # clustering d'homologie au plancher (construction bottom-up)
+  - mmseqs2=15.6f452  # clustering des representants d ossature + repechage des courtes lectures
   - sqlalchemy=2.0
   - psycopg2=2.9
   - matplotlib

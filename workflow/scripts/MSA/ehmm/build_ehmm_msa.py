@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -54,6 +55,25 @@ def run(cmd, stdout=None):
 
 def tool(binary, hmmer_bin):
     return str(Path(hmmer_bin) / binary) if hmmer_bin else binary
+
+
+def mmseqs_cmd(mmseqs_env):
+    """How to invoke mmseqs: directly when it is on PATH, through `conda run` otherwise.
+
+    Under Snakemake --use-conda the rule's own environment provides it (envs/msa.yaml
+    declares mmseqs2), so the plain binary is the normal case. The `conda run` fallback
+    keeps a deployment that relies on a hand-made named environment working. Before this,
+    the named environment was the ONLY path: on any machine without an env literally
+    called "mmseqs" the step died with "Not a conda environment", which is not something
+    a reader of the repository could have guessed, since no env file declared it.
+    """
+    direct = shutil.which("mmseqs")
+    if direct:
+        return [direct]
+    if mmseqs_env:
+        log.warning("mmseqs absent du PATH, repli sur `conda run -n %s`", mmseqs_env)
+        return ["conda", "run", "-n", mmseqs_env, "mmseqs"]
+    raise RuntimeError("mmseqs introuvable sur le PATH et aucun --mmseqs-env fourni")
 
 
 def read_fasta(path):
@@ -112,7 +132,7 @@ def cluster_backbone(seqs, work, target, ident, threads, mmseqs_env):
         for sid, seq in seqs.items():
             f.write(f">{sid}\n{seq}\n")
     pref = work / "lc"
-    run(["conda", "run", "-n", mmseqs_env, "mmseqs", "easy-linclust", fa, pref, work / "lctmp",
+    run(mmseqs_cmd(mmseqs_env) + ["easy-linclust", fa, pref, work / "lctmp",
          "--min-seq-id", ident, "-c", "0.8", "--kmer-per-seq", "300", "--threads", threads, "-v", "1"])
     size = defaultdict(int)
     for line in open(f"{pref}_cluster.tsv"):
@@ -409,7 +429,7 @@ def recover(seqs, rows, best, hmms, work, width, hmmer_bin, mmseqs_env, min_id, 
         for sid, (seq, _bucket) in cross.items():
             f.write(f">x|{sid}\n{seq}\n")
     hits = work / "recover.m8"
-    run(["conda", "run", "-n", mmseqs_env, "mmseqs", "easy-search", q, tgt, hits,
+    run(mmseqs_cmd(mmseqs_env) + ["easy-search", q, tgt, hits,
          work / "rec_tmp", "--search-type", "3", "--min-seq-id", min_id, "-c", min_cov,
          "--cov-mode", "2", "--max-seqs", "3", "--threads", threads, "-v", "1"])
     pick = {}
@@ -588,11 +608,18 @@ def main():
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
 
     # mafft/mmseqs live in a conda env; resolve it onto PATH once (a per-call `conda run` costs 1-2 s)
+    # Optional convenience: if these named environments exist, put them on PATH once, so
+    # a per-call `conda run` does not cost 1-2 s. Absent ones are skipped and logged, not
+    # fatal: under --use-conda the rule's own environment already provides the binaries.
     for env in {a.tool_env, a.mmseqs_env}:
+        if not env:
+            continue
         p = subprocess.run(["conda", "run", "-n", env, "printenv", "CONDA_PREFIX"],
                            capture_output=True, text=True)
         if p.stdout.strip():
             os.environ["PATH"] = f"{p.stdout.strip()}/bin{os.pathsep}" + os.environ.get("PATH", "")
+        else:
+            log.info("environnement nomme '%s' absent, on s en passe", env)
 
     seqs, tax = {}, {}
     for sid, s, t in load_barcode(a.full_csv, a.barcode):
