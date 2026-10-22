@@ -8,7 +8,7 @@ builds curated multiple-sequence alignments (MSAs), validates taxonomic labels
 with SATIVA, and emits fully traceable HTML/JSON reports backed by SQLite or
 PostgreSQL.
 
-[Snakemake](https://snakemake.readthedocs.io) · [Documentation](docs/index.md) · [GPLv3](LICENSE)
+[Snakemake](https://snakemake.readthedocs.io) · [Documentation](docs/index.md) · [Code: GPLv3](LICENSE) · [Data & docs: CC BY-SA 4.0](LICENSE-DATA)
 
 </div>
 
@@ -282,8 +282,20 @@ research on biodiversity with an impact for society and policy.
 
 ## License
 
-Released under the **GNU General Public License v3.0 or later** (see
-[`LICENSE`](LICENSE)).
+CurateMake is **dual-licensed**, consistent with the Zenodo data deposit that
+accompanies the manuscript ([doi.org/10.5281/zenodo.21264079](https://doi.org/10.5281/zenodo.21264079)):
+
+- **Source code and scripts** (`*.py`, `*.sh`, workflow rules, config templates)
+  — **GNU General Public License v3.0 or later** (see [`LICENSE`](LICENSE)).
+- **Documentation and bundled sample data** (`docs/**`, this `README.md`, and the
+  mini source archives under `data/**`) — **Creative Commons Attribution-ShareAlike
+  4.0 International (CC BY-SA 4.0)** (see [`LICENSE-DATA`](LICENSE-DATA)).
+
+CC BY-SA 4.0 (rather than CC BY 4.0) is required because part of the bundled data
+is derived from **BOLD** and **UNITE**, whose public packages are distributed under
+CC BY-SA 4.0; the ShareAlike obligation propagates to this derived material. Any
+redistribution must stay under CC BY-SA 4.0 and credit the original sources
+(**UNITE, BOLD, PLANiTS, CALeDNA**) — see [`LICENSE-DATA`](LICENSE-DATA).
 
 Copyright © 2026 Auguste Gardette (IRD, UMMISCO).
 

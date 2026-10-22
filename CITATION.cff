@@ -20,7 +20,10 @@ authors:
     family-names: Zucker
     orcid: "https://orcid.org/0000-0002-5597-7922"
     affiliation: "UMMISCO, Institut de Recherche pour le Développement (IRD), Sorbonne University, Paris, France"
-license: GPL-3.0-or-later
+# Dual-licensed: source code under GPL-3.0-or-later, data & documentation under CC-BY-SA-4.0
+license:
+  - GPL-3.0-or-later
+  - CC-BY-SA-4.0
 repository-code: "https://github.com/Aaramis/CurateMake"
 url: "https://github.com/Aaramis/CurateMake"
 version: "1.0.0"
