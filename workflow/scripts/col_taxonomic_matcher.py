@@ -290,11 +290,15 @@ class TaxonomyMatcher:
                 c.get("rank") == "family" and (c.get("name", "").lower() == require_family.lower())
                 for c in r.get("classification", []))]
         if expected_rank:
-            # Reject only a KNOWN mismatch. A rank we do not map (subspecies, variety) is
-            # kept: its classification still gives usable higher ranks. This is the guard
-            # against a misspelling resolving to its kingdom and being accepted as a match.
-            cand = [r for r in cand
-                    if self._result_rank_key(r) in (None, expected_rank)]
+            # Prefer the candidates that sit at the rank actually queried. A rank we do not
+            # map (subgenus, subspecies, variety) is kept ONLY when nothing matches exactly,
+            # so a subspecies-only match still works while a subgenus homonym stops
+            # competing with the genus: CoL answers "Centrophorus" with the shark genus AND
+            # the katydid subgenus "Locusta (Centrophorus)", and "Nectamia" with both the
+            # genus and the subgenus "Apogon (Nectamia)" (reported by Edi Prifti on fish).
+            exact = [r for r in cand if self._result_rank_key(r) == expected_rank]
+            cand = exact or [r for r in cand
+                             if self._result_rank_key(r) in (None, expected_rank)]
         if max_edits is not None and query:
             cand = [r for r in cand
                     if _edit_distance(query, self._matched_name(r), max_edits) <= max_edits]
@@ -304,6 +308,40 @@ class TaxonomyMatcher:
         chosen = accepted[0] if accepted else cand[0]
 
         note = None
+        # A synonym is not a competitor: nomenclature has already decided it points
+        # elsewhere. What competes with an accepted usage is another LIVING taxon carrying
+        # the same name, so the flag decision is taken on the living candidates alone.
+        live = [r for r in cand
+                if not self._is_any_synonym((r.get("usage", {}) or {}).get("status"))]
+        if len(live) == 1:
+            settled = (live[0].get("usage", {}) or {}).get("status") == "accepted"
+            if not settled:
+                # A merely PROVISIONAL usage against an ambiguous synonym of the same name
+                # means CoL itself has no settled opinion, so the pick must not look
+                # certain. COL26.10 answers "Moolgarda" exactly that way: a provisionally
+                # accepted genus in Mugilidae and an ambiguous synonym of Crenimugil, with
+                # no accepted usage of the name anywhere. Rule requested by Edi Prifti on
+                # the fish test set.
+                #
+                # Unless the name IS accepted elsewhere in the full response at the same
+                # rank. The name is then nomenclaturally valid and what we faced was a
+                # homonym, which the family and order guards above resolved on purpose. CoL
+                # answers "Chromis" with an accepted damselfish genus (Pomacentridae), a
+                # provisionally accepted cichlid genus and an ambiguous synonym of Tilapia:
+                # a record declaring Cichlidae wants the cichlid, and needs no flag.
+                want_rank = self._result_rank_key(live[0])
+                want_name = (self._matched_name(live[0]) or "").lower()
+                settled = any(
+                    (r.get("usage", {}) or {}).get("status") == "accepted"
+                    and (self._matched_name(r) or "").lower() == want_name
+                    and self._result_rank_key(r) == want_rank
+                    for r in results)
+            if settled:
+                # One living taxon and synonyms around it is not a guess. CoL answers
+                # "Pentacerotidae" with the accepted fish family plus a synonym of the same
+                # name pointing at a sea-star family, and "Cyprinidae" with the carp family
+                # plus one pointing at a bivalve family. Both are settled.
+                return chosen, None
         # Several survivors that disagree on the name they resolve to OR on where they sit:
         # the pick is then a guess, so say so rather than letting it look settled. The
         # lineage half matters for homonyms inside one kingdom, where every candidate
@@ -318,7 +356,17 @@ class TaxonomyMatcher:
         signatures = {(self._resolved_name(r), _fam(r)) for r in cand}
         if len(signatures) > 1:
             shown = sorted(f"{n or '?'} ({f or 'famille inconnue'})" for n, f in signatures)
-            note = f"ambiguous: {len(cand)} candidates -> {shown[:4]}"
+            if not accepted:
+                # Nothing is plainly accepted, so the pick really is a judgement call.
+                # COL26.10 answers "Moolgarda" with a provisionally accepted genus in
+                # Mugilidae and an ambiguous synonym of Crenimugil: either name is
+                # defensible, which is exactly why it must not look settled.
+                statuses = sorted({(r.get("usage", {}) or {}).get("status") or "?"
+                                   for r in cand})
+                note = (f"ambiguous: no accepted usage among {len(cand)} candidates "
+                        f"({', '.join(statuses)}) -> {shown[:4]}")
+            else:
+                note = f"ambiguous: {len(cand)} candidates -> {shown[:4]}"
         else:
             usage = chosen.get("usage", {}) or {}
             # Robust to both shapes CoL uses for a synonym it cannot resolve: no `accepted`
@@ -330,11 +378,31 @@ class TaxonomyMatcher:
         return chosen, note
 
     @staticmethod
-    def _resolved_name(result: Dict) -> Optional[str]:
-        """The name this result would contribute, synonyms resolved."""
+    def _is_any_synonym(status: Optional[str]) -> bool:
+        """True for every CoL status that points at another taxon rather than naming one.
+
+        CoL has "synonym", "ambiguous synonym" and "misapplied name" alongside "accepted"
+        and "provisionally accepted". Only the plain synonym is safe to FOLLOW, which is
+        why _resolve and _accepted_id still test it exactly. But all three have to be SEEN
+        as non-taxa, in two places: an ambiguous synonym must not look like the name it
+        shadows when candidates are compared, and it must not count as a rival living taxon
+        when deciding whether a pick is a guess. COL26.10 answers "Moolgarda" with a
+        provisionally accepted genus and an ambiguous synonym of Crenimugil, both spelled
+        Moolgarda in Mugilidae.
+        """
+        st = (status or "").lower()
+        return "synonym" in st or "misapplied" in st
+
+    @classmethod
+    def _resolved_name(cls, result: Dict) -> Optional[str]:
+        """The name this result points AT, following any flavour of synonym.
+
+        Used only to compare candidates, never to write a taxonomy: an ambiguous synonym
+        is precisely one that must not be followed silently.
+        """
         usage = result.get("usage", {}) or {}
-        name = ((usage.get("accepted") or {}).get("name") if usage.get("status") == "synonym"
-                else usage.get("name"))
+        name = ((usage.get("accepted") or {}).get("name")
+                if cls._is_any_synonym(usage.get("status")) else usage.get("name"))
         return (name or {}).get("scientificName") if isinstance(name, dict) else None
 
     @staticmethod

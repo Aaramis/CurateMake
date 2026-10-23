@@ -47,7 +47,7 @@ def lineage(*pairs):
 
 def hit(name, rank, classification, status="accepted", accepted_name=None):
     usage = {"status": status, "name": {"scientificName": name, "rank": rank}, "id": "u1"}
-    if status == "synonym":
+    if "synonym" in status:
         # An unresolved synonym is modelled as an `accepted` block without a usable name,
         # which is one of the two shapes CoL returns for one.
         usage["accepted"] = ({"id": "u2", "name": {"scientificName": accepted_name,
@@ -296,6 +296,66 @@ check("le motif dit pourquoi", out.review and "synonym" in out.review)
 m = col.TaxonomyMatcher(FakeClient(exact={"Russula": [hit("Russula", "genus", RUSACEAE)]}))
 out = m.match_taxonomy(record(kingdom="Fungi", family="Russulaceae", genus="Russula"))
 check("un match propre n est pas signale", out.review is None)
+
+
+print("\nHomonyme vivant contre synonyme")
+
+# CoL has several synonym statuses, and only the plain one may be followed. All of them
+# have to be RECOGNISED as synonyms, though, or an ambiguous synonym looks like a rival
+# taxon of the same name. Reported by Edi Prifti on the fish test set.
+for st in ("synonym", "ambiguous synonym", "misapplied name"):
+    check(f"{st!r} compte comme un synonyme", col.TaxonomyMatcher._is_any_synonym(st))
+for st in ("accepted", "provisionally accepted", None):
+    check(f"{st!r} ne compte pas comme un synonyme",
+          not col.TaxonomyMatcher._is_any_synonym(st))
+
+# One accepted usage surrounded by synonyms of the same name is settled: nomenclature has
+# decided. CoL answers "Pentacerotidae" with the accepted fish family and a synonym of the
+# same name pointing at a sea-star family.
+PENTA = [hit("Pentacerotidae", "family", lineage(("kingdom", "Animalia"),
+                                                 ("order", "Perciformes"))),
+         hit("Pentacerotidae", "family", lineage(("kingdom", "Animalia")),
+             status="synonym", accepted_name="Stauranderasteridae")]
+m = col.TaxonomyMatcher(FakeClient(exact={"Pentacerotidae": PENTA}))
+out = m.match_taxonomy(record(kingdom="Animalia", family="Pentacerotidae"))
+check("un usage accepte entoure de synonymes n est pas signale", out.review is None)
+check("et c est bien lui qui est retenu",
+      out.col_taxonomy.get("family") == "Pentacerotidae")
+
+# A merely provisional usage against an ambiguous synonym of the same name, with the name
+# accepted NOWHERE: CoL has no settled opinion, so the pick must be flagged. This is
+# COL26.10 on "Moolgarda", and the rule Edi Prifti asked for.
+MOOL = [hit("Moolgarda", "genus", lineage(("kingdom", "Animalia"), ("order", "Mugiliformes"),
+                                          ("family", "Mugilidae")),
+            status="provisionally accepted"),
+        hit("Moolgarda", "genus", lineage(("kingdom", "Animalia"), ("order", "Mugiliformes"),
+                                          ("family", "Mugilidae")),
+            status="ambiguous synonym", accepted_name="Crenimugil")]
+m = col.TaxonomyMatcher(FakeClient(exact={"Moolgarda": MOOL}))
+out = m.match_taxonomy(record(kingdom="Animalia", family="Mugilidae", genus="Moolgarda"))
+check("provisoire + synonyme ambigu, nom accepte nulle part : signale", bool(out.review))
+check("le motif dit qu aucun usage n est accepte",
+      out.review and "no accepted usage" in out.review)
+check("le nom provisoire est quand meme retenu",
+      out.col_taxonomy.get("genus") == "Moolgarda")
+
+# Same shape, but the name IS accepted elsewhere at the same rank: it is a homonym, and
+# the family of the source resolves it. COL26.10 on "Chromis", given family Cichlidae.
+CHROM = [hit("Chromis", "genus", lineage(("kingdom", "Animalia"), ("order", "Perciformes"),
+                                         ("family", "Pomacentridae"))),
+         hit("Chromis", "genus", lineage(("kingdom", "Animalia"), ("order", "Cichliformes"),
+                                         ("family", "Cichlidae")),
+             status="provisionally accepted"),
+         hit("Chromis", "genus", lineage(("kingdom", "Animalia"), ("order", "Cichliformes"),
+                                         ("family", "Cichlidae")),
+             status="ambiguous synonym", accepted_name="Tilapia")]
+m = col.TaxonomyMatcher(FakeClient(exact={"Chromis": CHROM}))
+out = m.match_taxonomy(record(kingdom="Animalia", family="Cichlidae", genus="Chromis"))
+check("le meme cas, mais nom accepte ailleurs : pas signale", out.review is None)
+check("et la famille brute a bien tranche", out.col_taxonomy.get("family") == "Cichlidae")
+out = m.match_taxonomy(record(kingdom="Animalia", family="Pomacentridae", genus="Chromis"))
+check("et l autre branche reste accessible",
+      out.col_taxonomy.get("family") == "Pomacentridae" and out.review is None)
 
 
 print(f"\n{'PASSED' if failed == 0 else 'FAILED'} {passed}/{passed + failed}")
