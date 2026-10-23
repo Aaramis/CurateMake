@@ -4,8 +4,13 @@
 The test set is 1,439 marine-fish records plus 10 named edge cases, with the taxonomy
 expected on COL26.10 (ChecklistBank dataset 316595, DOI 10.48580/dgzh4). Every CoL
 response the matcher needs was recorded during one live run and is replayed from
-tests/fixtures/fish_testset/col_cache.json.gz, so this touches no network and cannot drift
-with a CoL release. Re-record it only when the pinned release changes.
+tests/fixtures/fish_testset/, so this touches no network and cannot drift with a CoL
+release. Re-record it only when the pinned release changes.
+
+The test set was contributed by Edi Prifti and is NOT redistributed here: the fixture
+directory is absent unless you have been given the files, and this test then skips. The
+rules it guards are also covered on small built-in fixtures in
+test_col_taxonomic_matcher.py, which always run.
 
 Expected values may list alternatives separated by "|" when either answer is defensible,
 and "(or genus only)" means leaving the finer rank empty is also correct.
@@ -73,6 +78,11 @@ def observed(result):
     got["status"] = "Check" if result.review else "Correct"
     return got
 
+
+NEEDED = ("col_cache.json.gz", "raw_records.tsv", "expected.tsv", "edge_cases.tsv")
+if not all((DATA / f).exists() for f in NEEDED):
+    print("SKIPPED: the contributed fish test set is not present in %s" % DATA)
+    sys.exit(0)
 
 with gzip.open(DATA / "col_cache.json.gz", "rt", encoding="utf-8") as fh:
     client = RecordedCoL(json.load(fh))

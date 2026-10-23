@@ -28,7 +28,7 @@ TESTS=(
 rc=0
 for t in "${TESTS[@]}"; do
   out="$("$PY" "$t" 2>&1)"; code=$?
-  line="$(printf '%s\n' "$out" | grep -E '^PASSED|^FAILED' | tail -1)"
+  line="$(printf '%s\n' "$out" | grep -E '^PASSED|^FAILED|^SKIPPED' | tail -1)"
   printf '%-44s %s\n' "$(basename "$t")" "${line:-aucune ligne de resultat}"
   if [ "$code" -ne 0 ]; then
     rc=1

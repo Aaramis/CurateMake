@@ -137,3 +137,8 @@ resources/**
 !resources/PERSONAL/personal_test.fasta
 .attic/
 .git-worktrees/
+
+# Contributed test data is kept out of this public repository until its author
+# agrees to redistribution. tests/fixtures/fish_testset/ is the fish test set from
+# Edi Prifti: workflow/scripts/test_fish_testset.py skips when it is absent.
+tests/fixtures/fish_testset/
