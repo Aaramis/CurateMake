@@ -53,7 +53,9 @@ Every Snakemake rule specifies its own Conda environment under `workflow/envs/`.
   - `workflow/scripts/Sativa/auto_sativa.py`
   - `workflow/scripts/Sativa/collect_sativa_results.py`
   - `workflow/scripts/Sativa/integrate_sativa.py`
-- Config knobs: `sativa.*`, `sativa_integration.*`
+- Config knobs: `sativa.*`, `sativa_integration.*`. `sativa.sativa_binary` names the
+  executable, and a path works as well as a bare name. `sativa_integration.min_confidence`
+  is the floor below which a proposed relabelling is not integrated.
 - Outputs: per-task logs under `logs/sativa/`, JSON summaries under `results/processed/`
 
 ## Reporting stack

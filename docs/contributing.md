@@ -134,25 +134,48 @@ Suggested prefixes:
 ### Run tests
 
 ```bash
-# Run the entire test suite
-pytest
+# The whole suite
+bash workflow/scripts/run_tests.sh
 
-# With coverage
-pytest --cov=.
+# With a particular interpreter
+bash workflow/scripts/run_tests.sh python3.11
 
-# Single test file
-pytest tests/test_utils.py
-
-# Specific test case
-pytest tests/test_utils.py::test_my_function
+# A single file
+python workflow/scripts/test_col_taxonomic_matcher.py
 ```
+
+The suite is offline by design. The Catalogue of Life client is either faked or replayed
+from recorded responses, so no test reaches ChecklistBank, none needs a database, and no
+result can drift with a CoL release. CI runs the same script on a plain Python with a
+handful of pip packages and no conda.
+
+### Two tests skip instead of failing
+
+They print `SKIPPED` and the runner treats that as neither a pass nor a failure, so a
+skipped test is visible in the log rather than silently counted as success:
+
+- `test_auto_sativa_real.py` drives the real `sativa-epang`, which comes from bioconda and
+  is not a pip dependency. It runs as soon as that tool is on PATH. The arguments we build
+  around it and the per-task scratch stay covered by `test_auto_sativa.py`, which fakes the
+  executable.
+- `test_fish_testset.py` replays a test set contributed by someone else, which is not
+  redistributed in this repository. See `tests/fixtures/README.md` for the files it wants
+  and where to put them.
 
 ### Writing tests
 
-- One test module per feature (e.g., `test_utils.py`)
-- One test function per behavior
-- Use fixtures for repeated setups
-- Cover error paths and edge cases
+The test files are script-style, not pytest: each one prints `PASSED n/m` or `FAILED n/m`
+as its last line and exits non-zero on failure. pytest cannot collect them, because they
+call `sys.exit()` at module level. Keep that shape rather than introducing a framework.
+
+- Put the file next to the code it covers, named `test_<module>.py`.
+- Add it to the `TESTS` array in `workflow/scripts/run_tests.sh`, or it will never run.
+- Keep third-party imports in step with the install step of `.github/workflows/tests.yml`.
+  A test that cannot import its module prints no result line and fails the run, which is
+  how a missing dependency gets caught.
+- Cover the failure path, not only the happy one.
+- Say in a comment which regression a check exists for. Most of these checks were written
+  after something broke, and that context is what stops someone deleting them later.
 
 ## Code review
 

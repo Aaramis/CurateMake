@@ -84,10 +84,20 @@ The pipeline uses a two-tier environment model:
 conda env create -f environment.yaml      # or: mamba env create -f environment.yaml
 conda activate curatemake
 
-# 2. (Optional) install the development toolchain (linters, MkDocs, pytest)
+# 2. (Optional) install the development toolchain (linters, MkDocs, docs stack)
 conda env create -f dev-environment.yaml
 conda activate curatemake-dev
 ```
+
+Tests run from a plain interpreter, with no framework and no network:
+
+```bash
+bash workflow/scripts/run_tests.sh
+```
+
+Each file prints `PASSED n/m` and the runner fails if any of them does. Two tests report
+`SKIPPED` unless you supply what they need: one drives the real `sativa-epang`, the other
+replays a contributed test set. See `docs/contributing.md` for both.
 
 `setup_env.sh` automates the same steps interactively (orchestration env,
 optional dev env, optional pre-commit hooks, and `.env` bootstrap).
