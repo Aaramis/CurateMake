@@ -287,12 +287,11 @@ sativa:
   sativa_mode: "ultrafast"
   confidence_threshold: 0.4
   taxonomy_code: "BOT"
-  threads: 2               # threads par tache SATIVA -> epa-ng -T
-                           # floor(--cores / threads), so raising this at constant --cores
-                           # LOWERS peak RAM (fewer concurrent epa-ng reference trees) for the
-                           # same CPU use -- the opposite of raising --cores. epa-ng's OpenMP
-                           # scaling flattens past ~8, so 8 is the useful ceiling.
-                           # With --cores 120: 15 tasks x 8 threads = 120 cores.
+  threads: 2               # threads per SATIVA task -> epa-ng -T. Lowered from the 8 of
+                           # config.yaml because this config is meant for a laptop or one
+                           # node: concurrency is floor(--cores / threads), so 2 keeps a
+                           # couple of tasks running on 4 to 8 cores. See config.yaml for
+                           # why 8 is the useful ceiling at full scale.
   rand_seed: 42
 
   # --- Consensus vote over several independent splits -----------------------

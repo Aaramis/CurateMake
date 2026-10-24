@@ -95,7 +95,9 @@ def sativa_integration_inputs(_wildcards):
 # (ref.nwk + its conditional likelihood vectors), NOT by the size of the input MSA -- an
 # estimate derived from the input file size underestimates it several-fold and is not safe
 # to schedule on. Throttle by job count instead: `--resources sativa_jobs=N`, with
-# N ~= memory_budget_GB / 20. LAUNCH.sh does this.
+# N ~= memory_budget_GB / 20. Nothing applies it for you: without that flag the resource
+# declared below is unlimited, and concurrency is floor(--cores / sativa.threads), which
+# at --cores 120 is 15 tasks and about 300 GB. docs/usage.md lists the flag.
 def sativa_task_msa_path(wildcards):
     for task in _sativa_tasks():
         if (
