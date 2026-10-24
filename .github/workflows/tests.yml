@@ -1,5 +1,12 @@
 # Unit tests. They are offline by design, so this needs no secrets, no database and no
 # network: every CoL response in the taxonomic tests comes from a fake client.
+#
+# Two tests need something this job deliberately does not install and SKIP here, which is
+# reported as such and does not fail the run:
+#   * test_auto_sativa_real.py drives the real sativa-epang, a bioconda package. The
+#     plumbing around it is still covered by test_auto_sativa.py, which fakes the binary.
+#   * test_fish_testset.py replays a contributed test set that is not redistributed in
+#     this repository; see tests/fixtures/README.md.
 name: tests
 
 on:

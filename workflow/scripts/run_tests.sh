@@ -21,6 +21,7 @@ TESTS=(
   workflow/scripts/MSA/ehmm/test_build_ehmm_msa.py
   workflow/scripts/Sativa/test_mis_confidence_filter.py
   workflow/scripts/Sativa/test_auto_sativa.py
+  workflow/scripts/Sativa/test_auto_sativa_real.py
   workflow/scripts/Sativa/test_classify_modification.py
   workflow/scripts/Sativa/test_vote_sativa.py
 )

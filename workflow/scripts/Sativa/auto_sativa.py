@@ -7,6 +7,7 @@ Detect taxonomic misidentifications on MSAs.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -314,6 +315,18 @@ def run_sativa(
     if rand_seed is not None:
         command.extend(["-p", str(rand_seed)])
 
+    # The tool shells out to its own siblings -- epa-ng, and raxml through them -- by bare
+    # name, so they have to be on PATH. Under Snakemake they are, because the rule's conda
+    # environment is activated. But config says a path works too for sativa_binary, and on
+    # its own it does not: pointing at /some/env/bin/sativa-epang fails with
+    # "FileNotFoundError: 'epa-ng'" as soon as placement starts. So when the binary is
+    # given as a path, put its directory on PATH for the child.
+    env = None
+    if os.sep in sativa_binary:
+        env = dict(os.environ)
+        binary_dir = str(Path(sativa_binary).resolve().parent)
+        env["PATH"] = binary_dir + os.pathsep + env.get("PATH", "")
+
     logger.info(f"Running SATIVA: {' '.join(command)}")
     if timeout_seconds:
         logger.info(f"Timeout set to: {timeout_seconds}s ({timeout_seconds/3600:.1f}h)")
@@ -326,7 +339,8 @@ def run_sativa(
             text=True,
             check=True,
             encoding='utf-8',
-            timeout=timeout_seconds
+            timeout=timeout_seconds,
+            env=env
         )
 
         logger.info("SATIVA completed successfully")
