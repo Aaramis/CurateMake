@@ -1,16 +1,26 @@
-# MSA stage — bottom-up construction
+# MSA stage — bottom-up construction (SUPERSEDED)
+
+> **This page describes a strategy the pipeline no longer runs.** Bottom-up construction
+> was replaced by the eHMM shared frame, in `rules/ehmm_msa.smk` and
+> `scripts/MSA/ehmm/build_ehmm_msa.py`, whose own docstring is the reference for what runs
+> today. The rule file this page refers to, `rules/bottomup_msa.smk`, and the design note
+> it cites, `INTEGRATION_DESIGN.md`, were both deleted with it.
+>
+> It is kept because it records why bottom-up replaced the top-down path, which still
+> matters: that reasoning is one of the four steps in `alignment-strategies.md`, the
+> plain-language history of every strategy tried here. Read that page first.
 
 The MSA stage turns the post-ITSx sequence set into reference alignments and one HMM
 profile per emergent taxonomic unit, then hands SATIVA the alignments worth validating.
 
-Two rule files are involved:
+Two rule files were involved:
 
 - `rules/msa.smk` — reduced to `prepare_msa` (DB → `results/full.csv`) and the report rule.
-- `rules/bottomup_msa.smk` — the construction itself (six rules).
+  This one still exists, and `rules/msa_groups.smk` now merges what eHMM emits.
+- `rules/bottomup_msa.smk` — the construction itself (six rules). Deleted.
 
-`msa.bottomup.enabled` selects it. The legacy top-down path (align a whole family, then
-descend when the alignment is poor) has been removed; bottom-up is the current logic.
-Full rationale and trade-offs: `INTEGRATION_DESIGN.md`.
+`msa.bottomup.enabled` selected it. The older top-down path (align a whole family, then
+descend when the alignment is poor) had already been removed at that point.
 
 ## Why bottom-up
 
