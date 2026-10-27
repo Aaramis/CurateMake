@@ -305,7 +305,14 @@ class TaxonomyMatcher:
         if not cand:
             return None, None
         accepted = [r for r in cand if r.get("usage", {}).get("status") == "accepted"]
-        chosen = accepted[0] if accepted else cand[0]
+        # With nothing accepted, a PLAIN synonym still beats an ambiguous synonym or a
+        # misapplied name: it is the only one whose accepted name we are willing to follow,
+        # so it is the only one that can give a deeper rank. CoL answers "Anemone patens"
+        # with a plain synonym of Pulsatilla halleri and an ambiguous synonym of
+        # Pulsatilla patens; taking the ambiguous one lost the species outright.
+        plain = [r for r in cand
+                 if (r.get("usage", {}) or {}).get("status") == "synonym"]
+        chosen = accepted[0] if accepted else (plain[0] if plain else cand[0])
 
         note = None
         # A synonym is not a competitor: nomenclature has already decided it points
@@ -433,9 +440,16 @@ class TaxonomyMatcher:
     def _result_rank_key(result: Dict) -> Optional[str]:
         """The rank key _resolve will file this result's deepest name under.
 
-        None when CoL reports a rank outside our seven (subspecies, variety, ...): such a
-        result is NOT rejected, because its classification still carries usable higher
-        ranks.
+        This MUST agree with _resolve, because _pick drops candidates whose key is not the
+        rank that was queried. An infraspecific accepted name is filed under species there,
+        so it has to answer "species" here too: when it answered None, CoL's plain synonym
+        of "Anemone patens" (accepted: Pulsatilla halleri subsp. halleri) was dropped from
+        a species query and only the ambiguous synonym survived, which is the one whose
+        accepted name we refuse to follow. The species was then lost outright.
+
+        None stays the answer for a rank genuinely outside our seven that is not below
+        species: such a result is NOT rejected, because its classification still carries
+        usable higher ranks.
         """
         usage = result.get("usage", {}) or {}
         if usage.get("status") == "synonym":
@@ -444,7 +458,10 @@ class TaxonomyMatcher:
             name = usage.get("name")
         if not isinstance(name, dict):
             return None
-        return _RANK_KEY.get((name.get("rank") or "").lower())
+        rank = (name.get("rank") or "").lower()
+        if rank in TaxonomyMatcher.INFRASPECIFIC:
+            return "species"
+        return _RANK_KEY.get(rank)
 
     @staticmethod
     def _accepted_id(usage: Dict) -> Optional[str]:
@@ -453,6 +470,11 @@ class TaxonomyMatcher:
         if usage.get("status") == "synonym":
             return (usage.get("accepted") or {}).get("id")
         return usage.get("id")
+
+    # Ranks CoL puts BELOW species. An accepted name at one of these still tells us the
+    # species, which is the deepest rank this pipeline stores.
+    INFRASPECIFIC = {"subspecies", "variety", "varietas", "form", "forma", "subvariety",
+                     "subform", "infraspecific name", "cultivar"}
 
     def _resolve(self, result: Dict) -> Dict[str, str]:
         """Build a {kingdom..species} dict from a chosen result, resolving synonym->accepted."""
@@ -470,9 +492,30 @@ class TaxonomyMatcher:
         else:
             acc_name = usage.get("name", {})
         if isinstance(acc_name, dict):
-            key = _RANK_KEY.get((acc_name.get("rank") or "").lower())
-            if key and acc_name.get("scientificName"):
-                tax[key] = acc_name["scientificName"]
+            sci = acc_name.get("scientificName")
+            rank = (acc_name.get("rank") or "").lower()
+            key = _RANK_KEY.get(rank)
+            if key and sci:
+                tax[key] = sci
+            elif sci and rank in self.INFRASPECIFIC:
+                # CoL often resolves a species synonym to an INFRASPECIFIC accepted name:
+                # "Anemone patens" -> "Pulsatilla halleri subsp. halleri". We have no slot
+                # below species, and dropping it left the species empty while the
+                # classification still supplied the new genus, so the caller then wrote the
+                # source's stale binomial back and the row contradicted itself. Keep the
+                # species the infraspecific name belongs to.
+                parts = sci.split()
+                if len(parts) >= 2:
+                    tax["species"] = " ".join(parts[:2])
+        # Last guard: never return a binomial that contradicts the genus in the same row.
+        # It happens when the accepted name is not followed -- an ambiguous synonym, kept
+        # on purpose -- while the lineage around it IS the accepted placement:
+        # "Senecio aureus" is an ambiguous synonym of both Synotis cappa and Packera aurea,
+        # so CoL answers with genus Synotis and the name Senecio aureus. One of the two has
+        # to go, and the name we did not resolve is the one we trust least.
+        if tax.get("species") and tax.get("genus") and not self._binomial_agrees(
+                tax["species"], tax["genus"]):
+            tax.pop("species")
         return tax
 
     def match_taxonomy(self, taxonomy: TaxonomyRecord) -> MatchResult:

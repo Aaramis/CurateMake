@@ -45,13 +45,14 @@ def lineage(*pairs):
     return [{"rank": r, "name": n} for r, n in pairs]
 
 
-def hit(name, rank, classification, status="accepted", accepted_name=None):
+def hit(name, rank, classification, status="accepted", accepted_name=None,
+        accepted_rank=None):
     usage = {"status": status, "name": {"scientificName": name, "rank": rank}, "id": "u1"}
     if "synonym" in status:
         # An unresolved synonym is modelled as an `accepted` block without a usable name,
         # which is one of the two shapes CoL returns for one.
         usage["accepted"] = ({"id": "u2", "name": {"scientificName": accepted_name,
-                                                   "rank": rank}}
+                                                   "rank": accepted_rank or rank}}
                              if accepted_name else {"id": "u2"})
     return {"usage": usage, "classification": classification}
 
@@ -356,6 +357,70 @@ check("et la famille brute a bien tranche", out.col_taxonomy.get("family") == "C
 out = m.match_taxonomy(record(kingdom="Animalia", family="Pomacentridae", genus="Chromis"))
 check("et l autre branche reste accessible",
       out.col_taxonomy.get("family") == "Pomacentridae" and out.review is None)
+
+
+print("\nBinome coherent avec le genre")
+
+# CoL often resolves a species synonym to an INFRASPECIFIC accepted name. We have no slot
+# below species, so the name must be filed under species, and _result_rank_key has to say
+# the same or _pick drops the candidate from a species query. COL26.10 answers
+# "Anemone patens" with a plain synonym of "Pulsatilla halleri subsp. halleri".
+SUB = [hit("Anemone patens", "species",
+           lineage(("kingdom", "Plantae"), ("family", "Ranunculaceae"),
+                   ("genus", "Pulsatilla")),
+           status="synonym", accepted_name="Pulsatilla halleri subsp. halleri",
+           accepted_rank="subspecies")]
+check("un nom accepte infraspecifique compte comme une espece",
+      col.TaxonomyMatcher._result_rank_key(SUB[0]) == "species")
+m = col.TaxonomyMatcher(FakeClient(exact={"Anemone patens": SUB}))
+out = m.match_taxonomy(record(kingdom="Plantae", family="Ranunculaceae",
+                              genus="Anemone", species="Anemone patens"))
+check("l espece est tiree du nom infraspecifique",
+      out.col_taxonomy.get("species") == "Pulsatilla halleri")
+check("et le genre reste celui de la lignee",
+      out.col_taxonomy.get("genus") == "Pulsatilla")
+
+# A plain synonym can be followed; an ambiguous one cannot. With nothing accepted, the
+# plain one must win, or the only candidate able to give a species is thrown away.
+BOTH = [hit("Anemone patens", "species",
+            lineage(("kingdom", "Plantae"), ("family", "Ranunculaceae"),
+                    ("genus", "Pulsatilla")),
+            status="ambiguous synonym", accepted_name="Pulsatilla patens subsp. patens",
+            accepted_rank="subspecies"),
+        hit("Anemone patens", "species",
+            lineage(("kingdom", "Plantae"), ("family", "Ranunculaceae"),
+                    ("genus", "Pulsatilla")),
+            status="synonym", accepted_name="Pulsatilla halleri subsp. halleri",
+            accepted_rank="subspecies")]
+m = col.TaxonomyMatcher(FakeClient(exact={"Anemone patens": BOTH}))
+out = m.match_taxonomy(record(kingdom="Plantae", family="Ranunculaceae",
+                              genus="Anemone", species="Anemone patens"))
+check("le synonyme simple prime sur le synonyme ambigu",
+      out.col_taxonomy.get("species") == "Pulsatilla halleri")
+check("et le desaccord est signale", bool(out.review))
+
+# An ambiguous synonym we refuse to follow, with the accepted lineage around it: the row
+# would otherwise carry genus Synotis and species "Senecio aureus".
+AMB = [hit("Senecio aureus", "species",
+           lineage(("kingdom", "Plantae"), ("family", "Asteraceae"), ("genus", "Synotis")),
+           status="ambiguous synonym", accepted_name="Synotis cappa")]
+m = col.TaxonomyMatcher(FakeClient(exact={"Senecio aureus": AMB}))
+out = m.match_taxonomy(record(kingdom="Plantae", family="Asteraceae",
+                              genus="Senecio", species="Senecio aureus"))
+check("un binome contredisant le genre n est jamais ecrit",
+      out.col_taxonomy.get("species") in (None, ""))
+check("le genre accepte est conserve", out.col_taxonomy.get("genus") == "Synotis")
+
+# the ordinary case must be untouched: species synonym -> accepted binomial, both coherent
+OK = [hit("Lavatera trimestris", "species",
+          lineage(("kingdom", "Plantae"), ("family", "Malvaceae"), ("genus", "Malva")),
+          status="synonym", accepted_name="Malva trimestris")]
+m = col.TaxonomyMatcher(FakeClient(exact={"Lavatera trimestris": OK}))
+out = m.match_taxonomy(record(kingdom="Plantae", family="Malvaceae",
+                              genus="Lavatera", species="Lavatera trimestris"))
+check("un synonyme resolu normalement garde son binome",
+      out.col_taxonomy.get("species") == "Malva trimestris")
+check("sans signalement", out.review is None)
 
 
 print(f"\n{'PASSED' if failed == 0 else 'FAILED'} {passed}/{passed + failed}")
