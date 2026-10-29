@@ -254,7 +254,24 @@ class TaxonomyMatcher:
         if not value:
             return cand
         kept = [r for r in cand if self._has_rank(r, rank, value)]
-        return kept or cand
+        if not kept:
+            return cand
+
+        def live(r):
+            return not self._is_any_synonym((r.get("usage", {}) or {}).get("status"))
+
+        # A source lineage can be wrong wholesale, and then this preference makes the
+        # source's error win. CoL answers "Leichhardtia" with the accepted Apocynaceae
+        # genus, an accepted snail genus, and a synonym of Callitris in Cupressaceae;
+        # UNITE files all six of its records under Cupressaceae, so the preference picked
+        # the synonym and the accepted genus was gone before anything else could run
+        # (reported by Daniel Lundin on UNITE plants). So the preference may choose
+        # between LIVING usages, but it must not let a synonym beat an accepted one.
+        # Chromis still works: there both candidates are living, an accepted damselfish
+        # and a provisionally accepted cichlid, and the source's family still decides.
+        if any(live(r) for r in cand) and not any(live(r) for r in kept):
+            return cand
+        return kept
 
     def _pick(self, results: List[Dict], expected_kingdom: Optional[str],
               require_genus: Optional[str] = None, expected_rank: Optional[str] = None,

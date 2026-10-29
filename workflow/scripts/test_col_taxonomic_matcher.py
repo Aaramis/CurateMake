@@ -423,5 +423,57 @@ check("un synonyme resolu normalement garde son binome",
 check("sans signalement", out.review is None)
 
 
+print("\nUne lignee source fausse ne doit pas gagner")
+
+# A source lineage can be wrong wholesale, and the family preference then makes the
+# source's own error win. COL26.10 answers "Leichhardtia" with an accepted Apocynaceae
+# genus, an accepted snail genus, and a synonym of Callitris in Cupressaceae; UNITE files
+# all six of its records under Coniferophyta/Cupressaceae. The preference used to pick the
+# synonym, and the accepted genus was gone before anything else could run. Reported by
+# Daniel Lundin on UNITE plants, where a whole genus carried a lineage from another phylum.
+LEICH = [
+    hit("Leichhardtia", "genus", lineage(("kingdom", "Plantae"), ("phylum", "Tracheophyta"),
+                                         ("order", "Gentianales"), ("family", "Apocynaceae"))),
+    hit("Leichhardtia", "genus", lineage(("kingdom", "Animalia"), ("phylum", "Mollusca"),
+                                         ("family", "Planorbidae"))),
+    hit("Leichhardtia", "genus", lineage(("kingdom", "Plantae"), ("phylum", "Tracheophyta"),
+                                         ("family", "Cupressaceae")),
+        status="synonym", accepted_name="Callitris"),
+    hit("Leichhardtia", "genus", lineage(("kingdom", "Plantae"), ("phylum", "Tracheophyta"),
+                                         ("family", "Phyllanthaceae")),
+        status="synonym", accepted_name="Dendrophyllanthus"),
+]
+m = col.TaxonomyMatcher(FakeClient(exact={"Leichhardtia": LEICH}))
+out = m.match_taxonomy(record(kingdom="Plantae", phylum="Coniferophyta",
+                              family="Cupressaceae", genus="Leichhardtia"))
+check("une famille source fausse ne fait pas gagner un synonyme",
+      out.col_taxonomy.get("family") == "Apocynaceae")
+check("et le genre accepte est conserve",
+      out.col_taxonomy.get("genus") == "Leichhardtia")
+
+# Same shape with only one living usage: the wrong source family matches nothing, the
+# soft preference falls back, and the accepted usage wins. COL26.10 on "Swartzia", filed
+# by UNITE under Bryophyta/Ditrichaceae.
+SWARTZ = [
+    hit("Swartzia", "genus", lineage(("kingdom", "Plantae"), ("phylum", "Tracheophyta"),
+                                     ("order", "Fabales"), ("family", "Fabaceae"))),
+    hit("Swartzia", "genus", lineage(("kingdom", "Plantae"), ("phylum", "Bryophyta"),
+                                     ("family", "Distichiaceae")),
+        status="synonym", accepted_name="Distichium"),
+]
+m = col.TaxonomyMatcher(FakeClient(exact={"Swartzia": SWARTZ}))
+out = m.match_taxonomy(record(kingdom="Plantae", phylum="Bryophyta",
+                              family="Ditrichaceae", genus="Swartzia"))
+check("un phylum source faux est corrige",
+      out.col_taxonomy.get("phylum") == "Tracheophyta")
+check("et la famille aussi", out.col_taxonomy.get("family") == "Fabaceae")
+
+# The preference must still decide between two LIVING usages, which is what it exists for.
+m = col.TaxonomyMatcher(FakeClient(exact={"Chromis": CHROM}))
+out = m.match_taxonomy(record(kingdom="Animalia", family="Cichlidae", genus="Chromis"))
+check("la preference departage toujours deux taxons vivants",
+      out.col_taxonomy.get("family") == "Cichlidae")
+
+
 print(f"\n{'PASSED' if failed == 0 else 'FAILED'} {passed}/{passed + failed}")
 sys.exit(0 if failed == 0 else 1)
